@@ -29,7 +29,9 @@ export function searchCloudNodes(nodes: CloudNode[], query: string, limit = 50):
  * Calculate dirty file count in local write-back spool that would be at risk on unmount or quit
  */
 export function getDirtyFileCount(spoolItems: SpoolItem[]): { dirtyCount: number; dirtyBytes: number } {
-  const dirty = spoolItems.filter(item => item.status === 'staging' || item.status === 'uploading');
+  const dirty = spoolItems.filter(
+    item => item.status === 'staging' || item.status === 'uploading' || item.status === 'paused_offline'
+  );
   const dirtyBytes = dirty.reduce((acc, curr) => acc + curr.sizeBytes, 0);
   return {
     dirtyCount: dirty.length,
@@ -99,20 +101,49 @@ export function applyBandwidthCap(currentSpeedMBps: number, streamGuardActive: b
  * Progress tick function for spool simulation
  * Reduces writeBackRemainingSec, transitions staging -> uploading -> synced
  */
+/**
+ * Progress tick function for spool simulation
+ * Reduces writeBackRemainingSec, transitions staging -> uploading -> synced
+ * Aware of online/offline status (freezes upload progress while offline)
+ */
 export function tickSpoolItem(
   item: SpoolItem,
   effectiveSpeedMBps: number,
-  deltaSeconds = 1
+  deltaSeconds = 1,
+  isOnline = true
 ): SpoolItem {
   if (item.status === 'purged' || item.status === 'retake') {
     return item;
   }
 
-  if (item.status === 'staging') {
-    const nextRemaining = Math.max(0, item.writeBackRemainingSec - deltaSeconds);
-    if (nextRemaining === 0) {
+  // If offline, uploading items pause and do not lose state
+  if (!isOnline) {
+    if (item.status === 'uploading') {
       return {
         ...item,
+        status: 'paused_offline',
+        uploadSpeedMBps: 0,
+      };
+    }
+    // Staging items can keep sitting safely in ~/.zerodrive-cache
+    return item;
+  }
+
+  // If online and was paused offline, resume uploading
+  let currentItem = item;
+  if (isOnline && item.status === 'paused_offline') {
+    currentItem = {
+      ...item,
+      status: 'uploading',
+      uploadSpeedMBps: effectiveSpeedMBps,
+    };
+  }
+
+  if (currentItem.status === 'staging') {
+    const nextRemaining = Math.max(0, currentItem.writeBackRemainingSec - deltaSeconds);
+    if (nextRemaining === 0) {
+      return {
+        ...currentItem,
         status: 'uploading',
         writeBackRemainingSec: 0,
         uploadProgress: 0,
@@ -120,20 +151,20 @@ export function tickSpoolItem(
       };
     }
     return {
-      ...item,
+      ...currentItem,
       writeBackRemainingSec: nextRemaining,
     };
   }
 
-  if (item.status === 'uploading') {
-    const totalMB = item.sizeBytes / (1024 * 1024);
+  if (currentItem.status === 'uploading') {
+    const totalMB = currentItem.sizeBytes / (1024 * 1024);
     const uploadedMBThisTick = effectiveSpeedMBps * deltaSeconds;
     const progressGain = totalMB > 0 ? (uploadedMBThisTick / totalMB) * 100 : 100;
-    const newProgress = Math.min(100, item.uploadProgress + progressGain);
+    const newProgress = Math.min(100, currentItem.uploadProgress + progressGain);
 
     if (newProgress >= 100) {
       return {
-        ...item,
+        ...currentItem,
         status: 'synced',
         uploadProgress: 100,
         uploadSpeedMBps: 0,
@@ -141,11 +172,82 @@ export function tickSpoolItem(
     }
 
     return {
-      ...item,
+      ...currentItem,
       uploadProgress: Math.round(newProgress * 10) / 10,
       uploadSpeedMBps: effectiveSpeedMBps,
     };
   }
 
-  return item;
+  return currentItem;
+}
+
+/**
+ * Handle network reachability transitions for the write spool
+ */
+export function handleNetworkStatusChange(
+  spoolItems: SpoolItem[],
+  isOnline: boolean
+): SpoolItem[] {
+  if (!isOnline) {
+    return spoolItems.map(item => {
+      if (item.status === 'uploading') {
+        return { ...item, status: 'paused_offline', uploadSpeedMBps: 0 };
+      }
+      return item;
+    });
+  } else {
+    return spoolItems.map(item => {
+      if (item.status === 'paused_offline') {
+        return { ...item, status: 'uploading', uploadSpeedMBps: 35.0 };
+      }
+      return item;
+    });
+  }
+}
+
+/**
+ * APFS Disk Space Pre-Flight Check
+ * Ensures local NVMe staging does not exhaust the user's host Mac APFS container.
+ * Default warning threshold: 15 GB free space. Critical threshold: 3 GB free space.
+ */
+export function checkAPFSFreeSpace(
+  fileSizeBytes: number,
+  freeDiskBytes: number,
+  warningThresholdBytes = 15 * 1024 * 1024 * 1024, // 15 GB
+  criticalThresholdBytes = 3 * 1024 * 1024 * 1024  // 3 GB
+): {
+  canStage: boolean;
+  isWarning: boolean;
+  isCritical: boolean;
+  freeDiskBytes: number;
+  shortfallBytes: number;
+  recommendedMode: 'move' | 'copy' | 'bypass';
+  warningMessage: string;
+} {
+  // If free disk space is less than file size + critical threshold, staging will fail or choke macOS
+  const requiredBytes = fileSizeBytes + criticalThresholdBytes;
+  const isCritical = freeDiskBytes < requiredBytes || freeDiskBytes < criticalThresholdBytes;
+  const isWarning = !isCritical && (freeDiskBytes < warningThresholdBytes || (freeDiskBytes - fileSizeBytes) < warningThresholdBytes);
+  const shortfallBytes = Math.max(0, requiredBytes - freeDiskBytes);
+
+  let recommendedMode: 'move' | 'copy' | 'bypass' = 'move';
+  let warningMessage = 'APFS disk storage is healthy.';
+
+  if (isCritical) {
+    recommendedMode = 'bypass';
+    warningMessage = `Critical APFS Disk Pressure: Only ${formatBytes(freeDiskBytes)} available on Macintosh HD. Staging ${formatBytes(fileSizeBytes)} would exhaust local NVMe storage. Recommendation: Direct Cloud Upload (Bypass Spool).`;
+  } else if (isWarning) {
+    recommendedMode = 'bypass';
+    warningMessage = `Low APFS Disk Space: ${formatBytes(freeDiskBytes)} remaining (threshold: 15 GB). Recommendation: Stream directly to cloud or clean local spool.`;
+  }
+
+  return {
+    canStage: !isCritical,
+    isWarning,
+    isCritical,
+    freeDiskBytes,
+    shortfallBytes,
+    recommendedMode,
+    warningMessage,
+  };
 }

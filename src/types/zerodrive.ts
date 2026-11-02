@@ -14,7 +14,17 @@ export interface CloudNode {
   isRetake?: boolean;
 }
 
-export type SpoolStatus = 'staging' | 'uploading' | 'synced' | 'purged' | 'retake';
+export type SpoolStatus = 'staging' | 'uploading' | 'paused_offline' | 'synced' | 'purged' | 'retake';
+
+export interface APFSPreFlightResult {
+  canStage: boolean;
+  isWarning: boolean;
+  isCritical: boolean;
+  freeDiskBytes: number;
+  shortfallBytes: number;
+  recommendedMode: 'move' | 'copy' | 'bypass';
+  warningMessage: string;
+}
 
 export interface SpoolItem {
   id: string;

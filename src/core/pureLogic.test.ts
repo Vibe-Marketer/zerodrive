@@ -8,6 +8,7 @@ import {
   generateRcloneConfig,
   applyBandwidthCap,
   tickSpoolItem,
+  checkAPFSFreeSpace,
 } from './pureLogic';
 import { CloudNode, SpoolItem } from '../types/zerodrive';
 
@@ -152,4 +153,57 @@ test('tickSpoolItem advances staging countdown to uploading and finishes syncing
   const ticked3 = tickSpoolItem(ticked2, 10, 1);
   assert.equal(ticked3.status, 'synced');
   assert.equal(ticked3.uploadProgress, 100);
+});
+
+test('checkAPFSFreeSpace correctly alerts on low and critical host Mac SSD space', () => {
+  // Scenario 1: Healthy space (120 GB free, 2 GB file)
+  const healthy = checkAPFSFreeSpace(2 * 1024 * 1024 * 1024, 120 * 1024 * 1024 * 1024);
+  assert.equal(healthy.canStage, true);
+  assert.equal(healthy.isWarning, false);
+  assert.equal(healthy.isCritical, false);
+  assert.equal(healthy.recommendedMode, 'move');
+
+  // Scenario 2: Low space warning (< 15 GB free, 1 GB file)
+  const low = checkAPFSFreeSpace(1 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024);
+  assert.equal(low.canStage, true);
+  assert.equal(low.isWarning, true);
+  assert.equal(low.isCritical, false);
+  assert.equal(low.recommendedMode, 'bypass');
+
+  // Scenario 3: Critical space (< 3 GB free or file exceeds space)
+  const critical = checkAPFSFreeSpace(5 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024);
+  assert.equal(critical.canStage, false);
+  assert.equal(critical.isCritical, true);
+  assert.equal(critical.recommendedMode, 'bypass');
+  assert.ok(critical.shortfallBytes > 0);
+});
+
+test('offline mode pauses uploads without losing progress and resumes on reconnect', () => {
+  const uploadingItem: SpoolItem = {
+    id: 's-active',
+    filename: 'raw_footage.braw',
+    relativePath: 'Vault/raw_footage.braw',
+    sizeBytes: 100 * 1024 * 1024,
+    status: 'uploading',
+    writeBackRemainingSec: 0,
+    uploadProgress: 45.5,
+    uploadSpeedMBps: 35.0,
+    createdAt: Date.now(),
+    sourceMode: 'move',
+  };
+
+  // When offline, ticking freezes upload progress
+  const paused = tickSpoolItem(uploadingItem, 35.0, 1, false);
+  assert.equal(paused.status, 'paused_offline');
+  assert.equal(paused.uploadProgress, 45.5);
+  assert.equal(paused.uploadSpeedMBps, 0);
+
+  // When back online, resuming continues progress
+  const resumed = tickSpoolItem(paused, 20.0, 1, true);
+  assert.equal(resumed.status, 'uploading');
+  assert.ok(resumed.uploadProgress > 45.5);
+
+  // Paused offline items are dirty and must block termination
+  assert.equal(shouldBlockTermination([paused]), true);
+  assert.equal(getDirtyFileCount([paused]).dirtyCount, 1);
 });

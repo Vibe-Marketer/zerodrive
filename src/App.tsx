@@ -31,6 +31,8 @@ import {
   formatBytes,
   applyBandwidthCap,
   tickSpoolItem,
+  handleNetworkStatusChange,
+  checkAPFSFreeSpace,
 } from './core/pureLogic';
 import { MacMenuBar } from './components/macOS/MacMenuBar';
 import { MenuBarPopover } from './components/macOS/MenuBarPopover';
@@ -52,6 +54,7 @@ export default function App() {
   const [cloudNodes, setCloudNodes] = useState<CloudNode[]>(INITIAL_CLOUD_NODES);
   const [spoolItems, setSpoolItems] = useState<SpoolItem[]>(INITIAL_SPOOL_ITEMS);
   const [connectedClouds, setConnectedClouds] = useState<ConnectedCloud[]>(INITIAL_CONNECTED_CLOUDS);
+  const [freeDiskBytes, setFreeDiskBytes] = useState<number>(120 * 1024 * 1024 * 1024); // 120 GB default
 
   const [telemetry, setTelemetry] = useState<Telemetry>({
     uploadSpeedMBps: 34.5,
@@ -73,6 +76,18 @@ export default function App() {
 
   const { dirtyCount, dirtyBytes } = getDirtyFileCount(spoolItems);
 
+  const handleToggleOnline = () => {
+    setTelemetry((prev) => {
+      const nextOnline = !prev.isOnline;
+      setSpoolItems((items) => handleNetworkStatusChange(items, nextOnline));
+      return {
+        ...prev,
+        isOnline: nextOnline,
+        uploadSpeedMBps: nextOnline ? 34.5 : 0,
+      };
+    });
+  };
+
   // Background engine tick: 1s interval to simulate write-back timers and uploads
   useEffect(() => {
     if (!isMounted) return;
@@ -82,17 +97,19 @@ export default function App() {
         const rawSpeed = telemetry.streamGuardActive ? 2.8 : 36.0;
         const effectiveSpeed = applyBandwidthCap(rawSpeed, telemetry.streamGuardActive);
 
-        return prevItems.map((item) => tickSpoolItem(item, effectiveSpeed, 1));
+        return prevItems.map((item) => tickSpoolItem(item, effectiveSpeed, 1, telemetry.isOnline));
       });
 
       setTelemetry((prev) => {
         const uploadingCount = spoolItems.filter((i) => i.status === 'uploading').length;
-        const currentSpeed = uploadingCount > 0
+        const currentSpeed = !telemetry.isOnline
+          ? 0
+          : uploadingCount > 0
           ? applyBandwidthCap(telemetry.streamGuardActive ? 2.8 : 34.5 + (Math.random() * 4 - 2), telemetry.streamGuardActive)
           : 0;
 
         const currentSpoolBytes = spoolItems
-          .filter((i) => i.status === 'staging' || i.status === 'uploading')
+          .filter((i) => i.status === 'staging' || i.status === 'uploading' || i.status === 'paused_offline')
           .reduce((sum, item) => sum + item.sizeBytes, 0);
 
         return {
@@ -106,7 +123,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isMounted, telemetry.streamGuardActive, spoolItems]);
+  }, [isMounted, telemetry.streamGuardActive, telemetry.isOnline, spoolItems]);
 
   // Dropzone file offloader
   const handleDropFiles = (
@@ -239,8 +256,10 @@ export default function App() {
       <MacMenuBar
         isMounted={isMounted}
         dirtyCount={dirtyCount}
+        isOnline={telemetry.isOnline}
         activeViewMode={activeViewMode}
         onChangeViewMode={(mode) => setActiveViewMode(mode)}
+        onToggleOnline={handleToggleOnline}
         onOpenCodebase={() => setCodebaseOpen(true)}
       />
 
@@ -256,6 +275,9 @@ export default function App() {
               connectedClouds={connectedClouds}
               storageMode={storageMode}
               cloudPreset={cloudPreset}
+              freeDiskBytes={freeDiskBytes}
+              onChangeFreeDiskBytes={(bytes) => setFreeDiskBytes(bytes)}
+              onToggleOnline={handleToggleOnline}
               onDropFiles={handleDropFiles}
               onSyncNow={handleSyncNow}
               onTagRetake={handleTagRetake}

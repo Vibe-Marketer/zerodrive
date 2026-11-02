@@ -65,6 +65,17 @@ export const MenuBarPopover: React.FC<MenuBarPopoverProps> = ({
         </button>
       </div>
 
+      {/* Offline Indicator Banner */}
+      {!telemetry.isOnline && (
+        <div className="p-2.5 rounded-xl bg-[#ff9f0a]/15 border border-[#ff9f0a]/30 flex items-center justify-between text-[11px] text-[#ff9f0a]">
+          <div className="flex items-center space-x-2">
+            <span className="w-2 h-2 rounded-full bg-[#ff9f0a] animate-pulse" />
+            <span className="font-semibold">Offline — Local Spool Only</span>
+          </div>
+          <span className="font-mono text-white/60 text-[10px]">~/.zerodrive-cache</span>
+        </div>
+      )}
+
       {/* Cloud Bandwidth & Stream Guard */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">

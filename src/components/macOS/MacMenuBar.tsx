@@ -1,27 +1,32 @@
-import React from 'react';
 import {
   HardDrive,
   Wifi,
+  WifiOff,
   Battery,
   Code2,
   FolderOpen,
   AppWindow,
   Sliders,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface MacMenuBarProps {
   isMounted: boolean;
   dirtyCount: number;
+  isOnline: boolean;
   activeViewMode: 'studio' | 'menubar' | 'finder';
   onChangeViewMode: (mode: 'studio' | 'menubar' | 'finder') => void;
+  onToggleOnline: () => void;
   onOpenCodebase: () => void;
 }
 
 export const MacMenuBar: React.FC<MacMenuBarProps> = ({
   isMounted,
   dirtyCount,
+  isOnline,
   activeViewMode,
   onChangeViewMode,
+  onToggleOnline,
   onOpenCodebase,
 }) => {
   return (
@@ -117,7 +122,23 @@ export const MacMenuBar: React.FC<MacMenuBarProps> = ({
 
         {/* macOS Status Indicators */}
         <div className="flex items-center space-x-2.5 text-white/60 border-l border-white/[0.08] pl-2.5">
-          <Wifi className="w-3.5 h-3.5" />
+          <button
+            onClick={onToggleOnline}
+            className={`flex items-center space-x-1.5 px-1.5 py-0.5 rounded transition-colors ${
+              !isOnline ? 'bg-[#ff9f0a]/20 text-[#ff9f0a] border border-[#ff9f0a]/40' : 'hover:bg-white/[0.06] text-white/80'
+            }`}
+            title={isOnline ? 'Network: Online (Click to simulate offline)' : 'Network: Offline — Local Spool Active (Click to reconnect)'}
+          >
+            {isOnline ? (
+              <Wifi className="w-3.5 h-3.5 text-white/80" />
+            ) : (
+              <>
+                <WifiOff className="w-3.5 h-3.5 text-[#ff9f0a]" />
+                <span className="text-[10px] font-bold tracking-tight">Offline (Local Spool)</span>
+              </>
+            )}
+          </button>
+
           <div className="flex items-center space-x-1 text-[11px] font-mono">
             <Battery className="w-3.5 h-3.5 text-[#34c759]" />
             <span>98%</span>
