@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zerodrive.mount</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/ZeroDrive.app/Contents/Resources/rclone</string>
+        <string>nfsmount</string>
+        <string>ZeroDriveUnified:</string>
+        <string>/Users/CURRENT_USER/ZeroDrive</string>
+        <string>--volname=ZeroDrive</string>
+        <string>--vfs-cache-mode=writes</string>
+        <string>--cache-dir=/Users/CURRENT_USER/.zerodrive-cache</string>
+        <string>--vfs-cache-max-size=50G</string>
+        <string>--vfs-write-back=15s</string>
+        <string>--vfs-cache-max-age=1m</string>
+        <string>--vfs-read-chunk-size=8M</string>
+        <string>--vfs-read-chunk-size-limit=128M</string>
+        <string>--buffer-size=32M</string>
+        <string>--vfs-read-ahead=64M</string>
+        <string>--dir-cache-time=9999h</string>
+        <string>--attr-timeout=24h</string>
+        <string>--allow-non-empty</string>
+        <string>--noappledouble=true</string>
+        <string>--noapplexattr=true</string>
+        <string>--rc</string>
+        <string>--rc-addr=127.0.0.1:55729</string>
+        <string>--rc-no-auth</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/CURRENT_USER/Library/Logs/ZeroDrive.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/CURRENT_USER/Library/Logs/ZeroDrive.err</string>
+</dict>
+</plist>

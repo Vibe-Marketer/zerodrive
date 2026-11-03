@@ -1,0 +1,373 @@
+import Foundation
+
+public final class MultiCloudCombineBuilder: @unchecked Sendable {
+    public static let shared = MultiCloudCombineBuilder()
+
+    public let configPath: URL = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".config/rclone/rclone.conf")
+    }()
+
+    private let metadataPath: URL = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".config/rclone/zerodrive-vault.json")
+    }()
+
+    public struct PrimaryVaultMetadata: Codable, Sendable {
+        public var mode: StorageMode
+        public var preset: CloudPreset
+        public var bucketAndPrefix: String
+        public var displayLabel: String
+        public var quotaTB: Double
+        public var spoolCapGB: Int
+    }
+
+    public func hasConfiguredPrimaryVault() -> Bool {
+        let sections = parseConfigSections()
+        return sections["primary_vault"] != nil && sections["ZeroDriveUnified"] != nil
+    }
+
+    public func loadVaultMetadata() -> PrimaryVaultMetadata {
+        if let data = try? Data(contentsOf: metadataPath),
+           let meta = try? JSONDecoder().decode(PrimaryVaultMetadata.self, from: data) {
+            return meta
+        }
+        return PrimaryVaultMetadata(
+            mode: .dfyManaged,
+            preset: .cloudflareR2,
+            bucketAndPrefix: "zerodrive-vault-prod",
+            displayLabel: "ZeroDrive Managed R2 Vault",
+            quotaTB: 5.0,
+            spoolCapGB: 50
+        )
+    }
+
+    public func saveVaultMetadata(_ meta: PrimaryVaultMetadata) {
+        let parentDir = metadataPath.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(meta) {
+            try? data.write(to: metadataPath, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: metadataPath.path)
+        }
+    }
+
+    /// Configures [primary_vault] for 1-Click DFY Managed Vault and rebuilds [ZeroDriveUnified]
+    public func configureDFYPrimaryVault(result: DFYProvisionResult, spoolCapGB: Int = 50) throws {
+        var sections = parseConfigSections()
+
+        sections["primary_vault"] = [
+            "type = s3",
+            "provider = Cloudflare",
+            "access_key_id = \(result.accessKeyId)",
+            "secret_access_key = \(result.secretAccessKey)",
+            "endpoint = \(result.endpoint)",
+            "acl = private",
+            "force_path_style = true",
+            "no_check_bucket = true",
+            "chunk_size = 64M",
+            "upload_concurrency = 8"
+        ]
+
+        let bucketPath = result.userPrefix.isEmpty
+            ? result.bucket
+            : "\(result.bucket)/\(result.userPrefix)"
+
+        let meta = PrimaryVaultMetadata(
+            mode: .dfyManaged,
+            preset: .cloudflareR2,
+            bucketAndPrefix: bucketPath,
+            displayLabel: "ZeroDrive Managed R2 Vault (\(result.bucket))",
+            quotaTB: result.quotaTB,
+            spoolCapGB: spoolCapGB
+        )
+        saveVaultMetadata(meta)
+
+        try writeSectionsAndRebuildCombine(&sections, primaryBucketPath: bucketPath)
+    }
+
+    /// Configures [primary_vault] for BYOK Mode (Cloudflare R2, Backblaze B2, AWS S3)
+    public func configureBYOKPrimaryVault(
+        preset: CloudPreset,
+        bucket: String,
+        accessKey: String,
+        secretKey: String,
+        endpoint: String,
+        region: String = "auto",
+        spoolCapGB: Int = 50
+    ) throws {
+        var sections = parseConfigSections()
+
+        switch preset {
+        case .cloudflareR2:
+            sections["primary_vault"] = [
+                "type = s3",
+                "provider = Cloudflare",
+                "access_key_id = \(accessKey)",
+                "secret_access_key = \(secretKey)",
+                "endpoint = \(endpoint.isEmpty ? "https://auto.r2.cloudflarestorage.com" : endpoint)",
+                "region = auto",
+                "no_check_bucket = true",
+                "chunk_size = 64M",
+                "upload_concurrency = 8"
+            ]
+        case .backblazeB2:
+            sections["primary_vault"] = [
+                "type = b2",
+                "account = \(accessKey)",
+                "key = \(secretKey)",
+                "hard_delete = false",
+                "upload_cutoff = 64M",
+                "chunk_size = 64M"
+            ]
+        case .awsS3:
+            var lines = [
+                "type = s3",
+                "provider = \(endpoint.isEmpty ? "AWS" : "Other")",
+                "access_key_id = \(accessKey)",
+                "secret_access_key = \(secretKey)",
+                "region = \(region.isEmpty ? "us-east-1" : region)",
+                "chunk_size = 64M",
+                "upload_concurrency = 8"
+            ]
+            if !endpoint.isEmpty {
+                lines.append("endpoint = \(endpoint)")
+            }
+            sections["primary_vault"] = lines
+        }
+
+        let cleanBucket = bucket.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        let meta = PrimaryVaultMetadata(
+            mode: .byokOpen,
+            preset: preset,
+            bucketAndPrefix: cleanBucket,
+            displayLabel: "\(preset.displayName) (\(cleanBucket))",
+            quotaTB: 10.0,
+            spoolCapGB: spoolCapGB
+        )
+        saveVaultMetadata(meta)
+
+        try writeSectionsAndRebuildCombine(&sections, primaryBucketPath: cleanBucket)
+    }
+
+    /// Validates [primary_vault] credentials using `rclone lsd` with a 10-second timeout
+    public func validatePrimaryVault(rcloneURL: URL, bucket: String) async -> (Bool, String) {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = rcloneURL
+                proc.arguments = [
+                    "lsd",
+                    "primary_vault:\(bucket)",
+                    "--config=\(self.configPath.path)",
+                    "--contimeout=8s",
+                    "--timeout=10s",
+                    "--retries=1"
+                ]
+                let errPipe = Pipe()
+                proc.standardError = errPipe
+                proc.standardOutput = Pipe()
+
+                do {
+                    try proc.run()
+                } catch {
+                    continuation.resume(returning: (false, error.localizedDescription))
+                    return
+                }
+
+                let deadline = Date().addingTimeInterval(10.0)
+                while proc.isRunning && Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                if proc.isRunning {
+                    proc.terminate()
+                    continuation.resume(returning: (false, "Connection timed out after 10 seconds."))
+                    return
+                }
+
+                if proc.terminationStatus == 0 {
+                    continuation.resume(returning: (true, "Verified successfully"))
+                } else {
+                    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Invalid credentials"
+                    continuation.resume(returning: (false, errStr))
+                }
+            }
+        }
+    }
+
+    /// Launches browser OAuth flow via `rclone config create` for Google Drive, Dropbox, or OneDrive
+    public func connectExternalCloudOAuth(
+        provider: ExternalCloudProvider,
+        rcloneURL: URL,
+        customClientId: String? = nil,
+        customClientSecret: String? = nil
+    ) async -> (Bool, String) {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = rcloneURL
+
+                var args: [String] = [
+                    "config",
+                    "create",
+                    provider.sectionName,
+                    provider.rawValue,
+                    "--config=\(self.configPath.path)"
+                ]
+
+                switch provider {
+                case .googleDrive:
+                    args.append(contentsOf: ["scope", "drive", "chunk_size", "32M", "pacer_min_sleep", "10ms"])
+                    if let cid = customClientId, !cid.isEmpty {
+                        args.append(contentsOf: ["client_id", cid])
+                    }
+                    if let csec = customClientSecret, !csec.isEmpty {
+                        args.append(contentsOf: ["client_secret", csec])
+                    }
+                case .dropbox:
+                    args.append(contentsOf: ["chunk_size", "48M"])
+                case .oneDrive:
+                    args.append(contentsOf: ["chunk_size", "32M"])
+                }
+
+                proc.arguments = args
+                let errPipe = Pipe()
+                proc.standardError = errPipe
+                proc.standardOutput = Pipe()
+
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                } catch {
+                    continuation.resume(returning: (false, error.localizedDescription))
+                    return
+                }
+
+                if proc.terminationStatus == 0 {
+                    var sections = self.parseConfigSections()
+                    let meta = self.loadVaultMetadata()
+                    try? self.writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix)
+                    continuation.resume(returning: (true, "Connected \(provider.displayName)"))
+                } else {
+                    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errStr = String(data: errData, encoding: .utf8) ?? "OAuth flow cancelled or failed."
+                    continuation.resume(returning: (false, errStr))
+                }
+            }
+        }
+    }
+
+    public func disconnectExternalCloud(_ provider: ExternalCloudProvider) throws {
+        var sections = parseConfigSections()
+        sections.removeValue(forKey: provider.sectionName)
+        let meta = loadVaultMetadata()
+        try writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix)
+    }
+
+    public func connectedExternalClouds() -> Set<ExternalCloudProvider> {
+        let sections = parseConfigSections()
+        var result = Set<ExternalCloudProvider>()
+        for provider in ExternalCloudProvider.allCases {
+            if sections[provider.sectionName] != nil {
+                result.insert(provider)
+            }
+        }
+        return result
+    }
+
+    public func rebuildUnifiedRemote(
+        primaryBucket: String,
+        connectedClouds: [(name: String, remote: String)]
+    ) throws {
+        var sections = parseConfigSections()
+        var upstreams: [String] = ["\"Vault=primary_vault:\(primaryBucket)\""]
+        for cloud in connectedClouds {
+            let cleanFolder = cloud.name.replacingOccurrences(of: " ", with: "_")
+            upstreams.append("\"\(cleanFolder)=\(cloud.remote):\"")
+        }
+        sections["ZeroDriveUnified"] = [
+            "type = combine",
+            "upstreams = \(upstreams.joined(separator: " "))"
+        ]
+        try writeConfigSections(sections)
+    }
+
+    // MARK: - Internal INI Parser & Writer (Preserves Existing Remotes + 0600 Permissions)
+
+    private func writeSectionsAndRebuildCombine(
+        _ sections: inout [String: [String]],
+        primaryBucketPath: String
+    ) throws {
+        var upstreams: [String] = ["\"Vault=primary_vault:\(primaryBucketPath)\""]
+
+        for provider in ExternalCloudProvider.allCases {
+            if sections[provider.sectionName] != nil {
+                upstreams.append("\"\(provider.folderName)=\(provider.sectionName):\"")
+            }
+        }
+
+        sections["ZeroDriveUnified"] = [
+            "type = combine",
+            "upstreams = \(upstreams.joined(separator: " "))"
+        ]
+
+        try writeConfigSections(sections)
+    }
+
+    private func parseConfigSections() -> [String: [String]] {
+        guard let content = try? String(contentsOf: configPath, encoding: .utf8) else {
+            return [:]
+        }
+        var sections: [String: [String]] = [:]
+        var currentSection: String?
+
+        for rawLine in content.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") || line.hasPrefix(";") {
+                continue
+            }
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                let name = String(line.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+                currentSection = name
+                if sections[name] == nil {
+                    sections[name] = []
+                }
+            } else if let sec = currentSection {
+                sections[sec, default: []].append(line)
+            }
+        }
+        return sections
+    }
+
+    private func writeConfigSections(_ sections: [String: [String]]) throws {
+        let parentDir = configPath.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+        var output = """
+        # ==============================================================================
+        # ZeroDrive Multi-Cloud Unification Engine
+        # Auto-generated by ZeroDrive Supervisor (0600 POSIX Permissions)
+        # ==============================================================================
+
+        """
+
+        let orderedKeys = ["primary_vault"] +
+            ExternalCloudProvider.allCases.map(\.sectionName) +
+            sections.keys.filter { $0 != "primary_vault" && $0 != "ZeroDriveUnified" && !ExternalCloudProvider.allCases.map(\.sectionName).contains($0) }.sorted() +
+            ["ZeroDriveUnified"]
+
+        var written = Set<String>()
+        for key in orderedKeys {
+            guard !written.contains(key), let lines = sections[key] else { continue }
+            written.insert(key)
+            output += "[\(key)]\n"
+            for line in lines {
+                output += "\(line)\n"
+            }
+            output += "\n"
+        }
+
+        try output.write(to: configPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath.path)
+    }
+}
