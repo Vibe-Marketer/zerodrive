@@ -127,10 +127,6 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
-        // Write .metadata_never_index to keep Spotlight (mdworker) from crawling remote files
-        let spotlightBlocker = mountPoint.appendingPathComponent(".metadata_never_index")
-        FileManager.default.createFile(atPath: spotlightBlocker.path, contents: nil)
-
         let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
         let readChunk = boostVideoBufferEnabled ? "32M" : "8M"
         let readChunkLimit = boostVideoBufferEnabled ? "256M" : "128M"
@@ -234,6 +230,16 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         await unmountCleanly()
         await forceCleanStaleMounts()
         await mountUnifiedDrive()
+    }
+
+    /// Opens the given folder in macOS Finder and brings the Finder window to the front
+    public func openInFinder(_ url: URL? = nil) {
+        let target = url ?? mountPoint.appendingPathComponent("Vault")
+        let folderToOpen = FileManager.default.fileExists(atPath: target.path) ? target : mountPoint
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = [folderToOpen.path]
+        try? proc.run()
     }
 
     public func healDeadMountAfterSleep() async {

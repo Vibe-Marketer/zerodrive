@@ -17,7 +17,7 @@ struct ZeroDriveApp: App {
                 .environmentObject(supervisor)
                 .environmentObject(spoolManager)
                 .environmentObject(indexer)
-                .frame(minWidth: 860, minHeight: 560)
+                .frame(minWidth: 940, minHeight: 620)
                 .onAppear {
                     lifecycleController.setStudioWindowVisible(true)
                 }
@@ -26,7 +26,7 @@ struct ZeroDriveApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 860, height: 560)
+        .defaultSize(width: 980, height: 660)
 
         // Menu Bar Extra Daemon (Always running in the background)
         MenuBarExtra("ZeroDrive", systemImage: supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill") {

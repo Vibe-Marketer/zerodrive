@@ -249,24 +249,26 @@ public final class SpoolAndGuardManager: ObservableObject {
             }
         }
 
+        // Reconcile rclone vfs/queue items with local spoolItems list (ignoring hidden system metadata files)
+        let mount = RcloneDaemonSupervisor.shared.mountPoint
+        let visibleQueueDTOs = queueDTOs.filter { dto in
+            let base = (dto.name as NSString).lastPathComponent
+            return !base.hasPrefix(".") && base != ".metadata_never_index" && base != ".DS_Store"
+        }
+
         if let vfs = vfsStats {
+            let visibleQueued = visibleQueueDTOs.filter { !$0.uploading }.count
+            let visibleUploading = visibleQueueDTOs.filter { $0.uploading }.count
             if telemetry.spoolUsedBytes != vfs.bytesUsed ||
-               telemetry.activeUploads != vfs.uploadsInProgress ||
-               telemetry.activeQueued != vfs.uploadsQueued {
-                telemetry.spoolUsedBytes = vfs.bytesUsed
-                telemetry.activeUploads = vfs.uploadsInProgress
-                telemetry.activeQueued = vfs.uploadsQueued
+               telemetry.activeUploads != visibleUploading ||
+               telemetry.activeQueued != visibleQueued {
+                telemetry.spoolUsedBytes = visibleQueueDTOs.isEmpty ? 0 : vfs.bytesUsed
+                telemetry.activeUploads = visibleUploading
+                telemetry.activeQueued = visibleQueued
             }
         }
 
-        let newIndexCount = RAMTreeIndexer.shared.indexedNodes.count
-        if telemetry.ramIndexCount != newIndexCount {
-            telemetry.ramIndexCount = newIndexCount
-        }
-
-        // Reconcile rclone vfs/queue items with local spoolItems list
-        let mount = RcloneDaemonSupervisor.shared.mountPoint
-        for dto in queueDTOs {
+        for dto in visibleQueueDTOs {
             if let idx = spoolItems.firstIndex(where: { $0.relativePath == dto.name || $0.filename == (dto.name as NSString).lastPathComponent }) {
                 spoolItems[idx].writeBackRemainingSec = max(0, Int(dto.expiry))
                 if !telemetry.isOnline {
