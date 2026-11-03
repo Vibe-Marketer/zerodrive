@@ -116,12 +116,13 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             return
         }
 
-        // Ensure [ZeroDriveUnified] exists in ~/.config/rclone/rclone.conf
+        // Ensure [ZeroDriveUnified] exists in ~/.config/rclone/rclone.conf and uses union at root with any connected clouds
         if !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() {
             if let provisioned = try? await DFYProvisioningClient.shared.provisionVault(email: "trial@zerodrive.aisimple.co", licenseKey: "TRIAL") {
                 try? MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(result: provisioned)
             }
         }
+        MultiCloudCombineBuilder.shared.ensureUnifiedUnionConfig()
 
         // Create mount directory and cache directory
         try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
@@ -240,7 +241,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     /// Opens the given folder in macOS Finder and brings the Finder window to the front
     public func openInFinder(_ url: URL? = nil) {
-        let target = url ?? mountPoint.appendingPathComponent("Vault")
+        let target = url ?? mountPoint
         let folderToOpen = FileManager.default.fileExists(atPath: target.path) ? target : mountPoint
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -414,11 +415,18 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         items.insert(newEntry, at: insertIndex)
         root["items"] = items
         if let outData = try? NSKeyedArchiver.archivedData(withRootObject: root, requiringSecureCoding: false) {
+            let k1 = Process()
+            k1.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            k1.arguments = ["-9", "sharedfilelistd"]
+            try? k1.run()
+            k1.waitUntilExit()
+
             try? outData.write(to: sflURL, options: .atomic)
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            p.arguments = ["sharedfilelistd"]
-            try? p.run()
+
+            let k2 = Process()
+            k2.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            k2.arguments = ["-9", "sharedfilelistd"]
+            try? k2.run()
         }
     }
 
@@ -437,31 +445,34 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             try? FileManager.default.removeItem(at: servicesDir.appendingPathComponent(oldSh))
         }
 
-        let vaultDir = mountPoint.appendingPathComponent("Vault").path
+        let driveDir = mountPoint.path
         let retakesDir = mountPoint.appendingPathComponent("_Retakes").path
 
         let workflows: [(bundleName: String, menuTitle: String, iconName: String, shellCommand: String)] = [
             (
                 "ZeroDrive - Move to Cloud & Free Space.workflow",
-                "ZeroDrive: Move to Cloud & Free Space",
+                "ZeroDrive: Move to ZeroDrive & Free Mac Space",
                 "NSActionTemplate",
                 """
-                mkdir -p "\(vaultDir)"
-                q=""
+                mkdir -p "\(driveDir)"
                 for f in "$@"; do
-                  mv -f "$f" "\(vaultDir)/" 2>/dev/null || cp -R "$f" "\(vaultDir)/"
+                  name="$(basename "$f")"
+                  if cp -R -X "$f" "\(driveDir)/$name" 2>/dev/null; then
+                    rm -rf "$f"
+                  fi
                 done
                 open -g "zerodrive://finder-action?cmd=refresh" 2>/dev/null || true
                 """
             ),
             (
                 "ZeroDrive - Copy to Cloud Vault.workflow",
-                "ZeroDrive: Copy to 5 TB Cloud Vault",
+                "ZeroDrive: Copy to ZeroDrive (Keep on Mac)",
                 "NSActionTemplate",
                 """
-                mkdir -p "\(vaultDir)"
+                mkdir -p "\(driveDir)"
                 for f in "$@"; do
-                  cp -R "$f" "\(vaultDir)/"
+                  name="$(basename "$f")"
+                  cp -R -X "$f" "\(driveDir)/$name"
                 done
                 open -g "zerodrive://finder-action?cmd=refresh" 2>/dev/null || true
                 """
@@ -473,7 +484,10 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 """
                 mkdir -p "\(retakesDir)"
                 for f in "$@"; do
-                  mv -f "$f" "\(retakesDir)/"
+                  name="$(basename "$f")"
+                  if cp -R -X "$f" "\(retakesDir)/$name" 2>/dev/null; then
+                    rm -rf "$f"
+                  fi
                 done
                 """
             ),
@@ -513,9 +527,22 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                         </dict>
                         <key>NSMessage</key>
                         <string>runWorkflowAsService</string>
+                        <key>NSRequiredContext</key>
+                        <dict>
+                            <key>NSApplicationIdentifier</key>
+                            <string>com.apple.finder</string>
+                        </dict>
+                        <key>NSSendTypes</key>
+                        <array>
+                            <string>NSFilenamesPboardType</string>
+                            <string>public.file-url</string>
+                        </array>
                         <key>NSSendFileTypes</key>
                         <array>
                             <string>public.item</string>
+                            <string>public.folder</string>
+                            <string>public.directory</string>
+                            <string>public.data</string>
                         </array>
                     </dict>
                 </array>
@@ -666,13 +693,44 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             try? wflow.write(to: wfDir.appendingPathComponent("document.wflow"), atomically: true, encoding: .utf8)
         }
 
+        // Enable all ZeroDrive services in ~/Library/Preferences/pbs.plist (NSServicesStatus) so they appear on folders & files in Services / Quick Actions
+        let pbsPlistURL = home.appendingPathComponent("Library/Preferences/pbs.plist")
+        var pbsRoot = (NSDictionary(contentsOf: pbsPlistURL) as? [String: Any]) ?? [:]
+        var servicesStatus = (pbsRoot["NSServicesStatus"] as? [String: Any]) ?? [:]
+        let enabledEntry: [String: Any] = [
+            "enabled_context_menu": true,
+            "enabled_services_menu": true,
+            "presentation_modes": [
+                "ContextMenu": true,
+                "ServicesMenu": true,
+                "QuickActions": true
+            ]
+        ]
+        let serviceKeys = [
+            "co.aisimple.zerodrive - ZeroDrive: Move to ZeroDrive & Free Mac Space - moveToZeroDriveService",
+            "co.aisimple.zerodrive - ZeroDrive: Copy to ZeroDrive (Keep on Mac) - copyToZeroDriveService",
+            "co.aisimple.zerodrive - ZeroDrive: Move to _Retakes Folder - moveToRetakesService",
+            "(null) - ZeroDrive: Move to ZeroDrive & Free Mac Space - runWorkflowAsService",
+            "(null) - ZeroDrive: Copy to ZeroDrive (Keep on Mac) - runWorkflowAsService",
+            "(null) - ZeroDrive: Move to _Retakes Folder - runWorkflowAsService",
+            "(null) - ZeroDrive: Free Local Cache Copy - runWorkflowAsService"
+        ]
+        for key in serviceKeys {
+            servicesStatus[key] = enabledEntry
+        }
+        pbsRoot["NSServicesStatus"] = servicesStatus
+        (pbsRoot as NSDictionary).write(to: pbsPlistURL, atomically: true)
+
         // Refresh macOS dynamic services cache + enable embedded FinderSync extension
         NSUpdateDynamicServices()
         DispatchQueue.global(qos: .utility).async {
-            let pbs = Process()
-            pbs.executableURL = URL(fileURLWithPath: "/System/Library/CoreServices/pbs")
-            pbs.arguments = ["-update"]
-            try? pbs.run()
+            for arg in ["-flush", "-update"] {
+                let pbs = Process()
+                pbs.executableURL = URL(fileURLWithPath: "/System/Library/CoreServices/pbs")
+                pbs.arguments = [arg]
+                try? pbs.run()
+                pbs.waitUntilExit()
+            }
 
             if let plugInsURL = Bundle.main.builtInPlugInsURL {
                 let appexPath = plugInsURL.appendingPathComponent("ZeroDriveFinderSync.appex").path

@@ -116,17 +116,17 @@ public final class SpoolAndGuardManager: ObservableObject {
             }
         }
 
-        let vaultURL = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("Vault")
-        try? FileManager.default.createDirectory(at: vaultURL, withIntermediateDirectories: true)
+        let driveRoot = RcloneDaemonSupervisor.shared.mountPoint
+        try? FileManager.default.createDirectory(at: driveRoot, withIntermediateDirectories: true)
 
         for url in urls {
             let size = computeSize(of: url)
-            let dest = vaultURL.appendingPathComponent(url.lastPathComponent)
+            let dest = driveRoot.appendingPathComponent(url.lastPathComponent)
             let duration = await extractMediaDuration(for: url)
 
             let item = SpoolItem(
                 filename: url.lastPathComponent,
-                relativePath: "Vault/\(url.lastPathComponent)",
+                relativePath: url.lastPathComponent,
                 sizeBytes: size,
                 status: telemetry.isOnline ? (useDirectBypass ? .uploading : .staging) : .pausedOffline,
                 writeBackRemainingSec: useDirectBypass ? 0 : 15,
@@ -145,7 +145,7 @@ public final class SpoolAndGuardManager: ObservableObject {
                     proc.arguments = [
                         subcommand,
                         url.path,
-                        "ZeroDriveUnified:Vault/\(url.lastPathComponent)",
+                        "ZeroDriveUnified:\(url.lastPathComponent)",
                         "--config=\(MultiCloudCombineBuilder.shared.configPath.path)",
                         "--inplace",
                         "--transfers=8"
@@ -205,7 +205,7 @@ public final class SpoolAndGuardManager: ObservableObject {
     }
 
     public func tagAsRetake(item: SpoolItem) async {
-        let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("Vault/_Retakes")
+        let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
         try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
         let newURL = retakesDir.appendingPathComponent(item.filename)
         if FileManager.default.fileExists(atPath: newURL.path) {
@@ -222,7 +222,7 @@ public final class SpoolAndGuardManager: ObservableObject {
 
         if let idx = spoolItems.firstIndex(where: { $0.id == item.id }) {
             spoolItems[idx].status = .retake
-            spoolItems[idx].relativePath = "Vault/_Retakes/\(item.filename)"
+            spoolItems[idx].relativePath = "_Retakes/\(item.filename)"
             spoolItems[idx].localCachePath = newURL
         }
         await RAMTreeIndexer.shared.prewarmAll()

@@ -90,6 +90,9 @@ echo "==> [4/6] Compiling embedded Finder Sync Extension (ZeroDriveFinderSync.ap
 if [ -f "Assets/Info.plist" ]; then
   cp "Assets/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 fi
+if [ -f "Assets/AppIcon.icns" ]; then
+  cp "Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+fi
 
 if [ -f "FinderSyncExtension/ZeroDriveFinderSync.swift" ]; then
   APPEX_BUNDLE="${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex"

@@ -26,58 +26,30 @@ public final class RAMTreeIndexer: ObservableObject {
         var nodes = await RcloneRCClient.shared.listCloudTree().filter { !$0.name.hasPrefix(".") }
         var seenPaths = Set(nodes.map { $0.relativePath })
 
-        // 3. Merge any locally staged files in ~/ZeroDrive/Vault so newly dropped files appear immediately
+        // 3. Merge any locally staged files in ~/ZeroDrive so newly dropped files appear immediately
         let mount = RcloneDaemonSupervisor.shared.mountPoint
-        let vaultDir = mount.appendingPathComponent("Vault")
-        if let vaultChildren = try? FileManager.default.contentsOfDirectory(
-            at: vaultDir,
+        if let rootChildren = try? FileManager.default.contentsOfDirectory(
+            at: mount,
             includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) {
-            for fileURL in vaultChildren {
+            for fileURL in rootChildren {
                 let name = fileURL.lastPathComponent
                 guard !name.hasPrefix(".") else { continue }
-                let rel = "Vault/\(name)"
-                if !seenPaths.contains(rel) {
+                if !seenPaths.contains(name) {
                     let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
                     let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
                     nodes.append(
                         CloudNode(
-                            id: rel,
+                            id: name,
                             name: name,
-                            relativePath: rel,
+                            relativePath: name,
                             sizeBytes: Int64(size),
                             isFolder: isDir,
-                            sourceCloud: "Vault"
+                            sourceCloud: "ZeroDrive"
                         )
                     )
-                    seenPaths.insert(rel)
-                }
-            }
-        }
-
-        // 4. Ensure top-level folders (e.g. Vault) are present
-        if nodes.isEmpty {
-            if let children = try? FileManager.default.contentsOfDirectory(
-                at: mount,
-                includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ) {
-                for fileURL in children {
-                    let rel = fileURL.lastPathComponent
-                    guard !rel.hasPrefix(".") else { continue }
-                    let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                    let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                    nodes.append(
-                        CloudNode(
-                            id: rel,
-                            name: fileURL.lastPathComponent,
-                            relativePath: rel,
-                            sizeBytes: Int64(size),
-                            isFolder: isDir,
-                            sourceCloud: rel
-                        )
-                    )
+                    seenPaths.insert(name)
                 }
             }
         }

@@ -41,5 +41,77 @@
             </array>
         </dict>
     </array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>ZeroDrive: Move to ZeroDrive &amp; Free Mac Space</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>moveToZeroDriveService</string>
+            <key>NSPortName</key>
+            <string>ZeroDrive</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>NSFilenamesPboardType</string>
+                <string>public.file-url</string>
+            </array>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.item</string>
+                <string>public.folder</string>
+                <string>public.directory</string>
+                <string>public.data</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>ZeroDrive: Copy to ZeroDrive (Keep on Mac)</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>copyToZeroDriveService</string>
+            <key>NSPortName</key>
+            <string>ZeroDrive</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>NSFilenamesPboardType</string>
+                <string>public.file-url</string>
+            </array>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.item</string>
+                <string>public.folder</string>
+                <string>public.directory</string>
+                <string>public.data</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>ZeroDrive: Move to _Retakes Folder</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>moveToRetakesService</string>
+            <key>NSPortName</key>
+            <string>ZeroDrive</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>NSFilenamesPboardType</string>
+                <string>public.file-url</string>
+            </array>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.item</string>
+                <string>public.folder</string>
+                <string>public.directory</string>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

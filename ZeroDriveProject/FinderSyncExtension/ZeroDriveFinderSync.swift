@@ -12,12 +12,21 @@ public final class FinderSyncExtension: FIFinderSync {
     public override init() {
         super.init()
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let watchedDirs: Set<URL> = [
+        var watchedDirs: Set<URL> = [
+            home,
             zeroDriveRoot,
+            home.appendingPathComponent("Library/CloudStorage"),
+            home.appendingPathComponent("Library/CloudStorage/FabricDrive"),
             home.appendingPathComponent("Desktop"),
             home.appendingPathComponent("Downloads"),
-            home.appendingPathComponent("Documents")
+            home.appendingPathComponent("Documents"),
+            URL(fileURLWithPath: "/Volumes")
         ]
+        if let cloudDirs = try? FileManager.default.contentsOfDirectory(at: home.appendingPathComponent("Library/CloudStorage"), includingPropertiesForKeys: nil) {
+            for dir in cloudDirs {
+                watchedDirs.insert(dir)
+            }
+        }
         FIFinderSyncController.default().directoryURLs = watchedDirs
 
         if let cloudIcon = NSImage(systemSymbolName: "checkmark.icloud.fill", accessibilityDescription: "Synced in ZeroDrive") {

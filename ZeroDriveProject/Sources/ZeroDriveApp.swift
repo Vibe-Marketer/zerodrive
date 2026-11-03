@@ -41,6 +41,10 @@ struct ZeroDriveApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register native macOS Finder Services provider (works on any folder/file including CloudStorage/Fabric Drive)
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+
         // Register IOKit pre-sleep power interceptor + wake observer
         RcloneDaemonSupervisor.shared.registerSystemPowerNotifications()
 
@@ -57,6 +61,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
+        }
+    }
+
+    // MARK: - Native macOS Finder Services (Right-Click -> Services / Quick Actions on any Folder or File)
+
+    private func extractURLs(from pboard: NSPasteboard) -> [URL] {
+        if let urls = pboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
+            return urls
+        }
+        if let paths = pboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+            return paths.map { URL(fileURLWithPath: $0) }
+        }
+        return []
+    }
+
+    @objc func moveToZeroDriveService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = extractURLs(from: pboard)
+        guard !urls.isEmpty else { return }
+        Task { @MainActor in
+            await SpoolAndGuardManager.shared.handleDroppedURLs(urls, moveAndFreeSpace: true, bypassSpool: false)
+            await RAMTreeIndexer.shared.prewarmAll()
+        }
+    }
+
+    @objc func copyToZeroDriveService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = extractURLs(from: pboard)
+        guard !urls.isEmpty else { return }
+        Task { @MainActor in
+            await SpoolAndGuardManager.shared.handleDroppedURLs(urls, moveAndFreeSpace: false, bypassSpool: false)
+            await RAMTreeIndexer.shared.prewarmAll()
+        }
+    }
+
+    @objc func moveToRetakesService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = extractURLs(from: pboard)
+        guard !urls.isEmpty else { return }
+        Task { @MainActor in
+            let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+            try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
+            for u in urls {
+                let dst = retakesDir.appendingPathComponent(u.lastPathComponent)
+                if FileManager.default.fileExists(atPath: dst.path) {
+                    try? FileManager.default.removeItem(at: dst)
+                }
+                let cp = Process()
+                cp.executableURL = URL(fileURLWithPath: "/bin/cp")
+                cp.arguments = ["-R", "-X", u.path, dst.path]
+                try? cp.run()
+                cp.waitUntilExit()
+                if cp.terminationStatus == 0 {
+                    try? FileManager.default.removeItem(at: u)
+                }
+            }
+            await RAMTreeIndexer.shared.prewarmAll()
         }
     }
 
@@ -81,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await SpoolAndGuardManager.shared.handleDroppedURLs(fileURLs, moveAndFreeSpace: false, bypassSpool: false)
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "retake":
-                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("Vault/_Retakes")
+                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
                     try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
                     for u in fileURLs {
                         let dst = retakesDir.appendingPathComponent(u.lastPathComponent)

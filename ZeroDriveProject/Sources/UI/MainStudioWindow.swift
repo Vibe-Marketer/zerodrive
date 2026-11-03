@@ -25,21 +25,31 @@ public struct MainStudioWindow: View {
     public var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 0) {
-                // App Identity Header
+                // App Identity Header (Apple Studio Titanium Drive Badge)
                 HStack(spacing: 12) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(
                                 LinearGradient(
-                                    colors: [Color.blue, Color.cyan.opacity(0.8)],
+                                    colors: [Color(white: 0.28), Color(white: 0.14)],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 )
                             )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                            )
                             .frame(width: 36, height: 36)
-                        Image(systemName: "externaldrive.fill.badge.icloud")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
+                        Image(systemName: "internaldrive.fill")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [Color.white, Color(white: 0.75)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("ZeroDrive")
@@ -81,7 +91,7 @@ public struct MainStudioWindow: View {
                             .font(.caption)
                             .bold()
                     }
-                    Text("Finder Path: ~/ZeroDrive/Vault")
+                    Text("Finder Path: ~/ZeroDrive")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -132,9 +142,9 @@ public struct MainStudioWindow: View {
                     .fill(supervisor.isMounted ? Color.green : Color.orange)
                     .frame(width: 10, height: 10)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(supervisor.isMounted ? "5 TB Cloud Drive Ready in Finder" : supervisor.statusMessage)
+                    Text(supervisor.isMounted ? "5 TB Cloud Drive + Google Drive Ready in Finder" : supervisor.statusMessage)
                         .font(.headline)
-                    Text("Location: ~/ZeroDrive/Vault • Opening cloud files uses 0 GB of your Mac hard drive")
+                    Text("Location: ~/ZeroDrive • Opening cloud files uses 0 GB of your Mac hard drive")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -220,8 +230,8 @@ public struct MainStudioWindow: View {
                         .bold()
 
                     Text(dropModeMove
-                         ? "ZeroDrive will move your files into ~/ZeroDrive/Vault and immediately free up the space on your Mac."
-                         : "ZeroDrive will copy your files into ~/ZeroDrive/Vault and keep the original files on your Mac.")
+                         ? "ZeroDrive will move your files into ~/ZeroDrive and immediately free up the space on your Mac."
+                         : "ZeroDrive will copy your files into ~/ZeroDrive and keep the original files on your Mac.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -296,7 +306,7 @@ public struct MainStudioWindow: View {
                 summaryCard(
                     title: "CLOUD DRIVE SIZE",
                     value: String(format: "%.1f TB", meta.quotaTB),
-                    subtitle: "Mounted at ~/ZeroDrive/Vault",
+                    subtitle: "Mounted at ~/ZeroDrive",
                     accent: .blue
                 )
                 summaryCard(
