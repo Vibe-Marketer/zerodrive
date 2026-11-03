@@ -107,17 +107,19 @@ public struct AutostartAndWorkflowsView: View {
                 }
 
                 // Finder Quick Actions & Repair
-                GroupBox("Finder Right-Click Shortcuts & Repair") {
+                GroupBox("Finder Sidebar Shortcut & Right-Click Menu Integration") {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Add ZeroDrive Actions to Finder Right-Click Menu").bold()
-                            Text("Adds 'Move to _Retakes', 'Free Local Cache Copy', and 'Refresh Cloud Folder' to Finder Services.")
+                            Text("Finder Extension & Right-Click Quick Actions").bold()
+                            Text("Pins ZeroDrive next to Home in the Finder Sidebar and adds 'Move to Cloud & Free Space' and 'Copy to 5 TB Cloud Vault' when you right-click any file or folder in Finder.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Install Finder Shortcuts") {
-                            installFinderQuickActions()
+                        Button("Re-Sync Finder Menu & Sidebar") {
+                            supervisor.pinToFinderSidebarIfNeeded()
+                            supervisor.installFinderWorkflowsAndEnableExtension()
+                            statusBanner = "Synced Finder Sidebar shortcut, right-click Quick Actions, and FinderSync Extension!"
                         }
                         .buttonStyle(.borderedProminent)
 

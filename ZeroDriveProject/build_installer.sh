@@ -86,9 +86,40 @@ echo "    -> Merging architectures via lipo..."
 lipo -create -output "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}" "${ARM64_BIN}" "${X86_64_BIN}"
 rm -f "${ARM64_BIN}" "${X86_64_BIN}"
 
-echo "==> [4/6] Copying Assets & generating Info.plist..."
+echo "==> [4/6] Compiling embedded Finder Sync Extension (ZeroDriveFinderSync.appex) & copying Assets..."
 if [ -f "Assets/Info.plist" ]; then
   cp "Assets/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
+fi
+
+if [ -f "FinderSyncExtension/ZeroDriveFinderSync.swift" ]; then
+  APPEX_BUNDLE="${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex"
+  mkdir -p "${APPEX_BUNDLE}/Contents/MacOS"
+  cp "FinderSyncExtension/Info.plist" "${APPEX_BUNDLE}/Contents/Info.plist"
+
+  swiftc -O \
+    -target arm64-apple-macos13.0 \
+    -parse-as-library \
+    -module-name ZeroDriveFinderSync \
+    -framework Cocoa \
+    -framework FinderSync \
+    -Xlinker -e -Xlinker _NSExtensionMain \
+    -o "${BUILD_DIR}/ZeroDriveFinderSync-arm64" \
+    FinderSyncExtension/ZeroDriveFinderSync.swift
+
+  swiftc -O \
+    -target x86_64-apple-macos13.0 \
+    -parse-as-library \
+    -module-name ZeroDriveFinderSync \
+    -framework Cocoa \
+    -framework FinderSync \
+    -Xlinker -e -Xlinker _NSExtensionMain \
+    -o "${BUILD_DIR}/ZeroDriveFinderSync-x86_64" \
+    FinderSyncExtension/ZeroDriveFinderSync.swift
+
+  lipo -create -output "${APPEX_BUNDLE}/Contents/MacOS/ZeroDriveFinderSync" \
+    "${BUILD_DIR}/ZeroDriveFinderSync-arm64" \
+    "${BUILD_DIR}/ZeroDriveFinderSync-x86_64"
+  rm -f "${BUILD_DIR}/ZeroDriveFinderSync-arm64" "${BUILD_DIR}/ZeroDriveFinderSync-x86_64"
 fi
 
 echo "==> [5/6] Code signing ZeroDrive.app with identity: ${SIGN_IDENTITY}..."
@@ -102,8 +133,15 @@ if [ "${SIGN_IDENTITY}" != "-" ]; then
   TIMESTAMP_FLAG="--timestamp"
 fi
 
+if [ -d "${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex" ]; then
+  codesign --force ${TIMESTAMP_FLAG} --options runtime \
+    --entitlements FinderSyncExtension/Entitlements.plist \
+    --sign "${SIGN_IDENTITY}" \
+    "${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex"
+fi
+
 codesign --force ${TIMESTAMP_FLAG} --options runtime ${ENTITLEMENTS_FLAG} --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}/Contents/Resources/rclone"
-codesign --force --deep ${TIMESTAMP_FLAG} --options runtime ${ENTITLEMENTS_FLAG} --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
+codesign --force ${TIMESTAMP_FLAG} --options runtime ${ENTITLEMENTS_FLAG} --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
 
 echo "==> [6/6] Generating drag-and-drop ZeroDrive-Installer.dmg..."
 DMG_TEMP_DIR="${BUILD_DIR}/dmg_staging"

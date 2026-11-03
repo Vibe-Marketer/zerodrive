@@ -10,7 +10,6 @@ struct ZeroDriveApp: App {
     @StateObject private var indexer = RAMTreeIndexer.shared
 
     var body: some Scene {
-        // Main Tangible Desktop Studio Window (860x560pt)
         WindowGroup(id: "studio") {
             MainStudioWindow()
                 .environmentObject(lifecycleController)
@@ -28,7 +27,6 @@ struct ZeroDriveApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 660)
 
-        // Menu Bar Extra Daemon (Always running in the background)
         MenuBarExtra("ZeroDrive", systemImage: supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill") {
             MenuBarPopoverView()
                 .environmentObject(lifecycleController)
@@ -46,6 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Register IOKit pre-sleep power interceptor + wake observer
         RcloneDaemonSupervisor.shared.registerSystemPowerNotifications()
 
+        // Automatically pin ~/ZeroDrive to Finder Sidebar Favorites + install Finder right-click workflows & extension
+        RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+        RcloneDaemonSupervisor.shared.installFinderWorkflowsAndEnableExtension()
+
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(handleSystemWake),
@@ -53,9 +55,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // Auto-mount on launch if a valid rclone.conf with [ZeroDriveUnified] exists
         Task {
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "zerodrive" {
+            if url.host == "open" {
+                AppLifecycleController.shared.setStudioWindowVisible(true)
+                continue
+            }
+            guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
+            let cmd = components.queryItems?.first(where: { $0.name == "cmd" })?.value ?? "move"
+            let paths = components.queryItems?.filter({ $0.name == "path" }).compactMap({ $0.value }) ?? []
+            let fileURLs = paths.map { URL(fileURLWithPath: $0) }
+            guard !fileURLs.isEmpty else { continue }
+
+            Task { @MainActor in
+                switch cmd {
+                case "move":
+                    await SpoolAndGuardManager.shared.handleDroppedURLs(fileURLs, moveAndFreeSpace: true, bypassSpool: false)
+                    await RAMTreeIndexer.shared.prewarmAll()
+                case "copy":
+                    await SpoolAndGuardManager.shared.handleDroppedURLs(fileURLs, moveAndFreeSpace: false, bypassSpool: false)
+                    await RAMTreeIndexer.shared.prewarmAll()
+                case "retake":
+                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+                    try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
+                    for u in fileURLs {
+                        try? FileManager.default.moveItem(at: u, to: retakesDir.appendingPathComponent(u.lastPathComponent))
+                    }
+                    await RAMTreeIndexer.shared.prewarmAll()
+                case "evict":
+                    let mountPath = RcloneDaemonSupervisor.shared.mountPoint.path + "/"
+                    for u in fileURLs {
+                        let rel = u.path.replacingOccurrences(of: mountPath, with: "")
+                        _ = await RcloneRCClient.shared.forgetFile(relativePath: rel)
+                    }
+                default:
+                    break
+                }
+            }
         }
     }
 

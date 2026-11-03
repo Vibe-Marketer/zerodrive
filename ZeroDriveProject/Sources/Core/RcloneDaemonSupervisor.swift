@@ -361,6 +361,330 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
     }
 
+    /// Automatically pins ~/ZeroDrive right next to Home in Finder's Sidebar Favorites
+    public func pinToFinderSidebarIfNeeded() {
+        try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sflURL = home.appendingPathComponent("Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.FavoriteItems.sfl4")
+        guard let data = try? Data(contentsOf: sflURL),
+              var root = (try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data)) as? [String: Any],
+              var items = root["items"] as? [[String: Any]] else {
+            return
+        }
+
+        let alreadyPinned = items.contains { item in
+            guard let bm = item["Bookmark"] as? Data else { return false }
+            var stale = false
+            if let url = try? URL(resolvingBookmarkData: bm, options: [.withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale) {
+                return url.path == mountPoint.path
+            }
+            return false
+        }
+        guard !alreadyPinned else { return }
+
+        guard let bm = try? mountPoint.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) else {
+            return
+        }
+        let newEntry: [String: Any] = [
+            "Bookmark": bm,
+            "CustomItemProperties": ["com.apple.LSSharedFileList.ItemIsHidden": false] as [String: Any],
+            "uuid": UUID().uuidString.uppercased(),
+            "visibility": 0
+        ]
+
+        var insertIndex = min(5, items.count)
+        for (idx, item) in items.enumerated() {
+            if let bmData = item["Bookmark"] as? Data {
+                var stale = false
+                if let u = try? URL(resolvingBookmarkData: bmData, options: [.withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale),
+                   u.path == home.path {
+                    insertIndex = idx + 1
+                    break
+                }
+            }
+        }
+
+        items.insert(newEntry, at: insertIndex)
+        root["items"] = items
+        if let outData = try? NSKeyedArchiver.archivedData(withRootObject: root, requiringSecureCoding: false) {
+            try? outData.write(to: sflURL, options: .atomic)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            p.arguments = ["sharedfilelistd"]
+            try? p.run()
+        }
+    }
+
+    /// Installs real macOS Automator .workflow Quick Actions into ~/Library/Services/ and enables the embedded FinderSync extension
+    public func installFinderWorkflowsAndEnableExtension() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let servicesDir = home.appendingPathComponent("Library/Services")
+        try? FileManager.default.createDirectory(at: servicesDir, withIntermediateDirectories: true)
+
+        // Remove legacy .sh files if present
+        for oldSh in [
+            "ZeroDrive - Move to _Retakes.sh",
+            "ZeroDrive - Evict Local Spool Copy.sh",
+            "ZeroDrive - Refresh Cloud Folder.sh"
+        ] {
+            try? FileManager.default.removeItem(at: servicesDir.appendingPathComponent(oldSh))
+        }
+
+        let vaultDir = mountPoint.appendingPathComponent("Vault").path
+        let retakesDir = mountPoint.appendingPathComponent("_Retakes").path
+
+        let workflows: [(bundleName: String, menuTitle: String, iconName: String, shellCommand: String)] = [
+            (
+                "ZeroDrive - Move to Cloud & Free Space.workflow",
+                "ZeroDrive: Move to Cloud & Free Space",
+                "NSActionTemplate",
+                """
+                mkdir -p "\(vaultDir)"
+                q=""
+                for f in "$@"; do
+                  mv -f "$f" "\(vaultDir)/" 2>/dev/null || cp -R "$f" "\(vaultDir)/"
+                done
+                open -g "zerodrive://finder-action?cmd=refresh" 2>/dev/null || true
+                """
+            ),
+            (
+                "ZeroDrive - Copy to Cloud Vault.workflow",
+                "ZeroDrive: Copy to 5 TB Cloud Vault",
+                "NSActionTemplate",
+                """
+                mkdir -p "\(vaultDir)"
+                for f in "$@"; do
+                  cp -R "$f" "\(vaultDir)/"
+                done
+                open -g "zerodrive://finder-action?cmd=refresh" 2>/dev/null || true
+                """
+            ),
+            (
+                "ZeroDrive - Move to _Retakes.workflow",
+                "ZeroDrive: Move to _Retakes Folder",
+                "NSActionTemplate",
+                """
+                mkdir -p "\(retakesDir)"
+                for f in "$@"; do
+                  mv -f "$f" "\(retakesDir)/"
+                done
+                """
+            ),
+            (
+                "ZeroDrive - Free Local Cache Copy.workflow",
+                "ZeroDrive: Free Local Cache Copy",
+                "NSActionTemplate",
+                """
+                for f in "$@"; do
+                  rel="${f#\(mountPoint.path)/}"
+                  curl -s -X POST http://127.0.0.1:55729/vfs/forget -H "Content-Type: application/json" -d "{\\"file\\": \\"$rel\\"}" >/dev/null 2>&1 || true
+                done
+                """
+            )
+        ]
+
+        for wf in workflows {
+            let wfDir = servicesDir.appendingPathComponent(wf.bundleName).appendingPathComponent("Contents")
+            try? FileManager.default.createDirectory(at: wfDir, withIntermediateDirectories: true)
+
+            let infoPlist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>NSServices</key>
+                <array>
+                    <dict>
+                        <key>NSBackgroundColorName</key>
+                        <string>background</string>
+                        <key>NSIconName</key>
+                        <string>\(wf.iconName)</string>
+                        <key>NSMenuItem</key>
+                        <dict>
+                            <key>default</key>
+                            <string>\(wf.menuTitle)</string>
+                        </dict>
+                        <key>NSMessage</key>
+                        <string>runWorkflowAsService</string>
+                        <key>NSSendFileTypes</key>
+                        <array>
+                            <string>public.item</string>
+                        </array>
+                    </dict>
+                </array>
+            </dict>
+            </plist>
+            """
+
+            let escapedCmd = wf.shellCommand
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+
+            let wflow = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>AMApplicationBuild</key>
+                <string>534</string>
+                <key>AMApplicationVersion</key>
+                <string>2.10</string>
+                <key>AMDocumentVersion</key>
+                <string>2</string>
+                <key>actions</key>
+                <array>
+                    <dict>
+                        <key>action</key>
+                        <dict>
+                            <key>AMAccepts</key>
+                            <dict>
+                                <key>Container</key>
+                                <string>List</string>
+                                <key>Optional</key>
+                                <true/>
+                                <key>Types</key>
+                                <array>
+                                    <string>com.apple.cocoa.string</string>
+                                </array>
+                            </dict>
+                            <key>AMActionVersion</key>
+                            <string>2.0.3</string>
+                            <key>AMApplication</key>
+                            <array>
+                                <string>Automator</string>
+                            </array>
+                            <key>AMParameterProperties</key>
+                            <dict>
+                                <key>COMMAND_STRING</key>
+                                <dict/>
+                                <key>CheckedForUserDefaultShell</key>
+                                <dict/>
+                                <key>inputMethod</key>
+                                <dict/>
+                                <key>shell</key>
+                                <dict/>
+                                <key>source</key>
+                                <dict/>
+                            </dict>
+                            <key>AMProvides</key>
+                            <dict>
+                                <key>Container</key>
+                                <string>List</string>
+                                <key>Types</key>
+                                <array>
+                                    <string>com.apple.cocoa.string</string>
+                                </array>
+                            </dict>
+                            <key>ActionBundlePath</key>
+                            <string>/System/Library/Automator/Run Shell Script.action</string>
+                            <key>ActionName</key>
+                            <string>Run Shell Script</string>
+                            <key>ActionParameters</key>
+                            <dict>
+                                <key>COMMAND_STRING</key>
+                                <string>\(escapedCmd)</string>
+                                <key>CheckedForUserDefaultShell</key>
+                                <true/>
+                                <key>inputMethod</key>
+                                <integer>1</integer>
+                                <key>shell</key>
+                                <string>/bin/zsh</string>
+                                <key>source</key>
+                                <string></string>
+                            </dict>
+                            <key>BundleIdentifier</key>
+                            <string>com.apple.RunShellScript</string>
+                            <key>CFBundleVersion</key>
+                            <string>2.0.3</string>
+                            <key>CanShowSelectedItemsWhenRun</key>
+                            <false/>
+                            <key>CanShowWhenRun</key>
+                            <true/>
+                            <key>Category</key>
+                            <array>
+                                <string>AMCategoryUtilities</string>
+                            </array>
+                            <key>Class Name</key>
+                            <string>RunShellScriptAction</string>
+                            <key>InputUUID</key>
+                            <string>\(UUID().uuidString.uppercased())</string>
+                            <key>OutputUUID</key>
+                            <string>\(UUID().uuidString.uppercased())</string>
+                            <key>UUID</key>
+                            <string>\(UUID().uuidString.uppercased())</string>
+                            <key>UnlocalizedApplications</key>
+                            <array>
+                                <string>Automator</string>
+                            </array>
+                        </dict>
+                        <key>isViewVisible</key>
+                        <integer>1</integer>
+                    </dict>
+                </array>
+                <key>connectors</key>
+                <dict/>
+                <key>workflowMetaData</key>
+                <dict>
+                    <key>applicationBundleIDsByPath</key>
+                    <dict/>
+                    <key>applicationPaths</key>
+                    <array/>
+                    <key>inputTypeIdentifier</key>
+                    <string>com.apple.Automator.fileSystemObject</string>
+                    <key>outputTypeIdentifier</key>
+                    <string>com.apple.Automator.nothing</string>
+                    <key>presentationMode</key>
+                    <integer>15</integer>
+                    <key>processesInput</key>
+                    <false/>
+                    <key>serviceInputTypeIdentifier</key>
+                    <string>com.apple.Automator.fileSystemObject</string>
+                    <key>serviceOutputTypeIdentifier</key>
+                    <string>com.apple.Automator.nothing</string>
+                    <key>serviceProcessesInput</key>
+                    <false/>
+                    <key>systemImageName</key>
+                    <string>\(wf.iconName)</string>
+                    <key>useAutomaticInputType</key>
+                    <false/>
+                    <key>workflowTypeIdentifier</key>
+                    <string>com.apple.Automator.servicesMenu</string>
+                </dict>
+            </dict>
+            </plist>
+            """
+
+            try? infoPlist.write(to: wfDir.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+            try? wflow.write(to: wfDir.appendingPathComponent("document.wflow"), atomically: true, encoding: .utf8)
+        }
+
+        // Refresh macOS dynamic services cache + enable embedded FinderSync extension
+        NSUpdateDynamicServices()
+        DispatchQueue.global(qos: .utility).async {
+            let pbs = Process()
+            pbs.executableURL = URL(fileURLWithPath: "/System/Library/CoreServices/pbs")
+            pbs.arguments = ["-update"]
+            try? pbs.run()
+
+            if let plugInsURL = Bundle.main.builtInPlugInsURL {
+                let appexPath = plugInsURL.appendingPathComponent("ZeroDriveFinderSync.appex").path
+                if FileManager.default.fileExists(atPath: appexPath) {
+                    let pk1 = Process()
+                    pk1.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
+                    pk1.arguments = ["-a", appexPath]
+                    try? pk1.run()
+                    pk1.waitUntilExit()
+
+                    let pk2 = Process()
+                    pk2.executableURL = URL(fileURLWithPath: "/usr/bin/pluginkit")
+                    pk2.arguments = ["-e", "use", "-i", "co.aisimple.zerodrive.FinderSync"]
+                    try? pk2.run()
+                }
+            }
+        }
+    }
+
     @discardableResult
     private func runCommand(_ executable: String, _ arguments: [String]) async -> Bool {
         return await withCheckedContinuation { continuation in
