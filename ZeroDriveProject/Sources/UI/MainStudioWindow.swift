@@ -126,8 +126,7 @@ public struct MainStudioWindow: View {
     // MARK: - Persistent Top Bar
 
     private var topActionHeader: some View {
-        let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
-        return HStack(spacing: 16) {
+        HStack(spacing: 16) {
             HStack(spacing: 10) {
                 Circle()
                     .fill(supervisor.isMounted ? Color.green : Color.orange)

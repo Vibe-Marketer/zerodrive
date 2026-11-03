@@ -161,13 +161,34 @@ public final class SpoolAndGuardManager: ObservableObject {
                             SpoolAndGuardManager.shared.telemetry.totalSpaceSavedBytes += size
                         }
                     }
+                    await RAMTreeIndexer.shared.prewarmAll()
                 }
             } else {
-                if moveAndFreeSpace {
-                    try? FileManager.default.moveItem(at: url, to: dest)
-                    telemetry.totalSpaceSavedBytes += size
-                } else {
-                    try? FileManager.default.copyItem(at: url, to: dest)
+                let itemId = item.id
+                let srcURL = url
+                let dstURL = dest
+                Task.detached(priority: .userInitiated) {
+                    if FileManager.default.fileExists(atPath: dstURL.path) {
+                        try? FileManager.default.removeItem(at: dstURL)
+                    }
+                    let cp = Process()
+                    cp.executableURL = URL(fileURLWithPath: "/bin/cp")
+                    cp.arguments = ["-R", "-X", srcURL.path, dstURL.path]
+                    try? cp.run()
+                    cp.waitUntilExit()
+                    let succeeded = (cp.terminationStatus == 0)
+                    if succeeded && moveAndFreeSpace {
+                        try? FileManager.default.removeItem(at: srcURL)
+                    }
+                    await MainActor.run {
+                        if succeeded && moveAndFreeSpace {
+                            SpoolAndGuardManager.shared.telemetry.totalSpaceSavedBytes += size
+                        }
+                        if !succeeded, let idx = SpoolAndGuardManager.shared.spoolItems.firstIndex(where: { $0.id == itemId }) {
+                            SpoolAndGuardManager.shared.spoolItems.remove(at: idx)
+                        }
+                    }
+                    await RAMTreeIndexer.shared.prewarmAll()
                 }
             }
         }
@@ -184,16 +205,27 @@ public final class SpoolAndGuardManager: ObservableObject {
     }
 
     public func tagAsRetake(item: SpoolItem) async {
-        let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+        let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("Vault/_Retakes")
         try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
         let newURL = retakesDir.appendingPathComponent(item.filename)
-        try? FileManager.default.moveItem(at: item.localCachePath, to: newURL)
+        if FileManager.default.fileExists(atPath: newURL.path) {
+            try? FileManager.default.removeItem(at: newURL)
+        }
+        let cp = Process()
+        cp.executableURL = URL(fileURLWithPath: "/bin/cp")
+        cp.arguments = ["-R", "-X", item.localCachePath.path, newURL.path]
+        try? cp.run()
+        cp.waitUntilExit()
+        if cp.terminationStatus == 0 {
+            try? FileManager.default.removeItem(at: item.localCachePath)
+        }
 
         if let idx = spoolItems.firstIndex(where: { $0.id == item.id }) {
             spoolItems[idx].status = .retake
-            spoolItems[idx].relativePath = "_Retakes/\(item.filename)"
+            spoolItems[idx].relativePath = "Vault/_Retakes/\(item.filename)"
             spoolItems[idx].localCachePath = newURL
         }
+        await RAMTreeIndexer.shared.prewarmAll()
     }
 
     public func purgeLocally(item: SpoolItem) async {
@@ -249,8 +281,14 @@ public final class SpoolAndGuardManager: ObservableObject {
             }
         }
 
-        // Reconcile rclone vfs/queue items with local spoolItems list (ignoring hidden system metadata files)
+        // Reconcile rclone vfs/queue items with local spoolItems list (ignoring & auto-cleaning AppleDouble ._* before 15s write-back)
         let mount = RcloneDaemonSupervisor.shared.mountPoint
+        for dto in queueDTOs {
+            let base = (dto.name as NSString).lastPathComponent
+            if (base.hasPrefix("._") || base == ".DS_Store") && dto.expiry < 12.0 {
+                try? FileManager.default.removeItem(at: mount.appendingPathComponent(dto.name))
+            }
+        }
         let visibleQueueDTOs = queueDTOs.filter { dto in
             let base = (dto.name as NSString).lastPathComponent
             return !base.hasPrefix(".") && base != ".metadata_never_index" && base != ".DS_Store"

@@ -23,11 +23,41 @@ public final class RAMTreeIndexer: ObservableObject {
         _ = await RcloneRCClient.shared.refreshVFSTree()
 
         // 2. Fetch full cloud tree via JSON-RPC `operations/list` with `fastList: true` (avoids slow POSIX NFS traversal)
-        var nodes = await RcloneRCClient.shared.listCloudTree()
+        var nodes = await RcloneRCClient.shared.listCloudTree().filter { !$0.name.hasPrefix(".") }
+        var seenPaths = Set(nodes.map { $0.relativePath })
 
-        // 3. Fallback to shallow top-level scan only if RPC returned empty (e.g. brand-new empty vault)
+        // 3. Merge any locally staged files in ~/ZeroDrive/Vault so newly dropped files appear immediately
+        let mount = RcloneDaemonSupervisor.shared.mountPoint
+        let vaultDir = mount.appendingPathComponent("Vault")
+        if let vaultChildren = try? FileManager.default.contentsOfDirectory(
+            at: vaultDir,
+            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for fileURL in vaultChildren {
+                let name = fileURL.lastPathComponent
+                guard !name.hasPrefix(".") else { continue }
+                let rel = "Vault/\(name)"
+                if !seenPaths.contains(rel) {
+                    let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                    let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                    nodes.append(
+                        CloudNode(
+                            id: rel,
+                            name: name,
+                            relativePath: rel,
+                            sizeBytes: Int64(size),
+                            isFolder: isDir,
+                            sourceCloud: "Vault"
+                        )
+                    )
+                    seenPaths.insert(rel)
+                }
+            }
+        }
+
+        // 4. Ensure top-level folders (e.g. Vault) are present
         if nodes.isEmpty {
-            let mount = RcloneDaemonSupervisor.shared.mountPoint
             if let children = try? FileManager.default.contentsOfDirectory(
                 at: mount,
                 includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
@@ -35,6 +65,7 @@ public final class RAMTreeIndexer: ObservableObject {
             ) {
                 for fileURL in children {
                     let rel = fileURL.lastPathComponent
+                    guard !rel.hasPrefix(".") else { continue }
                     let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
                     let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
                     nodes.append(

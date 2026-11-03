@@ -140,13 +140,14 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         process.environment = env
 
-        // Master rclone nfsmount Flags Table (Section 8.1)
+        // Master rclone serve nfs + mount_nfs -o nolocks (prevents macOS XNU open_xattrfile EPERM on NFSv3)
+        let nfsPort = 55730
         process.arguments = [
-            "nfsmount",
+            "serve",
+            "nfs",
             "ZeroDriveUnified:",
-            mountPoint.path,
             "--config=\(MultiCloudCombineBuilder.shared.configPath.path)",
-            "--volname=ZeroDrive",
+            "--addr=127.0.0.1:\(nfsPort)",
             "--vfs-cache-mode=writes",
             "--cache-dir=\(cacheDir.path)",
             "--vfs-cache-max-size=\(meta.spoolCapGB)G",
@@ -157,10 +158,6 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--buffer-size=\(bufferSize)",
             "--vfs-read-ahead=64M",
             "--dir-cache-time=9999h",
-            "--attr-timeout=24h",
-            "--allow-non-empty",
-            "--noappledouble=true",
-            "--noapplexattr=true",
             "--exclude=**/node_modules/**",
             "--exclude=**/target/**",
             "--exclude=**/.venv/**",
@@ -176,7 +173,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             try process.run()
             self.rcloneProcess = process
 
-            // Poll for JSON-RPC readiness (up to 4.5s)
+            // Poll for JSON-RPC & NFS server readiness (up to 4.5s)
             var rcReady = false
             for _ in 0..<15 {
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -186,7 +183,16 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 }
             }
 
-            self.isMounted = rcReady || process.isRunning
+            if rcReady {
+                // Attach kernel NFSv3 mount with -o nolocks so Finder, FileManager.copyItem, and xattrs work natively
+                await runCommand("/sbin/mount_nfs", [
+                    "-o", "port=\(nfsPort),mountport=\(nfsPort),nolocks,vers=3,tcp",
+                    "localhost:/",
+                    mountPoint.path
+                ])
+            }
+
+            self.isMounted = rcReady && process.isRunning
             Self.wasMountedBeforeSleep = self.isMounted
             self.isBusy = false
             self.statusMessage = self.isMounted ? "Mounted at ~/ZeroDrive" : "Mount failed — check credentials"
@@ -273,6 +279,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         await runCommand("/usr/sbin/diskutil", ["unmount", "force", mountPoint.path])
         await runCommand("/sbin/umount", ["-f", mountPoint.path])
         await runCommand("/usr/bin/pkill", ["-f", "rclone nfsmount ZeroDriveUnified:"])
+        await runCommand("/usr/bin/pkill", ["-f", "rclone serve nfs ZeroDriveUnified:"])
     }
 
     public func resolveRcloneBinary() -> URL? {

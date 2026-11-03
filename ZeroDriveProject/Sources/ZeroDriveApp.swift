@@ -81,10 +81,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await SpoolAndGuardManager.shared.handleDroppedURLs(fileURLs, moveAndFreeSpace: false, bypassSpool: false)
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "retake":
-                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("Vault/_Retakes")
                     try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
                     for u in fileURLs {
-                        try? FileManager.default.moveItem(at: u, to: retakesDir.appendingPathComponent(u.lastPathComponent))
+                        let dst = retakesDir.appendingPathComponent(u.lastPathComponent)
+                        if FileManager.default.fileExists(atPath: dst.path) {
+                            try? FileManager.default.removeItem(at: dst)
+                        }
+                        let cp = Process()
+                        cp.executableURL = URL(fileURLWithPath: "/bin/cp")
+                        cp.arguments = ["-R", "-X", u.path, dst.path]
+                        try? cp.run()
+                        cp.waitUntilExit()
+                        if cp.terminationStatus == 0 {
+                            try? FileManager.default.removeItem(at: u)
+                        }
                     }
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "evict":
