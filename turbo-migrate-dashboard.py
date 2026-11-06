@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-High-Speed Parallel ZeroDrive Direct Batch Move Engine
+High-Speed Parallel ZeroDrive Direct Batch Move & Rolling-Wave iCloud Hydration Engine
 Features:
 - Direct batch transfer via native multi-threaded rclone move (--transfers=32, --checkers=64, --fast-list).
-- Never stalls on macOS FileProvider dataless cloud placeholders (SF_DATALESS = 0x40000000 pre-filtering).
-- Live real-time stdout telemetry parsing: current filename, speed (MB/s), ETA countdown, percent, drain vs fill.
-- Direct multipart chunk upload straight to ZeroDrive Vault with zero local SSD spooling.
+- Smart Cloud Handling:
+  * FabricDrive: Pre-filters SF_DATALESS ghost stubs that were already migrated.
+  * iCloud / Mac Folders: Rolling-Wave Hydrate & Move! Moves already-downloaded files immediately to free
+    Mac SSD space, while triggering iCloud downloads in safe 8 GB waves so 300+ GB iCloud folders can be
+    migrated completely without ever filling up a 100 GB Mac SSD or leaving partial moves behind.
+- Live real-time stdout & JSON telemetry parsing: current filename, speed (MB/s), ETA countdown, percent.
 - Auto-prunes empty source directories upon file migration.
-- Updates ~/.config/rclone/migration-telemetry.json and ~/.config/rclone/migration-ledger.json.
-- Invalidates and refreshes NFS VFS cache for instant Finder visibility.
 """
 
 import os
@@ -33,7 +34,8 @@ if not os.path.exists(RCLONE_BIN):
 RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
 VAULT_PREFIX = "primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f"
 
-SOURCE_PREFIX = "Fabric" if "FabricDrive" in SOURCE_INPUT else "MacBook"
+IS_FABRIC = "FabricDrive" in SOURCE_INPUT
+SOURCE_PREFIX = "Fabric" if IS_FABRIC else ("iCloud" if ("Mobile Documents" in SOURCE_INPUT or "/Desktop/" in SOURCE_INPUT or "/Documents/" in SOURCE_INPUT) else "MacBook")
 
 if DEST_SUBFOLDER:
     DEST_BASE = f"{VAULT_PREFIX}/{DEST_SUBFOLDER}"
@@ -48,6 +50,11 @@ else:
 TELEMETRY_PATH = os.path.expanduser("~/.config/rclone/migration-telemetry.json")
 LEDGER_PATH = os.path.expanduser("~/.config/rclone/migration-ledger.json")
 STATS_PATH = os.path.expanduser("~/.config/rclone/zerodrive-stats.json")
+
+SF_DATALESS = 0x40000000
+WAVE_TARGET_BYTES = 8 * 1024 * 1024 * 1024  # 8 GB per hydration wave
+MIN_BATCH_BYTES = 250 * 1024 * 1024         # Move as soon as 250 MB is downloaded
+MIN_BATCH_FILES = 100                       # Or as soon as 100 files are downloaded
 
 def format_bytes(b):
     if b < 1024:
@@ -129,15 +136,17 @@ def clean_empty_directories(path):
         for d in dirs:
             dir_path = os.path.join(root, d)
             try:
-                if not os.listdir(dir_path):
+                entries = [x for x in os.listdir(dir_path) if x != ".DS_Store"]
+                if not entries:
+                    ds = os.path.join(dir_path, ".DS_Store")
+                    if os.path.exists(ds):
+                        try:
+                            os.remove(ds)
+                        except Exception:
+                            pass
                     os.rmdir(dir_path)
             except Exception:
                 pass
-    try:
-        if not os.listdir(path):
-            os.rmdir(path)
-    except Exception:
-        pass
 
 def refresh_vfs_mount():
     try:
@@ -149,59 +158,232 @@ def refresh_vfs_mount():
     except Exception:
         pass
 
+def scan_directory_state(source_dir):
+    """
+    Returns (ready_files, ready_bytes, cloud_files, cloud_bytes).
+    A file is 'ready' ONLY when SF_DATALESS is 0 AND its physical blocks are present on disk.
+    """
+    ready_files = []
+    ready_bytes = 0
+    cloud_files = []
+    cloud_bytes = 0
+
+    for root, dirs, files in os.walk(source_dir):
+        for f in files:
+            if f.startswith(".") or f == ".DS_Store":
+                continue
+            abs_p = os.path.join(root, f)
+            rel_p = os.path.relpath(abs_p, source_dir)
+            try:
+                st = os.stat(abs_p, follow_symlinks=False)
+                sz = st.st_size
+                is_dataless = bool(getattr(st, "st_flags", 0) & SF_DATALESS)
+                # Also verify physical disk blocks for files > 4KB so we never touch a partial file
+                is_incomplete = (sz > 4096 and (st.st_blocks * 512) < sz)
+                if is_dataless or is_incomplete:
+                    cloud_files.append((abs_p, rel_p, sz))
+                    cloud_bytes += sz
+                else:
+                    ready_files.append((abs_p, rel_p, sz))
+                    ready_bytes += sz
+            except Exception:
+                continue
+
+    return ready_files, ready_bytes, cloud_files, cloud_bytes
+
+def trigger_icloud_wave_download(cloud_files, requested_set):
+    """
+    Requests iCloud (bird) to download up to WAVE_TARGET_BYTES (8 GB) or 500 files
+    using macOS brctl download and FileManager.startDownloadingUbiquitousItem.
+    """
+    wave_paths = []
+    wave_bytes = 0
+    for abs_p, _, sz in cloud_files:
+        if abs_p in requested_set:
+            continue
+        wave_paths.append(abs_p)
+        requested_set.add(abs_p)
+        wave_bytes += sz
+        if wave_bytes >= WAVE_TARGET_BYTES or len(wave_paths) >= 500:
+            break
+
+    if not wave_paths:
+        # Re-request top 200 remaining cloud files if all were previously requested
+        for abs_p, _, sz in cloud_files[:200]:
+            wave_paths.append(abs_p)
+
+    if not wave_paths:
+        return 0
+
+    # Batch call brctl download in chunks of 100 paths
+    for i in range(0, len(wave_paths), 100):
+        chunk = wave_paths[i:i+100]
+        try:
+            subprocess.Popen(["/usr/bin/brctl", "download"] + chunk,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    return len(wave_paths)
+
+def run_rclone_batch_move(file_list, wave_bytes, cumulative_moved_files, cumulative_moved_bytes, grand_total_files, grand_total_bytes, initial_free, wave_label=""):
+    batch_fd, batch_path = tempfile.mkstemp(prefix=f"zerodrive-batch-{DISPLAY_NAME}-", suffix=".txt")
+    with os.fdopen(batch_fd, "w") as bf:
+        for _, rel_p, _ in file_list:
+            bf.write(f"{rel_p}\n")
+
+    cmd = [
+        RCLONE_BIN, "move", SOURCE_INPUT, DEST_BASE,
+        f"--config={RCLONE_CONF}",
+        "--files-from", batch_path,
+        "--size-only",
+        "--update",
+        "--transfers=24",
+        "--checkers=48",
+        "--fast-list",
+        "--s3-upload-cutoff=32M",
+        "--s3-chunk-size=16M",
+        "--s3-upload-concurrency=4",
+        "--delete-empty-src-dirs",
+        "--stats=500ms",
+        "--stats-log-level=NOTICE",
+        "--use-json-log"
+    ]
+
+    last_ui_write = 0.0
+    wave_moved_bytes = 0
+    wave_moved_files = 0
+    current_active_file = ""
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if "stats" in data:
+                    st = data["stats"]
+                    moved_b = st.get("bytes", 0)
+                    moved_f = st.get("transfers", 0)
+                    speed_bps = st.get("speed", 0.0) or 0.0
+                    speed_mbps = speed_bps / (1024 * 1024)
+                    eta_sec = st.get("eta") or 0
+
+                    wave_moved_bytes = moved_b
+                    wave_moved_files = moved_f
+
+                    transferring = st.get("transferring", [])
+                    if transferring:
+                        current_active_file = transferring[0].get("name", "")
+
+                    tot_moved_b = cumulative_moved_bytes + moved_b
+                    tot_moved_f = cumulative_moved_files + moved_f
+                    total_b = max(grand_total_bytes, tot_moved_b)
+                    total_f = max(grand_total_files, tot_moved_f)
+
+                    pct = (tot_moved_b / total_b * 100.0) if total_b > 0 else (tot_moved_f / total_f * 100.0 if total_f > 0 else 0.0)
+                    rem_b = max(0, total_b - tot_moved_b)
+
+                    now = time.time()
+                    if now - last_ui_write >= 0.25:
+                        last_ui_write = now
+                        cur_free = shutil.disk_usage("/Users/Naegele").free
+                        delta_free = cur_free - initial_free
+
+                        prefix_msg = f"{wave_label} • " if wave_label else ""
+                        payload = {
+                            "spaceName": DISPLAY_NAME,
+                            "isRunning": True,
+                            "isComplete": False,
+                            "speedMBps": round(speed_mbps, 1),
+                            "percent": round(min(99.9, pct), 1),
+                            "movedFiles": tot_moved_f,
+                            "totalFiles": total_f,
+                            "movedBytes": tot_moved_b,
+                            "totalBytes": total_b,
+                            "remainingBytes": rem_b,
+                            "etaSeconds": int(eta_sec),
+                            "freeDiskBytes": cur_free,
+                            "diskDeltaBytes": delta_free,
+                            "activeWorkers": 24,
+                            "statusMessage": f"{prefix_msg}Moved {tot_moved_f}/{total_f} files ({pct:.1f}%) • {format_bytes(tot_moved_b)} landed",
+                            "currentFile": os.path.basename(current_active_file) if current_active_file else "",
+                            "sourceLocation": f"{SOURCE_PREFIX}: {DISPLAY_NAME}",
+                            "destLocation": f"My Drive/{DISPLAY_NAME}"
+                        }
+                        write_telemetry(payload)
+
+                        bar_len = 25
+                        filled = int(bar_len * (pct / 100.0))
+                        bar = "█" * min(bar_len, filled) + "░" * max(0, bar_len - filled)
+                        eta_str = f"{int(eta_sec)//60}m {int(eta_sec)%60}s" if eta_sec > 0 else "..."
+                        sys.stdout.write(
+                            f"\r\033[K[{DISPLAY_NAME}] |{bar}| {pct:5.1f}% | "
+                            f"⚡ {speed_mbps:5.1f} MB/s | "
+                            f"⏳ ETA: {eta_str} | "
+                            f"📦 {tot_moved_f}/{total_f} | "
+                            f"File: {os.path.basename(current_active_file)[:28]}"
+                        )
+                        sys.stdout.flush()
+            except Exception:
+                pass
+
+        proc.wait()
+    finally:
+        try:
+            if os.path.exists(batch_path):
+                os.remove(batch_path)
+        except Exception:
+            pass
+
+    actual_b = wave_moved_bytes if wave_moved_bytes > 0 else wave_bytes
+    actual_f = wave_moved_files if wave_moved_files > 0 else len(file_list)
+    return actual_f, actual_b
+
 def main():
     print(f"\n==================================================================", flush=True)
     print(f" ZERO-PRESSURE TURBO BATCH MOVE: [{DISPLAY_NAME}]", flush=True)
-    print(f" Source:      {SOURCE_INPUT}", flush=True)
+    print(f" Source:      {SOURCE_INPUT} ({SOURCE_PREFIX})", flush=True)
     print(f" Destination: {DEST_BASE}", flush=True)
-    print(f" Concurrency: 32 parallel HTTP/2 streams", flush=True)
+    print(f" Mode:        {'Fabric Ghost Filter' if IS_FABRIC else 'Rolling-Wave iCloud Hydrate & Move'}", flush=True)
     print(f"==================================================================\n", flush=True)
 
-    initial_free = shutil.disk_usage("/Users/Naegele").free
-    SF_DATALESS = 0x40000000
-    file_list = []
-    tot_bytes = 0
-    dataless_count = 0
-
-    is_single_file = os.path.isfile(SOURCE_INPUT)
-
-    if is_single_file:
-        try:
-            st = os.stat(SOURCE_INPUT)
-            if st.st_flags & SF_DATALESS:
-                print(f"Notice: '{SOURCE_INPUT}' is a dataless cloud placeholder. Skipping.")
-            else:
-                file_list.append((SOURCE_INPUT, os.path.basename(SOURCE_INPUT), st.st_size))
-                tot_bytes = st.st_size
-        except Exception as e:
-            print(f"Error accessing file: {e}")
-            sys.exit(1)
-    elif os.path.isdir(SOURCE_INPUT):
-        print("Scanning local files (pre-filtering dataless placeholders)...", end="", flush=True)
-        for root, dirs, files in os.walk(SOURCE_INPUT):
-            for f in files:
-                if f.startswith(".") or f == ".DS_Store":
-                    continue
-                abs_p = os.path.join(root, f)
-                rel_p = os.path.relpath(abs_p, SOURCE_INPUT)
-                try:
-                    st = os.stat(abs_p)
-                    if st.st_flags & SF_DATALESS:
-                        dataless_count += 1
-                        continue
-                    sz = st.st_size
-                    file_list.append((abs_p, rel_p, sz))
-                    tot_bytes += sz
-                except Exception:
-                    continue
-        print(f" Done! Found {len(file_list)} local files ({format_bytes(tot_bytes)})" + 
-              (f" [Skipped {dataless_count} dataless placeholders]" if dataless_count > 0 else "") + ".\n", flush=True)
-    else:
+    if not os.path.exists(SOURCE_INPUT):
         print(f"Error: Source '{SOURCE_INPUT}' does not exist.")
         sys.exit(1)
 
-    if not file_list:
-        print(f"Notice: No local files found to move in {DISPLAY_NAME} (already migrated or cloud-only).")
+    initial_free = shutil.disk_usage("/Users/Naegele").free
+    start_time = time.time()
+
+    if os.path.isfile(SOURCE_INPUT):
+        st = os.stat(SOURCE_INPUT)
+        sz = st.st_size
+        cmd = [
+            RCLONE_BIN, "moveto", SOURCE_INPUT, f"{DEST_BASE}/{os.path.basename(SOURCE_INPUT)}",
+            f"--config={RCLONE_CONF}", "--size-only", "--update"
+        ]
+        subprocess.run(cmd)
+        update_cached_vault_stats(sz)
+        update_migration_ledger(DISPLAY_NAME, 1, sz)
+        refresh_vfs_mount()
+        return
+
+    # Initial scan
+    ready_files, ready_bytes, cloud_files, cloud_bytes = scan_directory_state(SOURCE_INPUT)
+
+    if IS_FABRIC:
+        grand_total_files = len(ready_files)
+        grand_total_bytes = ready_bytes
+    else:
+        grand_total_files = len(ready_files) + len(cloud_files)
+        grand_total_bytes = ready_bytes + cloud_bytes
+
+    print(f"Initial Scan: {len(ready_files)} local files ({format_bytes(ready_bytes)}) ready, "
+          f"{len(cloud_files)} cloud-only files ({format_bytes(cloud_bytes)}).\n", flush=True)
+
+    if grand_total_files == 0:
         cur_free = shutil.disk_usage("/Users/Naegele").free
         payload = {
             "spaceName": DISPLAY_NAME,
@@ -218,7 +400,7 @@ def main():
             "freeDiskBytes": cur_free,
             "diskDeltaBytes": cur_free - initial_free,
             "activeWorkers": 0,
-            "statusMessage": f"✓ {DISPLAY_NAME} has 0 local files (all files already in cloud).",
+            "statusMessage": f"✓ {DISPLAY_NAME} has 0 files remaining to move.",
             "currentFile": "",
             "sourceLocation": f"{SOURCE_PREFIX}: {DISPLAY_NAME}",
             "destLocation": f"My Drive/{DISPLAY_NAME}"
@@ -228,179 +410,107 @@ def main():
         refresh_vfs_mount()
         return
 
-    # Write batch file list
-    batch_fd, batch_path = tempfile.mkstemp(prefix=f"zerodrive-batch-{DISPLAY_NAME}-", suffix=".txt")
-    with os.fdopen(batch_fd, "w") as bf:
-        for _, rel_p, _ in file_list:
-            bf.write(f"{rel_p}\n")
+    cumulative_moved_files = 0
+    cumulative_moved_bytes = 0
+    requested_cloud_paths = set()
+    wave_num = 0
 
-    # Initial telemetry announcement
-    payload = {
-        "spaceName": DISPLAY_NAME,
-        "isRunning": True,
-        "isComplete": False,
-        "speedMBps": 0.0,
-        "percent": 0.0,
-        "movedFiles": 0,
-        "totalFiles": len(file_list),
-        "movedBytes": 0,
-        "totalBytes": tot_bytes,
-        "remainingBytes": tot_bytes,
-        "etaSeconds": 0,
-        "freeDiskBytes": initial_free,
-        "diskDeltaBytes": 0,
-        "activeWorkers": 32,
-        "statusMessage": f"Starting 32-stream turbo move for {len(file_list)} files...",
-        "currentFile": file_list[0][1] if file_list else "",
-        "sourceLocation": f"{SOURCE_PREFIX}: {DISPLAY_NAME}",
-        "destLocation": f"My Drive/{DISPLAY_NAME}"
-    }
-    write_telemetry(payload)
+    while True:
+        wave_num += 1
+        ready_files, ready_bytes, cloud_files, cloud_bytes = scan_directory_state(SOURCE_INPUT)
 
-    # Launch native high-performance rclone move with automatic de-duplication
-    if is_single_file:
-        cmd = [
-            RCLONE_BIN, "moveto", SOURCE_INPUT, f"{DEST_BASE}/{os.path.basename(SOURCE_INPUT)}",
-            f"--config={RCLONE_CONF}",
-            "--size-only",
-            "--update",
-            "--s3-upload-cutoff=32M",
-            "--s3-chunk-size=16M",
-            "--s3-upload-concurrency=4",
-            "--stats=500ms",
-            "--stats-log-level=NOTICE",
-            "--use-json-log"
-        ]
-    else:
-        cmd = [
-            RCLONE_BIN, "move", SOURCE_INPUT, DEST_BASE,
-            f"--config={RCLONE_CONF}",
-            "--files-from", batch_path,
-            "--size-only",
-            "--update",
-            "--transfers=32",
-            "--checkers=64",
-            "--fast-list",
-            "--s3-upload-cutoff=32M",
-            "--s3-chunk-size=16M",
-            "--s3-upload-concurrency=4",
-            "--delete-empty-src-dirs",
-            "--stats=500ms",
-            "--stats-log-level=NOTICE",
-            "--use-json-log"
-        ]
+        # If non-Fabric and cloud files exist, trigger background hydration for the next wave
+        if not IS_FABRIC and cloud_files:
+            newly_req = trigger_icloud_wave_download(cloud_files, requested_cloud_paths)
+            if newly_req > 0:
+                print(f"\n[Wave {wave_num}] Triggered iCloud download for {newly_req} cloud files (Remaining in iCloud: {len(cloud_files)} files / {format_bytes(cloud_bytes)})", flush=True)
 
-    start_time = time.time()
-    last_ui_write = 0.0
-    final_moved_bytes = 0
-    final_moved_files = 0
-    current_active_file = ""
+        # Move all currently downloaded (ready) files immediately to free up local Mac SSD space!
+        if ready_files:
+            wave_label = f"Wave {wave_num} ({len(cloud_files)} in iCloud)" if (not IS_FABRIC and cloud_files) else ""
+            print(f"\n[Wave {wave_num}] Moving {len(ready_files)} downloaded files ({format_bytes(ready_bytes)}) to ZeroDrive...", flush=True)
+            moved_f, moved_b = run_rclone_batch_move(
+                ready_files,
+                ready_bytes,
+                cumulative_moved_files,
+                cumulative_moved_bytes,
+                grand_total_files,
+                grand_total_bytes,
+                initial_free,
+                wave_label=wave_label
+            )
+            cumulative_moved_files += moved_f
+            cumulative_moved_bytes += moved_b
+            clean_empty_directories(SOURCE_INPUT)
+            update_cached_vault_stats(moved_b)
+            update_migration_ledger(DISPLAY_NAME, moved_f, moved_b)
+            refresh_vfs_mount()
 
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        for raw_line in proc.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                if "stats" in data:
-                    st = data["stats"]
-                    moved_b = st.get("bytes", 0)
-                    total_b = max(tot_bytes, st.get("totalBytes", tot_bytes))
-                    moved_f = st.get("transfers", 0)
-                    total_f = max(len(file_list), st.get("totalTransfers", len(file_list)))
-                    speed_bps = st.get("speed", 0.0) or 0.0
-                    speed_mbps = speed_bps / (1024 * 1024)
-                    eta_sec = st.get("eta") or 0
+        # Re-scan after move
+        ready_files, ready_bytes, cloud_files, cloud_bytes = scan_directory_state(SOURCE_INPUT)
 
-                    final_moved_bytes = moved_b
-                    final_moved_files = moved_f
+        if IS_FABRIC or (not ready_files and not cloud_files):
+            break
 
-                    transferring = st.get("transferring", [])
-                    if transferring:
-                        current_active_file = transferring[0].get("name", "")
+        # If we already have another ready batch that finished downloading during the move, loop immediately!
+        if ready_bytes >= MIN_BATCH_BYTES or len(ready_files) >= MIN_BATCH_FILES:
+            continue
 
-                    pct = (moved_b / total_b * 100) if total_b > 0 else (moved_f / total_f * 100 if total_f > 0 else 0)
-                    rem_b = max(0, total_b - moved_b)
+        # Otherwise, wait & monitor while iCloud downloads the next wave
+        wait_start = time.time()
+        while True:
+            time.sleep(2.0)
+            ready_files, ready_bytes, cloud_files, cloud_bytes = scan_directory_state(SOURCE_INPUT)
+            cur_free = shutil.disk_usage("/Users/Naegele").free
+            delta_free = cur_free - initial_free
+            tot_moved_b = cumulative_moved_bytes
+            tot_moved_f = cumulative_moved_files
+            pct = (tot_moved_b / grand_total_bytes * 100.0) if grand_total_bytes > 0 else 0.0
 
-                    now = time.time()
-                    if now - last_ui_write >= 0.25:
-                        last_ui_write = now
-                        cur_free = shutil.disk_usage("/Users/Naegele").free
-                        delta_free = cur_free - initial_free
-                        
-                        payload = {
-                            "spaceName": DISPLAY_NAME,
-                            "isRunning": True,
-                            "isComplete": False,
-                            "speedMBps": round(speed_mbps, 1),
-                            "percent": round(pct, 1),
-                            "movedFiles": moved_f,
-                            "totalFiles": total_f,
-                            "movedBytes": moved_b,
-                            "totalBytes": total_b,
-                            "remainingBytes": rem_b,
-                            "etaSeconds": int(eta_sec),
-                            "freeDiskBytes": cur_free,
-                            "diskDeltaBytes": delta_free,
-                            "activeWorkers": 32,
-                            "statusMessage": f"Moved {moved_f}/{total_f} files ({pct:.1f}%) • {format_bytes(moved_b)} landed",
-                            "currentFile": os.path.basename(current_active_file) if current_active_file else "",
-                            "sourceLocation": f"{SOURCE_PREFIX}: {DISPLAY_NAME}",
-                            "destLocation": f"My Drive/{DISPLAY_NAME}"
-                        }
-                        write_telemetry(payload)
+            status_msg = (
+                f"Downloading from iCloud: {len(ready_files)} files ({format_bytes(ready_bytes)}) ready to move • "
+                f"{len(cloud_files)} files ({format_bytes(cloud_bytes)}) remaining in iCloud"
+            )
+            payload = {
+                "spaceName": DISPLAY_NAME,
+                "isRunning": True,
+                "isComplete": False,
+                "speedMBps": 0.0,
+                "percent": round(min(99.9, pct), 1),
+                "movedFiles": tot_moved_f,
+                "totalFiles": grand_total_files,
+                "movedBytes": tot_moved_b,
+                "totalBytes": grand_total_bytes,
+                "remainingBytes": cloud_bytes + ready_bytes,
+                "etaSeconds": 0,
+                "freeDiskBytes": cur_free,
+                "diskDeltaBytes": delta_free,
+                "activeWorkers": 24,
+                "statusMessage": status_msg,
+                "currentFile": cloud_files[0][1] if cloud_files else "",
+                "sourceLocation": f"{SOURCE_PREFIX}: {DISPLAY_NAME}",
+                "destLocation": f"My Drive/{DISPLAY_NAME}"
+            }
+            write_telemetry(payload)
+            sys.stdout.write(f"\r\033[K⏳ {status_msg}")
+            sys.stdout.flush()
 
-                        # Print dynamic terminal status bar
-                        bar_len = 25
-                        filled = int(bar_len * (pct / 100.0))
-                        bar = "█" * min(bar_len, filled) + "░" * max(0, bar_len - filled)
-                        eta_str = f"{int(eta_sec)//60}m {int(eta_sec)%60}s" if eta_sec > 0 else "..."
-                        sys.stdout.write(
-                            f"\r\033[K[{DISPLAY_NAME}] |{bar}| {pct:5.1f}% | "
-                            f"⚡ {speed_mbps:5.1f} MB/s | "
-                            f"⏳ ETA: {eta_str} | "
-                            f"📦 {moved_f}/{total_f} | "
-                            f"File: {os.path.basename(current_active_file)[:28]}"
-                        )
-                        sys.stdout.flush()
-            except Exception:
-                pass
-
-        proc.wait()
-    finally:
-        try:
-            if os.path.exists(batch_path):
-                os.remove(batch_path)
-        except Exception:
-            pass
+            # Break out to move as soon as a healthy batch is downloaded or 12s elapsed with ready files
+            if not cloud_files:
+                break
+            if ready_bytes >= MIN_BATCH_BYTES or len(ready_files) >= MIN_BATCH_FILES:
+                break
+            if ready_files and (time.time() - wait_start) >= 12.0:
+                break
+            # Re-trigger iCloud download every 30s if waiting
+            if (time.time() - wait_start) >= 30.0:
+                trigger_icloud_wave_download(cloud_files, requested_cloud_paths)
+                wait_start = time.time()
 
     elapsed = max(0.5, time.time() - start_time)
-    avg_speed = (tot_bytes / (1024 * 1024)) / elapsed
-
-    if os.path.isdir(SOURCE_INPUT):
-        clean_empty_directories(SOURCE_INPUT)
-
+    avg_speed = (cumulative_moved_bytes / (1024 * 1024)) / elapsed
     cur_free = shutil.disk_usage("/Users/Naegele").free
     delta_free = cur_free - initial_free
-    actual_moved_bytes = final_moved_bytes if final_moved_bytes > 0 else tot_bytes
-    actual_moved_files = final_moved_files if final_moved_files > 0 else len(file_list)
-
-    # Automatic Remote Deduplication Sweep (ensures zero duplicate objects in vault)
-    try:
-        subprocess.run([
-            RCLONE_BIN, "dedupe", DEST_BASE,
-            f"--config={RCLONE_CONF}",
-            "--dedupe-mode=newest",
-            "--fast-list"
-        ], capture_output=True, timeout=20)
-    except Exception:
-        pass
-
-    update_cached_vault_stats(actual_moved_bytes)
-    update_migration_ledger(DISPLAY_NAME, actual_moved_files, actual_moved_bytes)
-    refresh_vfs_mount()
 
     final_payload = {
         "spaceName": DISPLAY_NAME,
@@ -408,16 +518,16 @@ def main():
         "isComplete": True,
         "speedMBps": round(avg_speed, 1),
         "percent": 100.0,
-        "movedFiles": actual_moved_files,
-        "totalFiles": actual_moved_files,
-        "movedBytes": actual_moved_bytes,
-        "totalBytes": actual_moved_bytes,
+        "movedFiles": cumulative_moved_files,
+        "totalFiles": cumulative_moved_files,
+        "movedBytes": cumulative_moved_bytes,
+        "totalBytes": cumulative_moved_bytes,
         "remainingBytes": 0,
         "etaSeconds": 0,
         "freeDiskBytes": cur_free,
         "diskDeltaBytes": delta_free,
         "activeWorkers": 0,
-        "statusMessage": f"✓ Finished {DISPLAY_NAME} ({format_bytes(actual_moved_bytes)}) in {elapsed:.1f}s!",
+        "statusMessage": f"✓ Finished {DISPLAY_NAME} ({format_bytes(cumulative_moved_bytes)}) in {elapsed:.1f}s!",
         "currentFile": "",
         "sourceLocation": f"{SOURCE_PREFIX}: {DISPLAY_NAME}",
         "destLocation": f"My Drive/{DISPLAY_NAME}"
@@ -426,8 +536,8 @@ def main():
 
     print(f"\n\n==================================================================", flush=True)
     print(f"✓ FINISHED [{DISPLAY_NAME}] IN {elapsed:.1f} SECONDS!", flush=True)
-    print(f"  Files Moved:   {actual_moved_files}/{len(file_list)}", flush=True)
-    print(f"  Volume Moved:  {format_bytes(actual_moved_bytes)}", flush=True)
+    print(f"  Files Moved:   {cumulative_moved_files}", flush=True)
+    print(f"  Volume Moved:  {format_bytes(cumulative_moved_bytes)}", flush=True)
     print(f"  Average Speed: {avg_speed:.1f} MB/s", flush=True)
     print(f"  Mac Disk Free: {format_bytes(cur_free)} (+{format_bytes(max(0, delta_free))})", flush=True)
     print(f"==================================================================\n", flush=True)
