@@ -342,24 +342,25 @@ public struct MainStudioWindow: View {
 
             Section("Connect Other Cloud Storage") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Connect Dropbox, OneDrive, Box, or external drives to move files directly into your ZeroDrive Vault without using local disk space.")
+                    Text("Choose any local or cloud folder to stage for transfer into your ZeroDrive Vault.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     HStack(spacing: 10) {
                         Button {
                             let panel = NSOpenPanel()
-                            panel.title = "Select Cloud Storage or Folder to Connect"
+                            panel.title = "Select Folder to Stage for Transfer"
+                            panel.prompt = "Stage Folder"
                             panel.canChooseFiles = false
                             panel.canChooseDirectories = true
                             panel.allowsMultipleSelection = false
                             panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/CloudStorage")
                             if panel.runModal() == .OK, let url = panel.url {
-                                TurboMigrationManager.shared.startDirectMove(urls: [url])
+                                TurboMigrationManager.shared.stageURLs([url])
                                 selectedTab = 0
                             }
                         } label: {
-                            Label("Connect Cloud Storage Folder…", systemImage: "plus.circle")
+                            Label("Stage Folder for Transfer…", systemImage: "plus.circle")
                         }
                         .controlSize(.small)
 
