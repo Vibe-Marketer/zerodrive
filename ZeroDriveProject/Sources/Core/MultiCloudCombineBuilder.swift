@@ -22,6 +22,9 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         public var spoolCapGB: Int
         public var minFreeSpaceGB: Int
         public var includeConfigDotFiles: Bool
+        public var uploadDevConfigs: Bool     // .git, .github, .claude, etc.
+        public var uploadAppWorkspaces: Bool  // .obsidian, .vscode, .cursor, etc.
+        public var uploadSecretEnvFiles: Bool // .env, .env.*, credentials, etc.
 
         public init(
             mode: StorageMode,
@@ -31,7 +34,10 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             quotaTB: Double,
             spoolCapGB: Int,
             minFreeSpaceGB: Int = 15,
-            includeConfigDotFiles: Bool = true
+            includeConfigDotFiles: Bool = true,
+            uploadDevConfigs: Bool = true,
+            uploadAppWorkspaces: Bool = true,
+            uploadSecretEnvFiles: Bool = false
         ) {
             self.mode = mode
             self.preset = preset
@@ -41,6 +47,9 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             self.spoolCapGB = spoolCapGB
             self.minFreeSpaceGB = minFreeSpaceGB
             self.includeConfigDotFiles = includeConfigDotFiles
+            self.uploadDevConfigs = uploadDevConfigs
+            self.uploadAppWorkspaces = uploadAppWorkspaces
+            self.uploadSecretEnvFiles = uploadSecretEnvFiles
         }
     }
 
@@ -62,7 +71,10 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             quotaTB: 5.0,
             spoolCapGB: 50,
             minFreeSpaceGB: 15,
-            includeConfigDotFiles: true
+            includeConfigDotFiles: true,
+            uploadDevConfigs: true,
+            uploadAppWorkspaces: true,
+            uploadSecretEnvFiles: false
         )
     }
 

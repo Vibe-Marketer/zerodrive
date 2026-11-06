@@ -93,14 +93,39 @@ public struct AutostartAndWorkflowsView: View {
                     Text("40 GB").tag(40)
                 }
 
-                Toggle("Upload dot-files & user config (.obsidian, .env)", isOn: Binding(
-                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().includeConfigDotFiles },
+            }
+
+            Section("Dot-Files & Privacy Controls") {
+                Toggle("Include Notes & Workspaces (.obsidian, .vscode, .cursor)", isOn: Binding(
+                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().uploadAppWorkspaces },
                     set: { newVal in
                         var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
-                        m.includeConfigDotFiles = newVal
+                        m.uploadAppWorkspaces = newVal
                         MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
                     }
                 ))
+
+                Toggle("Include Developer Version Control (.git, .github, .claude)", isOn: Binding(
+                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().uploadDevConfigs },
+                    set: { newVal in
+                        var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                        m.uploadDevConfigs = newVal
+                        MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
+                    }
+                ))
+
+                Toggle("Include Secret & Environment Files (.env, keys, credentials)", isOn: Binding(
+                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().uploadSecretEnvFiles },
+                    set: { newVal in
+                        var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                        m.uploadSecretEnvFiles = newVal
+                        MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
+                    }
+                ))
+                
+                Text("Default excludes .env files so API keys and secrets stay strictly on your local machine.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             if !statusFeedback.isEmpty {
