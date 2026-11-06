@@ -4,10 +4,10 @@ public struct OnboardingView: View {
     @EnvironmentObject var lifecycleController: AppLifecycleController
     @EnvironmentObject var supervisor: RcloneDaemonSupervisor
 
-    @State private var mode: StorageMode = .dfyManaged
     @State private var email: String = ""
     @State private var licenseKey: String = ""
-    @State private var spoolCapGB: Int = 250
+    @State private var spoolCapGB: Int = 50
+    @State private var showCustomKeys: Bool = false
 
     @State private var preset: CloudPreset = .cloudflareR2
     @State private var bucketName: String = ""
@@ -21,55 +21,51 @@ public struct OnboardingView: View {
 
     public init() {}
 
+    private var isValidEmail: Bool {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains("@") && trimmed.contains(".")
+    }
+
     public var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             Image(systemName: "externaldrive.fill.badge.icloud")
-                .font(.system(size: 42))
+                .font(.system(size: 40))
                 .foregroundStyle(.blue)
 
-            Text("Cloud Storage Setup").font(.title2).bold()
-            Text("Choose whether to use your included 5 TB ZeroDrive Cloud Vault or plug in your own S3 / R2 / Backblaze keys.")
-                .font(.caption)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-
-            Picker("Storage Mode", selection: $mode) {
-                Text("ZeroDrive 5 TB Cloud (1-Click)").tag(StorageMode.dfyManaged)
-                Text("Use My Own Keys (BYOK)").tag(StorageMode.byokOpen)
+            VStack(spacing: 4) {
+                Text("Welcome to ZeroDrive")
+                    .font(.title2.bold())
+                Text("Your cloud folder in Finder.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 380)
 
-            if mode == .dfyManaged {
+            if !showCustomKeys {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Your 5 TB ZeroDrive Cloud Vault mounts directly in Finder at ~/ZeroDrive/Vault.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    TextField("Your Email Address (optional for instant setup)", text: $email)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("License Key (optional)", text: $licenseKey)
+                    TextField("Email address", text: $email)
                         .textFieldStyle(.roundedBorder)
 
                     Button {
                         Task { await connectDFYVault() }
                     } label: {
-                        Text(isWorking ? "Activating & Mounting ~/ZeroDrive…" : "Save & Mount My 5 TB ZeroDrive")
+                        Text(isWorking ? "Connecting…" : "Continue")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(isWorking)
+                    .disabled(isWorking || !isValidEmail)
                 }
-                .frame(maxWidth: 380)
-            } else {
+                .frame(maxWidth: 340)
+            }
+
+            DisclosureGroup("Use your own storage keys", isExpanded: $showCustomKeys) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Picker("Cloud Provider", selection: $preset) {
+                    Picker("Provider", selection: $preset) {
                         ForEach(CloudPreset.allCases) { p in
                             Text(p.displayName).tag(p)
                         }
                     }
-                    TextField("Bucket Name (e.g. my-media-vault)", text: $bucketName)
+                    TextField("Bucket name", text: $bucketName)
                         .textFieldStyle(.roundedBorder)
                     TextField(preset == .backblazeB2 ? "Application Key ID" : "Access Key ID", text: $accessKey)
                         .textFieldStyle(.roundedBorder)
@@ -77,56 +73,44 @@ public struct OnboardingView: View {
                         .textFieldStyle(.roundedBorder)
 
                     if preset != .backblazeB2 {
-                        TextField("S3 Endpoint URL (e.g. https://<ACCOUNT_ID>.r2.cloudflarestorage.com)", text: $customEndpoint)
+                        TextField("Endpoint URL", text: $customEndpoint)
                             .textFieldStyle(.roundedBorder)
                     }
 
                     Button {
                         Task { await connectBYOKVault() }
                     } label: {
-                        Text(isWorking ? "Testing Connection & Mounting…" : "Save & Mount My Bucket")
+                        Text(isWorking ? "Connecting…" : "Connect Bucket")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .controlSize(.regular)
                     .disabled(isWorking || bucketName.isEmpty || accessKey.isEmpty || secretKey.isEmpty)
                 }
-                .frame(maxWidth: 380)
+                .padding(.top, 8)
             }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 4) {
-                Picker("Max Temporary Upload Cache on Mac:", selection: $spoolCapGB) {
-                    Text("25 GB Temp Cache").tag(25)
-                    Text("50 GB Temp Cache").tag(50)
-                    Text("100 GB Temp Cache").tag(100)
-                    Text("250 GB Temp Cache").tag(250)
-                }
-                Text("Note: Your cloud drive holds 5 TB. This setting only limits how much temporary Mac space can be used while files are actively uploading (cleared automatically 60s after upload).")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: 380)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: 340)
 
             if !errorMessage.isEmpty {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
+                    .frame(maxWidth: 340)
             }
 
-            Button("Cancel / Close") {
-                lifecycleController.showOnboardingSheet = false
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    lifecycleController.showOnboardingSheet = false
+                }
+                .keyboardShortcut(.cancelAction)
             }
-            .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .padding(28)
-        .frame(width: 460)
-        .preferredColorScheme(.dark)
+        .padding(24)
+        .frame(width: 420)
         .onAppear {
             let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
             spoolCapGB = meta.spoolCapGB
@@ -134,11 +118,13 @@ public struct OnboardingView: View {
     }
 
     private func connectDFYVault() async {
+        let targetEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetEmail.isEmpty else {
+            errorMessage = "Please enter your email address."
+            return
+        }
         isWorking = true
         errorMessage = ""
-        let targetEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "andrew@aisimple.co"
-            : email
 
         do {
             let result = try await DFYProvisioningClient.shared.provisionVault(
@@ -179,7 +165,7 @@ public struct OnboardingView: View {
                     bucket: bucketName
                 )
                 if !valid {
-                    errorMessage = "Credential warning (\(msg)). Attempting mount…"
+                    errorMessage = "Credential warning: \(msg)"
                 }
             }
 

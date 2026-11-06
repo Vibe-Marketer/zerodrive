@@ -64,7 +64,8 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             "acl = private",
             "force_path_style = true",
             "no_check_bucket = true",
-            "chunk_size = 64M",
+            "upload_cutoff = 50M",
+            "chunk_size = 25M",
             "upload_concurrency = 8"
         ]
 
@@ -257,11 +258,45 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         }
     }
 
+    public func getAccountEmail(for provider: ExternalCloudProvider) -> String? {
+        let accountsFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/rclone/cloud-accounts.json")
+        if let data = try? Data(contentsOf: accountsFile),
+           let map = try? JSONDecoder().decode([String: String].self, from: data),
+           let email = map[provider.rawValue] {
+            return email
+        }
+        return nil
+    }
+
+    public func saveAccountEmail(_ email: String, for provider: ExternalCloudProvider) {
+        let accountsFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/rclone/cloud-accounts.json")
+        var map: [String: String] = [:]
+        if let data = try? Data(contentsOf: accountsFile),
+           let existing = try? JSONDecoder().decode([String: String].self, from: data) {
+            map = existing
+        }
+        map[provider.rawValue] = email
+        if let data = try? JSONEncoder().encode(map) {
+            try? data.write(to: accountsFile, options: .atomic)
+        }
+    }
+
     public func disconnectExternalCloud(_ provider: ExternalCloudProvider) throws {
         var sections = parseConfigSections()
         sections.removeValue(forKey: provider.sectionName)
+        // Also remove any alias remotes of the same type so it stays disconnected
+        let typeStr = "type=\(provider.rawValue)"
+        let matchingKeys = sections.filter { sec in
+            sec.key != "primary_vault" && sec.key != "ZeroDriveUnified" &&
+            sec.value.contains(where: { $0.replacingOccurrences(of: " ", with: "") == typeStr })
+        }.map(\.key)
+
+        for key in matchingKeys {
+            sections.removeValue(forKey: key)
+        }
+
         let meta = loadVaultMetadata()
-        try writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix)
+        try writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix, allowAdoption: false)
     }
 
     private func hasValidToken(_ lines: [String]) -> Bool {
@@ -273,7 +308,7 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             if let existing = sections[provider.sectionName], hasValidToken(existing) {
                 continue
             }
-            // Look for any existing rclone section of the same type that has a valid OAuth token (e.g., andrew-clickable-token)
+            // Look for any existing rclone section of the same type that has a valid OAuth token
             for (secName, lines) in sections where secName != provider.sectionName && secName != "primary_vault" && secName != "ZeroDriveUnified" {
                 let isMatchingType = lines.contains(where: { $0.replacingOccurrences(of: " ", with: "") == "type=\(provider.rawValue)" })
                 if isMatchingType && hasValidToken(lines) {
@@ -287,14 +322,12 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
     public func ensureUnifiedUnionConfig() {
         var sections = parseConfigSections()
         guard sections["primary_vault"] != nil else { return }
-        adoptExistingCloudTokens(&sections)
         let meta = loadVaultMetadata()
-        try? writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix)
+        try? writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix, allowAdoption: false)
     }
 
     public func connectedExternalClouds() -> Set<ExternalCloudProvider> {
-        var sections = parseConfigSections()
-        adoptExistingCloudTokens(&sections)
+        let sections = parseConfigSections()
         var result = Set<ExternalCloudProvider>()
         for provider in ExternalCloudProvider.allCases {
             if let lines = sections[provider.sectionName], hasValidToken(lines) {
@@ -309,10 +342,13 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         connectedClouds: [(name: String, remote: String)]
     ) throws {
         var sections = parseConfigSections()
-        adoptExistingCloudTokens(&sections)
+        for provider in ExternalCloudProvider.allCases {
+            sections.removeValue(forKey: provider.sectionName)
+        }
+        let upstreams = ["\"My Drive=primary_vault:\(primaryBucket)\""]
         sections["ZeroDriveUnified"] = [
-            "type = alias",
-            "remote = primary_vault:\(primaryBucket)"
+            "type = combine",
+            "upstreams = \(upstreams.joined(separator: " "))"
         ]
         try writeConfigSections(sections)
     }
@@ -321,18 +357,18 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
 
     private func writeSectionsAndRebuildCombine(
         _ sections: inout [String: [String]],
-        primaryBucketPath: String
+        primaryBucketPath: String,
+        allowAdoption: Bool = false
     ) throws {
-        adoptExistingCloudTokens(&sections)
         for provider in ExternalCloudProvider.allCases {
-            if let lines = sections[provider.sectionName], !hasValidToken(lines) {
-                sections.removeValue(forKey: provider.sectionName)
-            }
+            sections.removeValue(forKey: provider.sectionName)
         }
 
+        let upstreams = ["\"My Drive=primary_vault:\(primaryBucketPath)\""]
+
         sections["ZeroDriveUnified"] = [
-            "type = alias",
-            "remote = primary_vault:\(primaryBucketPath)"
+            "type = combine",
+            "upstreams = \(upstreams.joined(separator: " "))"
         ]
 
         try writeConfigSections(sections)

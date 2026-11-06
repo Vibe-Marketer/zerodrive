@@ -15,46 +15,10 @@ public final class RAMTreeIndexer: ObservableObject {
         startBackgroundAutoRefresh()
     }
 
-    /// Executes `POST /vfs/refresh` + `POST /operations/list` (`fastList: true`) for <1ms RAM search
+    /// Refreshes top-level VFS directory without locking subdirectories
     public func prewarmAll() async {
         isIndexing = true
-
-        // 1. Trigger background vfs/refresh via RPC
         _ = await RcloneRCClient.shared.refreshVFSTree()
-
-        // 2. Fetch full cloud tree via JSON-RPC `operations/list` with `fastList: true` (avoids slow POSIX NFS traversal)
-        var nodes = await RcloneRCClient.shared.listCloudTree().filter { !$0.name.hasPrefix(".") }
-        var seenPaths = Set(nodes.map { $0.relativePath })
-
-        // 3. Merge any locally staged files in ~/ZeroDrive so newly dropped files appear immediately
-        let mount = RcloneDaemonSupervisor.shared.mountPoint
-        if let rootChildren = try? FileManager.default.contentsOfDirectory(
-            at: mount,
-            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for fileURL in rootChildren {
-                let name = fileURL.lastPathComponent
-                guard !name.hasPrefix(".") else { continue }
-                if !seenPaths.contains(name) {
-                    let isDir = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-                    let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                    nodes.append(
-                        CloudNode(
-                            id: name,
-                            name: name,
-                            relativePath: name,
-                            sizeBytes: Int64(size),
-                            isFolder: isDir,
-                            sourceCloud: "ZeroDrive"
-                        )
-                    )
-                    seenPaths.insert(name)
-                }
-            }
-        }
-
-        self.indexedNodes = nodes
         self.isIndexing = false
     }
 

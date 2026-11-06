@@ -81,6 +81,8 @@ async function handleS3Proxy(request, env, url) {
       const delimiter = url.searchParams.get("delimiter") || undefined;
       const maxKeys = Math.min(parseInt(url.searchParams.get("max-keys") || "1000", 10), 1000);
       const cursor = url.searchParams.get("continuation-token") || undefined;
+      const encodingType = url.searchParams.get("encoding-type");
+      const encodeKey = (k) => (encodingType === "url" ? encodeURIComponent(k) : xmlEscape(k));
 
       const fullPrefix = `${tenantRoot}${reqPrefix}`;
       const listed = await env.VAULT_BUCKET.list({
@@ -97,7 +99,7 @@ async function handleS3Proxy(request, env, url) {
           : obj.key;
         const etag = obj.httpEtag || `"${obj.etag || "0"}"`;
         const lastMod = (obj.uploaded || new Date()).toISOString();
-        contentsXml += `<Contents><Key>${xmlEscape(relKey)}</Key><LastModified>${lastMod}</LastModified><ETag>${xmlEscape(etag)}</ETag><Size>${obj.size}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
+        contentsXml += `<Contents><Key>${encodeKey(relKey)}</Key><LastModified>${lastMod}</LastModified><ETag>${xmlEscape(etag)}</ETag><Size>${obj.size}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
       }
 
       let prefixesXml = "";
@@ -105,13 +107,14 @@ async function handleS3Proxy(request, env, url) {
         const relPref = pref.startsWith(tenantRoot)
           ? pref.slice(tenantRoot.length)
           : pref;
-        prefixesXml += `<CommonPrefixes><Prefix>${xmlEscape(relPref)}</Prefix></CommonPrefixes>`;
+        prefixesXml += `<CommonPrefixes><Prefix>${encodeKey(relPref)}</Prefix></CommonPrefixes>`;
       }
 
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>${xmlEscape(bucketName || "zerodrive-vault-prod")}</Name>
-  <Prefix>${xmlEscape(reqPrefix)}</Prefix>
+  <Prefix>${encodeKey(reqPrefix)}</Prefix>
+  ${encodingType ? `<EncodingType>${xmlEscape(encodingType)}</EncodingType>` : ""}
   <KeyCount>${(listed.objects?.length || 0) + (listed.delimitedPrefixes?.length || 0)}</KeyCount>
   <MaxKeys>${maxKeys}</MaxKeys>
   <IsTruncated>${listed.truncated ? "true" : "false"}</IsTruncated>
@@ -213,16 +216,37 @@ async function handleS3Proxy(request, env, url) {
     if (uploadId) {
       const bodyText = await request.text();
       const parts = [];
-      const partRegex = /<Part>\s*<PartNumber>(\d+)<\/PartNumber>\s*<ETag>([^<]+)<\/ETag>\s*<\/Part>/g;
-      let match;
-      while ((match = partRegex.exec(bodyText)) !== null) {
-        parts.push({
-          partNumber: parseInt(match[1], 10),
-          etag: match[2].replace(/&quot;/g, '"').replace(/^"+|"+$/g, ""),
-        });
+      const partBlockRegex = /<Part>([\s\S]*?)<\/Part>/g;
+      let blockMatch;
+      while ((blockMatch = partBlockRegex.exec(bodyText)) !== null) {
+        const block = blockMatch[1];
+        const pnMatch = block.match(/<PartNumber>\s*(\d+)\s*<\/PartNumber>/);
+        const etagMatch = block.match(/<ETag>\s*([^<\s]+)\s*<\/ETag>/);
+        if (pnMatch && etagMatch) {
+          const rawEtag = etagMatch[1].replace(/&#34;|&#x22;|&quot;|"/gi, "").trim();
+          parts.push({
+            partNumber: parseInt(pnMatch[1], 10),
+            etag: rawEtag,
+          });
+        }
       }
+      parts.sort((a, b) => a.partNumber - b.partNumber);
       const mp = env.VAULT_BUCKET.resumeMultipartUpload(r2Key, uploadId);
-      const completed = await mp.complete(parts);
+      let completed;
+      try {
+        completed = await mp.complete(parts);
+      } catch (e1) {
+        try {
+          completed = await mp.complete(
+            parts.map((p) => ({ partNumber: p.partNumber, etag: `"${p.etag}"` }))
+          );
+        } catch (e2) {
+          return new Response(
+            `<?xml version="1.0" encoding="UTF-8"?><Error><Code>InternalError</Code><Message>${xmlEscape(String(e1) + " | " + String(e2) + " | parts=" + JSON.stringify(parts))}</Message></Error>`,
+            { status: 500, headers: { "Content-Type": "application/xml" } }
+          );
+        }
+      }
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Location>${xmlEscape(url.origin + url.pathname)}</Location>

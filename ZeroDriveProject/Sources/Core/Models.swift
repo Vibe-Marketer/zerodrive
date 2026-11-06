@@ -45,7 +45,7 @@ public enum ExternalCloudProvider: String, Codable, CaseIterable, Identifiable, 
 
     public var folderName: String {
         switch self {
-        case .googleDrive: return "Google_Drive"
+        case .googleDrive: return "Google Drive"
         case .dropbox: return "Dropbox"
         case .oneDrive: return "OneDrive"
         }

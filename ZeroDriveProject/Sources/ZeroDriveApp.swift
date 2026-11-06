@@ -10,13 +10,13 @@ struct ZeroDriveApp: App {
     @StateObject private var indexer = RAMTreeIndexer.shared
 
     var body: some Scene {
-        WindowGroup(id: "studio") {
+        WindowGroup("ZeroDrive", id: "studio") {
             MainStudioWindow()
                 .environmentObject(lifecycleController)
                 .environmentObject(supervisor)
                 .environmentObject(spoolManager)
                 .environmentObject(indexer)
-                .frame(minWidth: 940, minHeight: 620)
+                .frame(minWidth: 740, minHeight: 480)
                 .onAppear {
                     lifecycleController.setStudioWindowVisible(true)
                 }
@@ -24,15 +24,29 @@ struct ZeroDriveApp: App {
                     lifecycleController.setStudioWindowVisible(false)
                 }
         }
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 980, height: 660)
+        .defaultSize(width: 820, height: 540)
 
-        MenuBarExtra("ZeroDrive", systemImage: supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill") {
+        Settings {
+            AutostartAndWorkflowsView()
+                .environmentObject(supervisor)
+                .environmentObject(spoolManager)
+                .frame(width: 480, height: 360)
+        }
+
+        MenuBarExtra {
             MenuBarPopoverView()
                 .environmentObject(lifecycleController)
                 .environmentObject(supervisor)
                 .environmentObject(spoolManager)
                 .environmentObject(indexer)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: spoolManager.dirtyFileCount > 0 ? "arrow.up.icloud.fill" : (supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill"))
+                if spoolManager.dirtyFileCount > 0 && spoolManager.telemetry.uploadSpeedMBps > 0.05 {
+                    Text(String(format: "↑ %.1f MB/s", spoolManager.telemetry.uploadSpeedMBps))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                }
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -41,15 +55,10 @@ struct ZeroDriveApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Register native macOS Finder Services provider (works on any folder/file including CloudStorage/Fabric Drive)
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
 
-        // Register IOKit pre-sleep power interceptor + wake observer
         RcloneDaemonSupervisor.shared.registerSystemPowerNotifications()
-
-        // Automatically pin ~/ZeroDrive to Finder Sidebar Favorites + install Finder right-click workflows & extension
-        RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
         RcloneDaemonSupervisor.shared.installFinderWorkflowsAndEnableExtension()
 
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -59,12 +68,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        setupTerminationSignalTrap()
+
         Task {
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
         }
     }
 
-    // MARK: - Native macOS Finder Services (Right-Click -> Services / Quick Actions on any Folder or File)
+    private func setupTerminationSignalTrap() {
+        signal(SIGTERM, SIG_IGN)
+        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigtermSource.setEventHandler {
+            RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
+            exit(0)
+        }
+        sigtermSource.resume()
+
+        signal(SIGINT, SIG_IGN)
+        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        sigintSource.setEventHandler {
+            RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
+            exit(0)
+        }
+        sigintSource.resume()
+    }
+
+    // MARK: - Native macOS Finder Services
 
     private func extractURLs(from pboard: NSPasteboard) -> [URL] {
         if let urls = pboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
@@ -80,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let urls = extractURLs(from: pboard)
         guard !urls.isEmpty else { return }
         Task { @MainActor in
-            await SpoolAndGuardManager.shared.handleDroppedURLs(urls, moveAndFreeSpace: true, bypassSpool: false)
+            TurboMigrationManager.shared.startDirectMove(urls: urls)
             await RAMTreeIndexer.shared.prewarmAll()
         }
     }
@@ -98,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let urls = extractURLs(from: pboard)
         guard !urls.isEmpty else { return }
         Task { @MainActor in
-            let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+            let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_Retakes")
             try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
             for u in urls {
                 let dst = retakesDir.appendingPathComponent(u.lastPathComponent)
@@ -133,13 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 switch cmd {
                 case "move":
-                    await SpoolAndGuardManager.shared.handleDroppedURLs(fileURLs, moveAndFreeSpace: true, bypassSpool: false)
+                    TurboMigrationManager.shared.startDirectMove(urls: fileURLs)
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "copy":
                     await SpoolAndGuardManager.shared.handleDroppedURLs(fileURLs, moveAndFreeSpace: false, bypassSpool: false)
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "retake":
-                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+                    let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_Retakes")
                     try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
                     for u in fileURLs {
                         let dst = retakesDir.appendingPathComponent(u.lastPathComponent)

@@ -116,7 +116,7 @@ public final class SpoolAndGuardManager: ObservableObject {
             }
         }
 
-        let driveRoot = RcloneDaemonSupervisor.shared.mountPoint
+        let driveRoot = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
         try? FileManager.default.createDirectory(at: driveRoot, withIntermediateDirectories: true)
 
         for url in urls {
@@ -126,69 +126,57 @@ public final class SpoolAndGuardManager: ObservableObject {
 
             let item = SpoolItem(
                 filename: url.lastPathComponent,
-                relativePath: url.lastPathComponent,
+                relativePath: "My Drive/\(url.lastPathComponent)",
                 sizeBytes: size,
-                status: telemetry.isOnline ? (useDirectBypass ? .uploading : .staging) : .pausedOffline,
-                writeBackRemainingSec: useDirectBypass ? 0 : 15,
+                status: telemetry.isOnline ? .uploading : .pausedOffline,
+                writeBackRemainingSec: 0,
                 mediaDuration: duration,
                 localCachePath: dest
             )
             spoolItems.insert(item, at: 0)
 
-            if useDirectBypass, let rcloneURL = RcloneDaemonSupervisor.shared.resolveRcloneBinary() {
-                // Direct Cloud Upload Bypass: streams via multipart HTTPS without writing to ~/.zerodrive-cache
+            // Direct Cloud Move: streams directly via multipart HTTPS to cloud, ZERO local spool copy
+            if let rcloneURL = RcloneDaemonSupervisor.shared.resolveRcloneBinary() {
                 let itemId = item.id
+                let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                let srcPath = url.path
+                let dstPath = "primary_vault:\(meta.bucketAndPrefix)/\(url.lastPathComponent)"
+                let config = MultiCloudCombineBuilder.shared.configPath.path
+                let subcommand = moveAndFreeSpace ? "move" : "copy"
+
                 Task.detached(priority: .userInitiated) {
                     let proc = Process()
                     proc.executableURL = rcloneURL
-                    let subcommand = moveAndFreeSpace ? "move" : "copy"
                     proc.arguments = [
                         subcommand,
-                        url.path,
-                        "ZeroDriveUnified:\(url.lastPathComponent)",
-                        "--config=\(MultiCloudCombineBuilder.shared.configPath.path)",
-                        "--inplace",
-                        "--transfers=8"
+                        srcPath,
+                        dstPath,
+                        "--config=\(config)",
+                        "--s3-upload-cutoff=32M",
+                        "--s3-chunk-size=16M",
+                        "--s3-upload-concurrency=4",
+                        "--transfers=4",
+                        "--timeout=60s",
+                        "--retries=2"
                     ]
                     try? proc.run()
                     proc.waitUntilExit()
+
+                    let succeeded = (proc.terminationStatus == 0)
                     await MainActor.run {
                         if let idx = SpoolAndGuardManager.shared.spoolItems.firstIndex(where: { $0.id == itemId }) {
-                            SpoolAndGuardManager.shared.spoolItems[idx].status = .synced
-                            SpoolAndGuardManager.shared.spoolItems[idx].uploadProgress = 1.0
+                            if succeeded {
+                                SpoolAndGuardManager.shared.spoolItems[idx].status = .synced
+                                SpoolAndGuardManager.shared.spoolItems[idx].uploadProgress = 1.0
+                            } else {
+                                SpoolAndGuardManager.shared.spoolItems.remove(at: idx)
+                            }
                         }
-                        if moveAndFreeSpace {
-                            SpoolAndGuardManager.shared.telemetry.totalSpaceSavedBytes += size
-                        }
-                    }
-                    await RAMTreeIndexer.shared.prewarmAll()
-                }
-            } else {
-                let itemId = item.id
-                let srcURL = url
-                let dstURL = dest
-                Task.detached(priority: .userInitiated) {
-                    if FileManager.default.fileExists(atPath: dstURL.path) {
-                        try? FileManager.default.removeItem(at: dstURL)
-                    }
-                    let cp = Process()
-                    cp.executableURL = URL(fileURLWithPath: "/bin/cp")
-                    cp.arguments = ["-R", "-X", srcURL.path, dstURL.path]
-                    try? cp.run()
-                    cp.waitUntilExit()
-                    let succeeded = (cp.terminationStatus == 0)
-                    if succeeded && moveAndFreeSpace {
-                        try? FileManager.default.removeItem(at: srcURL)
-                    }
-                    await MainActor.run {
                         if succeeded && moveAndFreeSpace {
                             SpoolAndGuardManager.shared.telemetry.totalSpaceSavedBytes += size
                         }
-                        if !succeeded, let idx = SpoolAndGuardManager.shared.spoolItems.firstIndex(where: { $0.id == itemId }) {
-                            SpoolAndGuardManager.shared.spoolItems.remove(at: idx)
-                        }
                     }
-                    await RAMTreeIndexer.shared.prewarmAll()
+                    _ = await RcloneRCClient.shared.refreshVFSTree()
                 }
             }
         }
@@ -205,7 +193,7 @@ public final class SpoolAndGuardManager: ObservableObject {
     }
 
     public func tagAsRetake(item: SpoolItem) async {
-        let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("_Retakes")
+        let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_Retakes")
         try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
         let newURL = retakesDir.appendingPathComponent(item.filename)
         if FileManager.default.fileExists(atPath: newURL.path) {
@@ -222,7 +210,7 @@ public final class SpoolAndGuardManager: ObservableObject {
 
         if let idx = spoolItems.firstIndex(where: { $0.id == item.id }) {
             spoolItems[idx].status = .retake
-            spoolItems[idx].relativePath = "_Retakes/\(item.filename)"
+            spoolItems[idx].relativePath = "My Drive/_Retakes/\(item.filename)"
             spoolItems[idx].localCachePath = newURL
         }
         await RAMTreeIndexer.shared.prewarmAll()

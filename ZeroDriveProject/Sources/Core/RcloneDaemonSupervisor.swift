@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreServices
 import IOKit
 import IOKit.pwr_mgt
 
@@ -47,7 +48,17 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     @Published public private(set) var statusMessage: String = "Ready"
     @Published public var boostVideoBufferEnabled: Bool = false
 
+    public let nfsMountRoot: URL = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".zerodrive-mount")
+    }()
+
     public let mountPoint: URL = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".zerodrive-mount")
+    }()
+
+    public let userSymlinkURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent("ZeroDrive")
     }()
@@ -79,18 +90,12 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     nonisolated public static func handlePreSleepSynchronousUnmount() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let mountPath = home.appendingPathComponent("ZeroDrive").path
-        let task1 = Process()
-        task1.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-        task1.arguments = ["unmount", "force", mountPath]
-        try? task1.run()
-        task1.waitUntilExit()
-
-        let task2 = Process()
-        task2.executableURL = URL(fileURLWithPath: "/sbin/umount")
-        task2.arguments = ["-f", mountPath]
-        try? task2.run()
-        task2.waitUntilExit()
+        let mountPath = home.appendingPathComponent(".zerodrive-mount").path
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/sbin/umount")
+        task.arguments = ["-f", mountPath]
+        try? task.run()
+        task.waitUntilExit()
     }
 
     public func autoMountIfConfigured() async {
@@ -104,6 +109,23 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     public func mountUnifiedDrive() async {
         guard !isMounted, !isBusy else { return }
         isBusy = true
+
+        // Fast-path: if the NFS daemon and kernel mount are already live, adopt them without unmounting
+        var mountRoot = nfsMountRoot
+        mountRoot.removeAllCachedResourceValues()
+        if ((try? mountRoot.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false),
+           isPortListening(55730),
+           await RcloneRCClient.shared.ping() {
+            self.isMounted = true
+            Self.wasMountedBeforeSleep = true
+            self.isBusy = false
+            self.statusMessage = "Mounted at ~/ZeroDrive"
+            ensureUserSymlink()
+            SpoolAndGuardManager.shared.startTelemetryPolling()
+            startDaemonHealthWatchdog()
+            return
+        }
+
         statusMessage = "Cleaning stale NFS mounts..."
 
         // [Mandatory Step 1] Force clean any dead/ghost NFS mounts
@@ -124,9 +146,10 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
         MultiCloudCombineBuilder.shared.ensureUnifiedUnionConfig()
 
-        // Create mount directory and cache directory
-        try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+        // Create hidden NFS mount directory and cache directory
+        try? FileManager.default.createDirectory(at: nfsMountRoot, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        ensureUserSymlink()
 
         let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
         let readChunk = boostVideoBufferEnabled ? "32M" : "8M"
@@ -141,30 +164,35 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         process.environment = env
 
-        // Master rclone serve nfs + mount_nfs -o nolocks (prevents macOS XNU open_xattrfile EPERM on NFSv3)
+        // Master rclone serve nfs + mount_nfs -o nolocks,nobrowse on ~/.zerodrive-mount so ~/.zerodrive-mount/ZeroDrive has isVolume=false (no Eject button in Finder!)
         let nfsPort = 55730
+        let defaultTimeStr = ISO8601DateFormatter().string(from: Date())
         process.arguments = [
             "serve",
             "nfs",
             "ZeroDriveUnified:",
             "--config=\(MultiCloudCombineBuilder.shared.configPath.path)",
             "--addr=127.0.0.1:\(nfsPort)",
-            "--vfs-cache-mode=writes",
+            "--default-time=\(defaultTimeStr)",
+            "--vfs-cache-mode=full",
             "--cache-dir=\(cacheDir.path)",
             "--vfs-cache-max-size=\(meta.spoolCapGB)G",
             "--vfs-write-back=15s",
-            "--vfs-cache-max-age=1m",
-            "--vfs-read-chunk-size=\(readChunk)",
-            "--vfs-read-chunk-size-limit=\(readChunkLimit)",
-            "--buffer-size=\(bufferSize)",
-            "--vfs-read-ahead=64M",
+            "--vfs-cache-max-age=24h",
+            "--vfs-read-chunk-size=16M",
+            "--vfs-read-chunk-size-limit=512M",
+            "--buffer-size=64M",
+            "--vfs-read-ahead=128M",
             "--dir-cache-time=9999h",
-            "--exclude=**/node_modules/**",
-            "--exclude=**/target/**",
-            "--exclude=**/.venv/**",
-            "--exclude=**/.git/objects/pack/**",
+            "--vfs-fast-fingerprint",
+            "--transfers=16",
+            "--s3-upload-cutoff=32M",
+            "--s3-chunk-size=16M",
+            "--s3-upload-concurrency=4",
             "--exclude=**/.DS_Store",
-            "--exclude=.metadata_never_index",
+            "--exclude=**/.DS_Store.rclonelink",
+            "--exclude=**/._*",
+            "--vfs-links",
             "--rc",
             "--rc-addr=127.0.0.1:55729",
             "--rc-no-auth"
@@ -174,32 +202,38 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             try process.run()
             self.rcloneProcess = process
 
-            // Poll for JSON-RPC & NFS server readiness (up to 4.5s)
-            var rcReady = false
-            for _ in 0..<15 {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                if await RcloneRCClient.shared.ping() {
-                    rcReady = true
-                    break
+            // Poll for both JSON-RPC (55729) and NFS server (55730) readiness
+            var nfsReady = false
+            for _ in 0..<90 {
+                if isPortListening(nfsPort) {
+                    let pingOk = await RcloneRCClient.shared.ping()
+                    if pingOk {
+                        nfsReady = true
+                        break
+                    }
                 }
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
 
-            if rcReady {
-                // Attach kernel NFSv3 mount with -o nolocks so Finder, FileManager.copyItem, and xattrs work natively
+            if nfsReady {
                 await runCommand("/sbin/mount_nfs", [
-                    "-o", "port=\(nfsPort),mountport=\(nfsPort),nolocks,vers=3,tcp",
+                    "-o", "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=1",
                     "localhost:/",
-                    mountPoint.path
+                    nfsMountRoot.path
                 ])
             }
 
-            self.isMounted = rcReady && process.isRunning
+            self.isMounted = nfsReady && process.isRunning
             Self.wasMountedBeforeSleep = self.isMounted
             self.isBusy = false
             self.statusMessage = self.isMounted ? "Mounted at ~/ZeroDrive" : "Mount failed — check credentials"
 
-            // Create Desktop alias for quick Finder access
+            // Ensure ~/ZeroDrive symlink & Desktop alias & non-ejectable Finder Sidebar folder entry
+            ensureUserSymlink()
             createDesktopVolumeAliasIfNeeded()
+            if self.isMounted {
+                pinToFinderSidebarIfNeeded()
+            }
 
             // Start telemetry & queue poller + RAM tree pre-warm
             SpoolAndGuardManager.shared.startTelemetryPolling()
@@ -221,9 +255,10 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         healthMonitorTask?.cancel()
         SpoolAndGuardManager.shared.stopTelemetryPolling()
 
-        await runCommand("/usr/sbin/diskutil", ["unmount", "force", mountPoint.path])
-        await runCommand("/sbin/umount", ["-f", mountPoint.path])
+        // 1. Forcibly unmount kernel NFS filesystem FIRST so the OS kernel releases before the server daemon stops
+        await runCommand("/sbin/umount", ["-f", nfsMountRoot.path])
 
+        // 2. Terminate the rclone process only after the kernel mount is cleanly dismantled
         rcloneProcess?.terminate()
         rcloneProcess = nil
 
@@ -268,17 +303,31 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self = self, self.isMounted, !self.isBusy else { continue }
-                if let proc = self.rcloneProcess, !proc.isRunning {
+                if !self.isPortListening(55730) {
                     self.isMounted = false
-                    self.statusMessage = "Daemon stopped unexpectedly — click Force Clean & Remount"
+                    self.statusMessage = "Reconnecting drive…"
+                    await self.mountUnifiedDrive()
+                    continue
+                }
+                // Verify the kernel NFS mount is still attached; if detached while rclone is alive, re-attach immediately
+                var mountRoot = self.nfsMountRoot
+                mountRoot.removeAllCachedResourceValues()
+                let isVol = (try? mountRoot.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false
+                if !isVol {
+                    await self.runCommand("/sbin/mount_nfs", [
+                        "-o", "port=55730,mountport=55730,nolocks,nobrowse,vers=3,tcp",
+                        "localhost:/",
+                        self.nfsMountRoot.path
+                    ])
                 }
             }
         }
     }
 
     private func forceCleanStaleMounts() async {
-        await runCommand("/usr/sbin/diskutil", ["unmount", "force", mountPoint.path])
-        await runCommand("/sbin/umount", ["-f", mountPoint.path])
+        for path in [nfsMountRoot.path, userSymlinkURL.path] {
+            await runCommand("/sbin/umount", ["-f", path])
+        }
         await runCommand("/usr/bin/pkill", ["-f", "rclone nfsmount ZeroDriveUnified:"])
         await runCommand("/usr/bin/pkill", ["-f", "rclone serve nfs ZeroDriveUnified:"])
     }
@@ -362,72 +411,83 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
     }
 
+    private func ensureUserSymlink() {
+        let fm = FileManager.default
+        if let dest = try? fm.destinationOfSymbolicLink(atPath: userSymlinkURL.path), dest == mountPoint.path {
+            return
+        }
+        // Replace ~/ZeroDrive if it is an empty leftover mount directory or broken symlink
+        if let attrs = try? fm.attributesOfItem(atPath: userSymlinkURL.path),
+           attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+            try? fm.removeItem(at: userSymlinkURL)
+        } else if fm.fileExists(atPath: userSymlinkURL.path) {
+            let legacySubdir = userSymlinkURL.appendingPathComponent("ZeroDrive")
+            if let subContents = try? fm.contentsOfDirectory(atPath: legacySubdir.path), subContents.isEmpty {
+                try? fm.removeItem(at: legacySubdir)
+            }
+            if let contents = try? fm.contentsOfDirectory(atPath: userSymlinkURL.path), contents.isEmpty {
+                try? fm.removeItem(at: userSymlinkURL)
+            }
+        }
+        if !fm.fileExists(atPath: userSymlinkURL.path) {
+            try? fm.createSymbolicLink(at: userSymlinkURL, withDestinationURL: mountPoint)
+        }
+    }
+
     private func createDesktopVolumeAliasIfNeeded() {
         let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/ZeroDrive")
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: desktop.path),
+           attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+            try? FileManager.default.removeItem(at: desktop)
+        }
         if !FileManager.default.fileExists(atPath: desktop.path) {
             try? FileManager.default.createSymbolicLink(at: desktop, withDestinationURL: mountPoint)
         }
     }
 
-    /// Automatically pins ~/ZeroDrive right next to Home in Finder's Sidebar Favorites
+    /// Pins ~/.zerodrive-mount/My Drive (isVolume = false, so no Eject icon) into Finder's Sidebar Favorites via LaunchServices XPC
     public func pinToFinderSidebarIfNeeded() {
-        try? FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let sflURL = home.appendingPathComponent("Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.FavoriteItems.sfl4")
-        guard let data = try? Data(contentsOf: sflURL),
-              var root = (try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data)) as? [String: Any],
-              var items = root["items"] as? [[String: Any]] else {
+        let myDriveURL = mountPoint.appendingPathComponent("My Drive")
+        let targetURL = FileManager.default.fileExists(atPath: myDriveURL.path) ? myDriveURL : userSymlinkURL
+
+        guard let list = LSSharedFileListCreate(
+            nil,
+            kLSSharedFileListFavoriteItems.takeUnretainedValue(),
+            nil
+        )?.takeRetainedValue(),
+        let snapshot = LSSharedFileListCopySnapshot(list, nil)?.takeRetainedValue() as? [LSSharedFileListItem],
+        let firstItem = snapshot.first else {
             return
         }
 
-        let alreadyPinned = items.contains { item in
-            guard let bm = item["Bookmark"] as? Data else { return false }
-            var stale = false
-            if let url = try? URL(resolvingBookmarkData: bm, options: [.withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale) {
-                return url.path == mountPoint.path
-            }
-            return false
-        }
-        guard !alreadyPinned else { return }
-
-        guard let bm = try? mountPoint.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) else {
-            return
-        }
-        let newEntry: [String: Any] = [
-            "Bookmark": bm,
-            "CustomItemProperties": ["com.apple.LSSharedFileList.ItemIsHidden": false] as [String: Any],
-            "uuid": UUID().uuidString.uppercased(),
-            "visibility": 0
-        ]
-
-        var insertIndex = min(5, items.count)
-        for (idx, item) in items.enumerated() {
-            if let bmData = item["Bookmark"] as? Data {
-                var stale = false
-                if let u = try? URL(resolvingBookmarkData: bmData, options: [.withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale),
-                   u.path == home.path {
-                    insertIndex = idx + 1
-                    break
+        // Remove any stale ZeroDrive / .zerodrive-mount entries first so re-clicking "Add to Sidebar" refreshes cleanly
+        for item in snapshot {
+            if let existingURL = LSSharedFileListItemCopyResolvedURL(
+                item,
+                LSSharedFileListResolutionFlags(kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes),
+                nil
+            )?.takeRetainedValue() as URL? {
+                if existingURL.path == targetURL.path ||
+                   existingURL.path == mountPoint.path ||
+                   existingURL.path == userSymlinkURL.path ||
+                   existingURL.path.hasPrefix(mountPoint.path + "/") {
+                    LSSharedFileListItemRemove(list, item)
                 }
             }
         }
 
-        items.insert(newEntry, at: insertIndex)
-        root["items"] = items
-        if let outData = try? NSKeyedArchiver.archivedData(withRootObject: root, requiringSecureCoding: false) {
-            let k1 = Process()
-            k1.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            k1.arguments = ["-9", "sharedfilelistd"]
-            try? k1.run()
-            k1.waitUntilExit()
+        let refreshedSnapshot = (LSSharedFileListCopySnapshot(list, nil)?.takeRetainedValue() as? [LSSharedFileListItem]) ?? snapshot
+        let afterItem = refreshedSnapshot.count > 2 ? refreshedSnapshot[2] : (refreshedSnapshot.first ?? firstItem)
 
-            try? outData.write(to: sflURL, options: .atomic)
-
-            let k2 = Process()
-            k2.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-            k2.arguments = ["-9", "sharedfilelistd"]
-            try? k2.run()
-        }
+        _ = LSSharedFileListInsertItemURL(
+            list,
+            afterItem,
+            "My Drive" as CFString,
+            nil,
+            targetURL as CFURL,
+            nil,
+            nil
+        )
     }
 
     /// Installs real macOS Automator .workflow Quick Actions into ~/Library/Services/ and enables the embedded FinderSync extension
@@ -445,8 +505,13 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             try? FileManager.default.removeItem(at: servicesDir.appendingPathComponent(oldSh))
         }
 
-        let driveDir = mountPoint.path
-        let retakesDir = mountPoint.appendingPathComponent("_Retakes").path
+        let driveDir = mountPoint.appendingPathComponent("My Drive").path
+        let retakesDir = mountPoint.appendingPathComponent("My Drive/_Retakes").path
+
+        let rcloneBin = resolveRcloneBinary()?.path ?? "/Applications/ZeroDrive.app/Contents/Resources/rclone"
+        let rcloneConf = MultiCloudCombineBuilder.shared.configPath.path
+        let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+        let remoteDst = "primary_vault:\(meta.bucketAndPrefix)"
 
         let workflows: [(bundleName: String, menuTitle: String, iconName: String, shellCommand: String)] = [
             (
@@ -454,12 +519,8 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 "ZeroDrive: Move to ZeroDrive & Free Mac Space",
                 "NSActionTemplate",
                 """
-                mkdir -p "\(driveDir)"
                 for f in "$@"; do
-                  name="$(basename "$f")"
-                  if cp -R -X "$f" "\(driveDir)/$name" 2>/dev/null; then
-                    rm -rf "$f"
-                  fi
+                  /usr/bin/python3 /Users/Naegele/_LAB/zerodrive/turbo-migrate-dashboard.py "$f"
                 done
                 open -g "zerodrive://finder-action?cmd=refresh" 2>/dev/null || true
                 """
@@ -469,10 +530,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 "ZeroDrive: Copy to ZeroDrive (Keep on Mac)",
                 "NSActionTemplate",
                 """
-                mkdir -p "\(driveDir)"
                 for f in "$@"; do
                   name="$(basename "$f")"
-                  cp -R -X "$f" "\(driveDir)/$name"
+                  "\(rcloneBin)" copy "$f" "\(remoteDst)/$name" --config="\(rcloneConf)" --s3-upload-cutoff=32M --s3-chunk-size=16M --s3-upload-concurrency=4 --timeout=60s
                 done
                 open -g "zerodrive://finder-action?cmd=refresh" 2>/dev/null || true
                 """
@@ -748,6 +808,38 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 }
             }
         }
+    }
+
+    private func isPortListening(_ port: Int) -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+
+        let flags = fcntl(sock, F_GETFL, 0)
+        _ = fcntl(sock, F_SETFL, flags | O_NONBLOCK)
+
+        let res = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if res == 0 { return true }
+        if errno == EINPROGRESS {
+            var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+            let pollRes = poll(&pfd, 1, 150)
+            if pollRes > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+                var err: Int32 = 0
+                var len = socklen_t(MemoryLayout<Int32>.size)
+                getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len)
+                return err == 0
+            }
+        }
+        return false
     }
 
     @discardableResult

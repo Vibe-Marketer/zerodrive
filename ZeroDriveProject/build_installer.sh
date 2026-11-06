@@ -93,6 +93,9 @@ fi
 if [ -f "Assets/AppIcon.icns" ]; then
   cp "Assets/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 fi
+if [ -d "Assets/logos" ]; then
+  cp -R Assets/logos/* "${APP_BUNDLE}/Contents/Resources/"
+fi
 
 if [ -f "FinderSyncExtension/ZeroDriveFinderSync.swift" ]; then
   APPEX_BUNDLE="${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex"

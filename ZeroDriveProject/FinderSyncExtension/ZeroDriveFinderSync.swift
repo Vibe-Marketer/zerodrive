@@ -6,7 +6,7 @@ public final class FinderSyncExtension: FIFinderSync {
 
     private let zeroDriveRoot: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent("ZeroDrive")
+        return home.appendingPathComponent(".zerodrive-mount/My Drive")
     }()
 
     public override init() {
@@ -15,6 +15,8 @@ public final class FinderSyncExtension: FIFinderSync {
         var watchedDirs: Set<URL> = [
             home,
             zeroDriveRoot,
+            home.appendingPathComponent(".zerodrive-mount"),
+            home.appendingPathComponent("ZeroDrive"),
             home.appendingPathComponent("Library/CloudStorage"),
             home.appendingPathComponent("Library/CloudStorage/FabricDrive"),
             home.appendingPathComponent("Desktop"),

@@ -24,6 +24,7 @@ public actor RcloneRCClient {
     public static let shared = RcloneRCClient()
 
     private let baseURL = URL(string: "http://127.0.0.1:55729")!
+    private let transferBaseURL = URL(string: "http://127.0.0.1:55731")!
 
     public func ping() async -> Bool {
         guard let url = URL(string: "core/pid", relativeTo: baseURL) else { return false }
@@ -40,7 +41,7 @@ public actor RcloneRCClient {
     }
 
     public func refreshVFSTree() async -> Bool {
-        return await postRPC("vfs/refresh", ["recursive": "true", "_async": "true"]) != nil
+        return await postRPC("vfs/refresh", ["_async": "true"]) != nil
     }
 
     public func setBandwidthCap(rate: String) async -> Bool {
@@ -101,29 +102,53 @@ public actor RcloneRCClient {
     }
 
     public func fetchCoreStats() async -> RcloneCoreStatsDTO? {
-        guard let data = await postRPC("core/stats", [:], timeout: 1.5),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+        var totalSpeed = 0.0
+        var totalBytes: Int64 = 0
+        var totalTransferring = 0
+
+        if let data = await postRPC("core/stats", [:], timeout: 1.5),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            totalSpeed += (json["speed"] as? Double) ?? 0.0
+            totalBytes += (json["bytes"] as? Int64) ?? Int64((json["bytes"] as? Int) ?? 0)
+            totalTransferring += (json["transferring"] as? [[String: Any]])?.count ?? 0
         }
-        let speed = (json["speed"] as? Double) ?? 0.0
-        let bytes = (json["bytes"] as? Int64) ?? Int64((json["bytes"] as? Int) ?? 0)
-        let transferring = (json["transferring"] as? [[String: Any]])?.count ?? 0
+
+        if let txData = await postRPC("core/stats", [:], timeout: 1.0, base: transferBaseURL),
+           let txJson = try? JSONSerialization.jsonObject(with: txData) as? [String: Any] {
+            totalSpeed += (txJson["speed"] as? Double) ?? 0.0
+            totalBytes += (txJson["bytes"] as? Int64) ?? Int64((txJson["bytes"] as? Int) ?? 0)
+            totalTransferring += (txJson["transferring"] as? [[String: Any]])?.count ?? 0
+        }
+
         return RcloneCoreStatsDTO(
-            speedBytesPerSec: speed,
-            bytesTransferred: bytes,
-            transferringCount: transferring
+            speedBytesPerSec: totalSpeed,
+            bytesTransferred: totalBytes,
+            transferringCount: totalTransferring
         )
     }
 
     public func fetchVFSStats() async -> RcloneVFSStatsDTO? {
-        guard let data = await postRPC("vfs/stats", [:], timeout: 1.5),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let diskCache = json["diskCache"] as? [String: Any] else {
-            return nil
+        var bytesUsed: Int64 = 0
+        var inProgress = 0
+        var queued = 0
+
+        if let data = await postRPC("vfs/stats", [:], timeout: 1.5),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let diskCache = json["diskCache"] as? [String: Any] {
+            bytesUsed = (diskCache["bytesUsed"] as? Int64) ?? Int64((diskCache["bytesUsed"] as? Int) ?? 0)
+            inProgress = (diskCache["uploadsInProgress"] as? Int) ?? 0
+            queued = (diskCache["uploadsQueued"] as? Int) ?? 0
         }
-        let bytesUsed = (diskCache["bytesUsed"] as? Int64) ?? Int64((diskCache["bytesUsed"] as? Int) ?? 0)
-        let inProgress = (diskCache["uploadsInProgress"] as? Int) ?? 0
-        let queued = (diskCache["uploadsQueued"] as? Int) ?? 0
+
+        if let txData = await postRPC("core/stats", [:], timeout: 1.0, base: transferBaseURL),
+           let txJson = try? JSONSerialization.jsonObject(with: txData) as? [String: Any] {
+            let activeTx = (txJson["transferring"] as? [[String: Any]])?.count ?? 0
+            let totalTx = (txJson["totalTransfers"] as? Int) ?? 0
+            let doneTx = (txJson["transfers"] as? Int) ?? 0
+            inProgress += activeTx
+            queued += max(0, totalTx - doneTx - activeTx)
+        }
+
         return RcloneVFSStatsDTO(
             bytesUsed: bytesUsed,
             uploadsInProgress: inProgress,
@@ -132,24 +157,45 @@ public actor RcloneRCClient {
     }
 
     public func fetchVFSQueue() async -> [RcloneQueueItemDTO] {
-        guard let data = await postRPC("vfs/queue", [:], timeout: 1.5),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let queue = json["queue"] as? [[String: Any]] else {
-            return []
+        var items: [RcloneQueueItemDTO] = []
+
+        if let data = await postRPC("vfs/queue", [:], timeout: 1.5),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let queue = json["queue"] as? [[String: Any]] {
+            items.append(contentsOf: queue.compactMap { item in
+                guard let name = item["name"] as? String else { return nil }
+                let id = (item["id"] as? Int) ?? 0
+                let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
+                let expiry = (item["expiry"] as? Double) ?? 0.0
+                let uploading = (item["uploading"] as? Bool) ?? false
+                return RcloneQueueItemDTO(id: id, name: name, size: size, expiry: expiry, uploading: uploading)
+            })
         }
 
-        return queue.compactMap { item in
-            guard let name = item["name"] as? String else { return nil }
-            let id = (item["id"] as? Int) ?? 0
-            let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
-            let expiry = (item["expiry"] as? Double) ?? 0.0
-            let uploading = (item["uploading"] as? Bool) ?? false
-            return RcloneQueueItemDTO(id: id, name: name, size: size, expiry: expiry, uploading: uploading)
+        if let txData = await postRPC("core/stats", [:], timeout: 1.0, base: transferBaseURL),
+           let txJson = try? JSONSerialization.jsonObject(with: txData) as? [String: Any],
+           let transferring = txJson["transferring"] as? [[String: Any]] {
+            for (idx, tx) in transferring.enumerated() {
+                guard let name = tx["name"] as? String else { continue }
+                let size = (tx["size"] as? Int64) ?? Int64((tx["size"] as? Int) ?? 0)
+                let eta = (tx["eta"] as? Double) ?? 0.0
+                items.append(
+                    RcloneQueueItemDTO(
+                        id: 10000 + idx,
+                        name: "_CONTENT/\(name)",
+                        size: size,
+                        expiry: eta,
+                        uploading: true
+                    )
+                )
+            }
         }
+
+        return items
     }
 
-    private func postRPC(_ endpoint: String, _ params: [String: Any], timeout: TimeInterval = 3.0) async -> Data? {
-        guard let url = URL(string: endpoint, relativeTo: baseURL) else { return nil }
+    private func postRPC(_ endpoint: String, _ params: [String: Any], timeout: TimeInterval = 3.0, base: URL? = nil) async -> Data? {
+        guard let url = URL(string: endpoint, relativeTo: base ?? baseURL) else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
