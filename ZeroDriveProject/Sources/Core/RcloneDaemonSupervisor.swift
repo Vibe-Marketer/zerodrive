@@ -167,6 +167,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         // Master rclone serve nfs + mount_nfs -o nolocks,nobrowse on ~/.zerodrive-mount so ~/.zerodrive-mount/ZeroDrive has isVolume=false (no Eject button in Finder!)
         let nfsPort = 55730
         let defaultTimeStr = ISO8601DateFormatter().string(from: Date())
+        let minFreeGB = max(5, meta.minFreeSpaceGB)
         process.arguments = [
             "serve",
             "nfs",
@@ -177,6 +178,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--vfs-cache-mode=full",
             "--cache-dir=\(cacheDir.path)",
             "--vfs-cache-max-size=\(meta.spoolCapGB)G",
+            "--vfs-cache-min-free-space=\(minFreeGB)G",
             "--vfs-write-back=15s",
             "--vfs-cache-max-age=24h",
             "--vfs-read-chunk-size=16M",

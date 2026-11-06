@@ -195,30 +195,54 @@ public final class SpoolAndGuardManager: ObservableObject {
     public func tagAsRetake(item: SpoolItem) async {
         let retakesDir = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_Retakes")
         try? FileManager.default.createDirectory(at: retakesDir, withIntermediateDirectories: true)
-        let newURL = retakesDir.appendingPathComponent(item.filename)
-        if FileManager.default.fileExists(atPath: newURL.path) {
-            try? FileManager.default.removeItem(at: newURL)
+        
+        // Non-destructive versioning: never delete existing file before copying succeeds
+        var targetFilename = item.filename
+        var newURL = retakesDir.appendingPathComponent(targetFilename)
+        var version = 1
+        let baseName = (item.filename as NSString).deletingPathExtension
+        let ext = (item.filename as NSString).pathExtension
+        let dotExt = ext.isEmpty ? "" : ".\(ext)"
+        
+        while FileManager.default.fileExists(atPath: newURL.path) {
+            targetFilename = "\(baseName) (\(version))\(dotExt)"
+            newURL = retakesDir.appendingPathComponent(targetFilename)
+            version += 1
         }
+        
         let cp = Process()
         cp.executableURL = URL(fileURLWithPath: "/bin/cp")
         cp.arguments = ["-R", "-X", item.localCachePath.path, newURL.path]
         try? cp.run()
         cp.waitUntilExit()
+        
+        // Only remove old source file after successful copy
         if cp.terminationStatus == 0 {
             try? FileManager.default.removeItem(at: item.localCachePath)
         }
 
         if let idx = spoolItems.firstIndex(where: { $0.id == item.id }) {
             spoolItems[idx].status = .retake
-            spoolItems[idx].relativePath = "My Drive/_Retakes/\(item.filename)"
+            spoolItems[idx].filename = targetFilename
+            spoolItems[idx].relativePath = "My Drive/_Retakes/\(targetFilename)"
             spoolItems[idx].localCachePath = newURL
         }
         await RAMTreeIndexer.shared.prewarmAll()
     }
 
     public func purgeLocally(item: SpoolItem) async {
-        try? FileManager.default.removeItem(at: item.localCachePath)
+        // Safety guard: NEVER purge a file that is actively uploading or staging uncommitted edits
+        guard item.status != .staging && item.status != .uploading else {
+            return
+        }
+        
+        // Evict from VFS cache via RC without touching the cloud file
         _ = await RcloneRCClient.shared.forgetFile(relativePath: item.relativePath)
+        
+        // Only remove local file if it is confirmed in the cache directory, not in the mounted drive root
+        if item.localCachePath.path.contains(".zerodrive-cache") {
+            try? FileManager.default.removeItem(at: item.localCachePath)
+        }
 
         if let idx = spoolItems.firstIndex(where: { $0.id == item.id }) {
             spoolItems[idx].status = .purged

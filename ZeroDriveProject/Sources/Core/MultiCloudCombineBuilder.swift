@@ -20,6 +20,28 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         public var displayLabel: String
         public var quotaTB: Double
         public var spoolCapGB: Int
+        public var minFreeSpaceGB: Int
+        public var includeConfigDotFiles: Bool
+
+        public init(
+            mode: StorageMode,
+            preset: CloudPreset,
+            bucketAndPrefix: String,
+            displayLabel: String,
+            quotaTB: Double,
+            spoolCapGB: Int,
+            minFreeSpaceGB: Int = 15,
+            includeConfigDotFiles: Bool = true
+        ) {
+            self.mode = mode
+            self.preset = preset
+            self.bucketAndPrefix = bucketAndPrefix
+            self.displayLabel = displayLabel
+            self.quotaTB = quotaTB
+            self.spoolCapGB = spoolCapGB
+            self.minFreeSpaceGB = minFreeSpaceGB
+            self.includeConfigDotFiles = includeConfigDotFiles
+        }
     }
 
     public func hasConfiguredPrimaryVault() -> Bool {
@@ -38,7 +60,9 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             bucketAndPrefix: "zerodrive-vault-prod",
             displayLabel: "ZeroDrive Managed R2 Vault",
             quotaTB: 5.0,
-            spoolCapGB: 50
+            spoolCapGB: 50,
+            minFreeSpaceGB: 15,
+            includeConfigDotFiles: true
         )
     }
 

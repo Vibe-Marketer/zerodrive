@@ -52,6 +52,10 @@ public actor RcloneRCClient {
         return await postRPC("vfs/forget", ["file": relativePath]) != nil
     }
 
+    public func forgetAll() async -> Bool {
+        return await postRPC("vfs/forget", [:]) != nil
+    }
+
     public func setQueueExpiry(expiry: Int, itemId: Int? = nil) async -> Bool {
         var params: [String: Any] = ["expiry": expiry]
         if let id = itemId {

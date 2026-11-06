@@ -53,17 +53,54 @@ public struct AutostartAndWorkflowsView: View {
                 }
             }
 
-            Section("Storage") {
+            Section("Storage & SSD Breathing Room") {
                 LabeledContent("Space used on this Mac") {
                     HStack(spacing: 8) {
                         Text(ByteCountFormatter.string(fromByteCount: spoolManager.telemetry.spoolUsedBytes, countStyle: .file))
                             .foregroundStyle(.secondary)
-                        Button("Clear") {
+                        Button("Clear Cache Safely") {
                             clearLocalCache()
                         }
                         .controlSize(.small)
                     }
                 }
+                
+                Picker("Cache Size Target", selection: Binding(
+                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().spoolCapGB },
+                    set: { newVal in
+                        var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                        m.spoolCapGB = newVal
+                        MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
+                    }
+                )) {
+                    Text("25 GB").tag(25)
+                    Text("50 GB (Default)").tag(50)
+                    Text("100 GB").tag(100)
+                    Text("200 GB").tag(200)
+                }
+
+                Picker("Guaranteed Minimum Free Mac SSD Space", selection: Binding(
+                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().minFreeSpaceGB },
+                    set: { newVal in
+                        var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                        m.minFreeSpaceGB = newVal
+                        MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
+                    }
+                )) {
+                    Text("10 GB").tag(10)
+                    Text("15 GB (Recommended)").tag(15)
+                    Text("25 GB").tag(25)
+                    Text("40 GB").tag(40)
+                }
+
+                Toggle("Upload dot-files & user config (.obsidian, .env)", isOn: Binding(
+                    get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().includeConfigDotFiles },
+                    set: { newVal in
+                        var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                        m.includeConfigDotFiles = newVal
+                        MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
+                    }
+                ))
             }
 
             if !statusFeedback.isEmpty {
@@ -132,9 +169,24 @@ public struct AutostartAndWorkflowsView: View {
     }
 
     private func clearLocalCache() {
-        let cacheDir = supervisor.cacheDir
-        try? FileManager.default.removeItem(at: cacheDir)
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        showFeedback("Cleared space on this Mac.")
+        Task {
+            // Safe eviction: tell rclone VFS to drop all cached clean read chunks without deleting uncommitted writes
+            _ = await RcloneRCClient.shared.forgetAll()
+            
+            // On-disk prune: only remove .bin chunk files inside vfs cache subdirectories, NEVER touching dirty write queues
+            let cacheDir = supervisor.cacheDir.appendingPathComponent("vfs")
+            if FileManager.default.fileExists(atPath: cacheDir.path) {
+                if let enumerator = FileManager.default.enumerator(at: cacheDir, includingPropertiesForKeys: [.isRegularFileKey]) {
+                    for case let fileURL as URL in enumerator {
+                        if fileURL.pathExtension == "bin" {
+                            try? FileManager.default.removeItem(at: fileURL)
+                        }
+                    }
+                }
+            }
+            await MainActor.run {
+                showFeedback("Safely cleared read cache on this Mac.")
+            }
+        }
     }
 }
