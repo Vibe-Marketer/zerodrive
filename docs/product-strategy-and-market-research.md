@@ -116,7 +116,11 @@ Unlike consumer sync apps (iCloud Drive, Dropbox, Google Drive) that rely on App
 
 ---
 
-## 7. Zero-Risk Free Tier Mechanics & High-Ticket Unit Economics
+## 7. Zero-Risk Free Tier Mechanics & High-Ticket Unit Economics (Tentative Strategy to Revisit)
+
+> [!NOTE]
+> **Status: Tentative Idea & Strategic Model for Post-Launch Review**  
+> All pricing tiers, wholesale estimates, and migration cutovers in this section are captured as working architectural options to revisit before rolling out public self-serve tiers.
 
 ### 1. The "BYOK Free Tier" vs. "DFY Hosted Upgrade" Model
 - **The Financial Trap of Free:** Hosting thousands of free users on a central ZeroDrive R2 bucket creates an unmetered liability that burns cash before conversion.
@@ -151,3 +155,14 @@ Low-ticket pricing (`$9.99/mo`) is a commodity trap for desktop utility software
 | **ZeroDrive Team / Agency** | **`$79.00 / mo`** (`$790/yr`) | 5 TB DFY Storage + 3 Seats | `~$45.00/mo` | **43.0%** | **1,054 users** |
 
 *Key Takeaway:* At `$39/mo`, reaching **$1,000,000 ARR requires only ~2,136 active subscribers** instead of 8,300+ at `$10/mo`.
+
+
+### 4. Faster Cloudflare-Native Export & Migration Tools (Beyond Custom Scripts)
+Instead of managing custom VPS sync scripts when a user migrates between accounts or exports their entire drive, Cloudflare provides two native edge-level tools:
+1. **Cloudflare Super Slurper (Native Cross-Account Pipeline)**:
+   - Built directly into Cloudflare's dashboard and API for bulk object transfers.
+   - You provide the source R2 credentials (read-only token) and target credentials, and Cloudflare copies the entire bucket internally across their edge network at multi-gigabit speeds without passing through any external server.
+2. **Cloudflare Sippy (Zero-Wait Incremental Migration)**:
+   - Mounts the new destination bucket immediately.
+   - When any file is accessed or opened by the user, Sippy copies that specific file on-demand in real-time from the old bucket to the new bucket behind the scenes.
+   - An asynchronous Super Slurper job runs in the background to copy cold/unopened files, completely eliminating any waiting period during an export or upgrade cutover.
