@@ -1,7 +1,0 @@
-{
-  "name": "ZeroDrive",
-  "description": "ZeroDrive macOS Desktop Studio & Menu Bar Daemon: Stream multi-terabyte cloud storage into Finder with 0 bytes local SSD, instant <1ms RAM search, and local NVMe write-back spool.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
-

@@ -249,7 +249,43 @@ public struct MainStudioWindow: View {
                 .padding(.vertical, 4)
             }
 
-            Section("Move Files from iCloud, Fabric, or External Drives") {
+            Section("Direct iCloud-to-Cloud Stream (Zero Mac Disk Used)") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "icloud.and.arrow.up.fill")
+                            .foregroundStyle(Color.accentColor)
+                        Text("Stream directly from Apple's iCloud servers into your ZeroDrive R2 Vault")
+                            .font(.subheadline.weight(.medium))
+                    }
+
+                    Text("Connects to naegele412@gmail.com via rclone's native iCloud API—bypasses Finder/bird completely and uses 0 bytes of local SSD space.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            launchDirectICloudStream(runOnMini: false)
+                        } label: {
+                            Label("Stream iCloud MAIN in RAM (This Mac)…", systemImage: "bolt.icloud.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+
+                        Button {
+                            launchDirectICloudStream(runOnMini: true)
+                        } label: {
+                            Label("Run Stream on naegele-mm (Mac mini)…", systemImage: "macmini.fill")
+                        }
+                        .controlSize(.small)
+
+                        Spacer()
+                    }
+                    .padding(.top, 2)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("Move Files from Local Folders, iCloud, or Fabric") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Pick any folder from iCloud Drive, Fabric Drive, or your Mac to move into ZeroDrive and free up local space.")
                         .font(.caption)
@@ -319,6 +355,19 @@ public struct MainStudioWindow: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             pairDeviceFeedback = ""
+        }
+    }
+
+    private func launchDirectICloudStream(runOnMini: Bool) {
+        Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            var args = ["/Users/Naegele/_LAB/zerodrive/stream-icloud-to-vault.py", "Desktop/MAIN", "MAIN"]
+            if runOnMini {
+                args.append("--run-on-mini")
+            }
+            proc.arguments = args
+            try? proc.run()
         }
     }
 

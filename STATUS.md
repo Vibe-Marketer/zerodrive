@@ -27,16 +27,10 @@
 | **Step 3** | Upgrade `turbo-migrate-dashboard.py` with strict 1-by-1 cloud-stub hydration, `--leave-symlink` folder shortcut creation, dataless `.git` directory guard, and activity logging | **DONE** | Tested end-to-end with `/tmp/zd-symlink-test`: verified file moved to R2, local directory replaced with POSIX symlink (`lrwxr-xr-x`), file readable through symlink, and logged to `zerodrive-symlinks.json`. |
 | **Step 4** | Implement UI/UX overhaul & Folder Symlink toggle in `ZeroDriveProject` (Menu bar live telemetry, cut menu bar drop box, cut hardcoded `82.4 GB` projections, merge Overview drop boxes, wire Activity ledger + Symlinks section, add Multi-Device card) | **DONE** | Built with `swift build -c release` (0 errors) and deployed to `/Applications/ZeroDrive.app` on both `naegele-pro` and `naegele-mm`. |
 | **Step 5** | Harden `RcloneDaemonSupervisor.swift` (`--dir-cache-time=30s`) & `MultiCloudCombineBuilder.swift` prefix safety; deploy `ZeroDrive.app` to `naegele-mm` (`100.114.74.17`) | **DONE** | Verified via `ssh naegele-mm "ls -la ~/ZeroDrive/'My Drive'"` — all 9 top-level folders (`CLOUD-MAIN`, `Course`, `MAIN`, `_ARCHIVE-VAULT`, `_BUSINESS`, `_CAPTURES`, `_CONTENT`, `_LIBRARY`, `_Retakes`, `_SKILLS`, `_SORT`) are live and mounted on `naegele-mm`. |
-| **Step 6** | End-to-end verification & final Git commit | **DONE** | All code, docs, and status committed to `main`. |
+| **Step 6** | End-to-end verification, delete legacy React web simulator (`2c`), lock in Cloudflare R2 as sole storage backend (`2b`), and wire `stream-icloud-to-vault.py` for `naegele412@gmail.com` (`1` & `2a`) | **DONE** | Deleted `src/`, `server.ts`, `package.json`, `node_modules/`, `dist/`; compiled and deployed updated `ZeroDrive.app`; launched native macOS sign-in dialog for `naegele412@gmail.com`. |
 
 ---
 
-## 3. Open Questions / Next Actions When Resuming
+## 3. Immediate Next Action
 
-1. **Direct iCloud-to-R2 Drain of Remaining 267.9 GB Stubs in `Desktop/MAIN` (`LEGENDS` courses):**
-   - Currently, those 2,430 video files are 0-byte iCloud stubs using **0 bytes of your Mac SSD**.
-   - Whenever you want to move them off iCloud into R2 without using your MacBook, we can either:
-     - Run `rclone config` once on `naegele-mm` or `naegele-vps` to authorize the native `iclouddrive` remote (requires your Apple 2FA code) so `naegele-mm` streams them straight from Apple's servers to R2 in the background, OR
-     - Run `turbo-migrate-dashboard.py /Users/Naegele/Desktop/MAIN/LEGENDS MAIN/LEGENDS`, which now uses **strict 1-by-1 single-file hydration** so `bird` never queues more than 1 video at a time.
-2. **External Beta Preparation (See Open Questions in [`docs/product-strategy-and-market-research.md`](./docs/product-strategy-and-market-research.md#7-open-strategic-questions-marked-open-for-andrew)):**
-   - Decide whether to keep Cloudflare R2 (`$15/TB/mo`) or wire Backblaze B2 (`$6/TB/mo`) before onboarding the first paid Beta users at `$29–$59/mo`.
+- Complete the native macOS password + 6-digit Apple 2FA prompt on screen for `naegele412@gmail.com` (triggered by [`stream-icloud-to-vault.py`](./stream-icloud-to-vault.py) or via the **Devices & Clouds** tab in `ZeroDrive.app`). Once authenticated, the token automatically syncs to `naegele-mm` and streams `Desktop/MAIN` directly from Apple's iCloud servers into `primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f/MAIN` with 0 local SSD used.

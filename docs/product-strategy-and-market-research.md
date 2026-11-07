@@ -103,8 +103,8 @@ Unlike consumer sync apps (iCloud Drive, Dropbox, Google Drive) that rely on App
 
 ---
 
-## 7. Open Strategic Questions (Marked Open for Andrew)
+## 7. Resolved Strategic Decisions (Updated Nov 6, 2026)
 
-- **[OPEN-1] Cloud-to-Cloud Drain Hosting for External Beta Users:** For your own account, we can run headless `iclouddrive -> R2` streams on `naegele-mm` or `naegele-vps`. When selling to Beta customers, should the `iclouddrive` RAM stream run locally inside their Mac app (uses 0 SSD space, just their home internet bandwidth), or on a dedicated Hetzner/VPS worker we host for them?
-- **[OPEN-2] Storage Backend for Beta Customers:** Keep Cloudflare R2 (`$15/TB/mo`, zero egress, zero configuration via our Worker) as the default for the first 20 Beta users, or wire Backblaze B2 (`$6/TB/mo` paired with Cloudflare CDN) before opening Beta signups?
-- **[OPEN-3] Legacy Web Prototype Files (`src/`, `server.ts`, `package.json`):** The repo root still contains the Nov 2 React/Express simulator alongside `ZeroDriveProject/`. Should we archive or delete the web simulator files so the repo only contains the native macOS app and Cloudflare Worker?
+- **[RESOLVED-1] Prove Direct iCloud-to-R2 Stream on Our Own Setup First:** Built [`stream-icloud-to-vault.py`](../stream-icloud-to-vault.py) and wired it into `ZeroDrive.app` (`Devices & Clouds` tab) to authenticate `naegele412@gmail.com` via `rclone`'s native `iclouddrive` backend, sync the trust token to `naegele-mm`, and prove the zero-local-disk RAM stream on our own setup before exposing it to external Beta users.
+- **[RESOLVED-2] Storage Backend Locked to Cloudflare R2 Only:** Backblaze B2 cannot be proxied through Cloudflare Workers for bulk file/video storage without violating Cloudflare Section 2.8 terms, and external S3 providers lose our native zero-hop Worker binding (`env.VAULT_BUCKET`) and 190+ MB/s edge performance. **Cloudflare R2 (`$15/TB/mo`, `$0` egress) is our sole, non-negotiable primary storage backend.**
+- **[RESOLVED-3] Deleted Legacy Web Simulator:** Removed `src/`, `server.ts`, `package.json`, `bun.lock`, `dist/`, `node_modules/`, and `.aistudio/` so the repository contains strictly the native macOS Swift app (`ZeroDriveProject/`), migration/stream scripts, and Cloudflare Worker (`deploy/`).
