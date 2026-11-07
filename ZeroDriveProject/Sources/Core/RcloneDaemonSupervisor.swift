@@ -437,13 +437,28 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     }
 
     private func createDesktopVolumeAliasIfNeeded() {
-        let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/ZeroDrive")
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: desktop.path),
-           attrs[.type] as? FileAttributeType == .typeSymbolicLink {
-            try? FileManager.default.removeItem(at: desktop)
+        let fm = FileManager.default
+        let desktopDir = fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+        // Remove any iCloud conflict duplicates like "ZeroDrive 2", "ZeroDrive 3"
+        if let items = try? fm.contentsOfDirectory(atPath: desktopDir.path) {
+            for item in items where item.hasPrefix("ZeroDrive ") {
+                let dupURL = desktopDir.appendingPathComponent(item)
+                if let attrs = try? fm.attributesOfItem(atPath: dupURL.path),
+                   attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+                    try? fm.removeItem(at: dupURL)
+                }
+            }
         }
-        if !FileManager.default.fileExists(atPath: desktop.path) {
-            try? FileManager.default.createSymbolicLink(at: desktop, withDestinationURL: mountPoint)
+        let desktop = desktopDir.appendingPathComponent("ZeroDrive")
+        if let dest = try? fm.destinationOfSymbolicLink(atPath: desktop.path), dest == mountPoint.path {
+            return
+        }
+        if let attrs = try? fm.attributesOfItem(atPath: desktop.path),
+           attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+            try? fm.removeItem(at: desktop)
+        }
+        if !fm.fileExists(atPath: desktop.path) {
+            try? fm.createSymbolicLink(at: desktop, withDestinationURL: mountPoint)
         }
     }
 
