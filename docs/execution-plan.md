@@ -117,3 +117,33 @@
 - [ ] **App Sandbox & App Group Hardening**: Package the rclone storage core into a static framework communicating with the host app via App Groups (`com.apple.security.application-groups`).
 - [ ] **Mac App Store Submission**: Submit the sandboxed FileProvider edition to the Mac App Store for non-technical retail users.
 
+
+
+---
+
+## 5. Post-Launch Roadmap & Long-Term Expansion (Post-V1)
+
+### Phase 10: Multi-Drive Architecture, Sub-Drives & Free Tier Mechanics
+- [ ] **Multi-Drive & Sub-Drive Support**: Allow users to provision and mount multiple distinct drives in Finder (e.g. "Work Drive", "Personal Archive", "Client Vault") or create isolated sub-drives with partitioned storage quotas.
+- [ ] **Cloudflare R2 Free Tier Accounting Architecture**:
+  - *Cloudflare Rule:* Cloudflare provides 10 GB/month of free storage per Cloudflare account across all buckets combined (not 10 GB per bucket/drive).
+  - *ZeroDrive Free Tier Strategy:* For user-facing Free Tiers (e.g. a "10 GB Free Forever" starter plan), ZeroDrive will track usage at the user/tenant prefix level inside Cloudflare D1 or provision dedicated multi-tenant prefixes with automated soft/hard limits.
+
+### Phase 11: Public Cloud-Links & Web-Based Shared Drive Experience
+- [ ] **Public / Expiring Cloud Links**: Generate secure public sharing links (pre-signed R2 URLs with customizable expiration and password protection) directly from Finder (via context menu Quick Actions or the ZeroDrive app) for any file or folder.
+- [ ] **Web Application Workspace (ZeroDrive Web)**:
+  - Responsive web client allowing users to log in, browse directory trees, preview media/documents, and upload/download files from any browser.
+  - Authentication supporting Google OAuth, Apple ID, GitHub OAuth, and passwordless Magic Links.
+- [ ] **Google Drive / Mountain Duck-Style Shared Drives & Team Collaboration**:
+  - Provision shared team drives where multiple invited members can access, read, and write to shared directory hierarchies simultaneously.
+  - Granular permission control: "Read Only" (community/public view-only link) vs. "Read/Write" (collaborator/team access).
+  - "Join Drive via Link": One-click invitation links that immediately mount the shared folder into the recipient's ZeroDrive app or web dashboard.
+
+### Phase 12: Developer & Agent Platform (API, CLI & Hosted MCP Server)
+- [ ] **ZeroDrive REST & GraphQL API**:
+  - Programmatic endpoints to authenticate, create/delete sub-drives, manage read/write invitation tokens, query folder hierarchies, and trigger server-side cloud-to-cloud copies.
+- [ ] **ZeroDrive Developer CLI (`zd`)**:
+  - High-performance, lightweight headless CLI binary for macOS, Linux, and Windows.
+  - *Token Optimization Value:* Essential for vibe coders and AI agents running in terminal sandboxes (Claude Code, Cursor, Codex). Agents can run `zd ls /path`, `zd cat file.txt --lines 1-50`, or `zd grep "pattern"` to fetch precise context directly without burning hundreds of thousands of LLM tokens on bloated directory dumps.
+- [ ] **ZeroDrive Hosted Model Context Protocol (MCP) Server**:
+  - Official MCP server integration for Claude Desktop, ChatGPT plugins, Cursor, and headless cloud agents. Exposes native tools (`read_file`, `write_file`, `search_vault`, `share_link`) governed by the user's ZeroDrive API key.
