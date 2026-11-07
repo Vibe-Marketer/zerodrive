@@ -51,9 +51,9 @@ public struct FabricDriveMigrationCard: View {
 
     private var selectedItemName: String {
         if selectedItemURLs.count > 1 {
-            return "\(selectedItemURLs.count) Folders/Items Selected"
+            return "\(selectedItemURLs.count) Selected"
         }
-        return primarySelectedURL?.lastPathComponent ?? "Click or Drop Folder…"
+        return primarySelectedURL?.lastPathComponent ?? "No Folder Selected"
     }
 
     private var existingVaultFolders: [String] {
@@ -67,27 +67,19 @@ public struct FabricDriveMigrationCard: View {
         }
         let clean = customDestinationSubfolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         if !clean.isEmpty {
-            if selectedItemURLs.count > 1 {
-                return "\(clean)/<each-folder>"
-            } else if let first = primarySelectedURL, clean != first.lastPathComponent {
-                return "\(clean)/\(first.lastPathComponent)"
-            }
             return clean
         }
-        if selectedItemURLs.count > 1 {
-            return "Top Level (<each-folder>)"
-        }
-        if let first = primarySelectedURL {
+        if selectedItemURLs.count == 1, let first = primarySelectedURL {
             return first.lastPathComponent
         }
         return "Top Level (My Drive)"
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
 
             // =========================================================================
-            // CARD 1: LOCAL MAC TRANSFER PICKER (ALWAYS AVAILABLE FOR THIS MAC!)
+            // CARD 1: LOCAL MAC TRANSFER PICKER (TIGHT, SYMMETRICAL LAYOUT)
             // =========================================================================
             VStack(alignment: .leading, spacing: 12) {
                 // Header Row
@@ -95,7 +87,7 @@ public struct FabricDriveMigrationCard: View {
                     HStack(spacing: 8) {
                         Circle()
                             .fill(turbo.isLocalTransferRunning ? Color.green : Color.accentColor)
-                            .frame(width: 9, height: 9)
+                            .frame(width: 8, height: 8)
                         Text(turbo.isLocalTransferRunning ? "Moving from This Mac to Cloud Vault…" : "Move Folders from This Mac to Cloud Vault")
                             .font(.headline)
                     }
@@ -115,22 +107,24 @@ public struct FabricDriveMigrationCard: View {
                             Image(systemName: "checkmark.shield.fill")
                                 .foregroundStyle(.green)
                                 .font(.caption2)
-                            Text("Verifies in R2 Before Deleting Local Copy")
+                            Text("Verifies in R2 Before Deleting")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
 
-                // 3-Column Pipeline: [1. From This Mac (Source)] ──► [Arrow / Speed] ──► [2. To My Drive (Destination Picker)]
-                HStack(alignment: .top, spacing: 12) {
+                // 3-Column Pipeline: [1. FROM THIS MAC] ──► [Arrow] ──► [2. TO MY DRIVE]
+                // NOTE: No unconstrained Spacers inside child VStacks so Form never stretches the height!
+                HStack(alignment: .center, spacing: 10) {
 
-                    // LEFT BOX: 1. FROM THIS MAC (SOURCE PICKER + MULTI-SELECT LIST + PER-FOLDER SYMLINK)
+                    // LEFT BOX: 1. FROM THIS MAC
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 5) {
                             Image(systemName: isSourceFromFabric ? "cloud.fill" : "laptopcomputer")
+                                .font(.caption)
                                 .foregroundStyle(.blue)
-                            Text("1. FROM THIS MAC (SOURCE)")
+                            Text("1. FROM THIS MAC")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -151,12 +145,9 @@ public struct FabricDriveMigrationCard: View {
                                 Button(role: .destructive) {
                                     clearCurrentSelection()
                                 } label: {
-                                    HStack(spacing: 2) {
-                                        Image(systemName: "xmark.circle.fill")
-                                        Text("Clear")
-                                    }
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.red)
+                                    Text("Clear")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.red)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -167,28 +158,26 @@ public struct FabricDriveMigrationCard: View {
                                 .font(.subheadline.bold())
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                            Text("\(ByteCountFormatter.string(fromByteCount: turbo.localTelemetry.remainingBytes, countStyle: .file)) left to move")
+                            Text("\(ByteCountFormatter.string(fromByteCount: turbo.localTelemetry.remainingBytes, countStyle: .file)) left • \(max(0, turbo.localTelemetry.totalFiles - turbo.localTelemetry.movedFiles)) files")
                                 .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            Text("\(max(0, turbo.localTelemetry.totalFiles - turbo.localTelemetry.movedFiles)) files remaining")
-                                .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         } else if !selectedItemURLs.isEmpty {
                             HStack(spacing: 6) {
                                 Image(systemName: selectedItemURLs.count > 1 ? "square.stack.3d.up.fill" : "folder.fill")
                                     .font(.caption)
                                     .foregroundStyle(Color.accentColor)
-                                Text(selectedItemName)
+                                Text("\(selectedItemURLs.count) Item\(selectedItemURLs.count == 1 ? "" : "s") (\(ByteCountFormatter.string(fromByteCount: sourceSizeBytes, countStyle: .file)))")
                                     .font(.subheadline.bold())
-                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 Spacer()
-                                Text(ByteCountFormatter.string(fromByteCount: sourceSizeBytes, countStyle: .file) + (sourceItemCount > 0 ? " • \(sourceItemCount) files" : ""))
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(.secondary)
+                                Button("Edit List…") {
+                                    reviewAndMoveCurrentSelection()
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.caption2.bold())
+                                .foregroundStyle(Color.accentColor)
                             }
 
-                            // Visible Multi-Select List right inside 1. FROM THIS MAC with per-folder Symlink toggle!
                             ScrollView {
                                 LazyVStack(alignment: .leading, spacing: 3) {
                                     ForEach(selectedItemURLs, id: \.path) { url in
@@ -218,17 +207,12 @@ public struct FabricDriveMigrationCard: View {
                                                         }
                                                     }
                                                 )) {
-                                                    HStack(spacing: 2) {
-                                                        Image(systemName: "link")
-                                                            .font(.system(size: 9))
-                                                        Text("Shortcut")
-                                                            .font(.system(size: 10, weight: isLinked ? .bold : .regular))
-                                                    }
-                                                    .foregroundStyle(isLinked ? Color.accentColor : Color.secondary)
+                                                    Text("Shortcut")
+                                                        .font(.system(size: 10, weight: isLinked ? .bold : .regular))
+                                                        .foregroundStyle(isLinked ? Color.accentColor : Color.secondary)
                                                 }
                                                 .toggleStyle(.checkbox)
                                                 .controlSize(.mini)
-                                                .help("Leave a 0 KB symlink for \(url.lastPathComponent)")
                                             }
 
                                             Button {
@@ -241,126 +225,100 @@ public struct FabricDriveMigrationCard: View {
                                             .buttonStyle(.plain)
                                         }
                                         .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
+                                        .padding(.vertical, 2)
                                         .background(Color.primary.opacity(0.035))
                                         .clipShape(RoundedRectangle(cornerRadius: 4))
                                     }
                                 }
                             }
-                            .frame(maxHeight: 96)
+                            .frame(height: 62)
                         } else {
                             Button {
                                 openFinderFilePicker()
                             } label: {
-                                VStack(alignment: .leading, spacing: 4) {
+                                VStack(alignment: .leading, spacing: 3) {
                                     HStack(spacing: 6) {
                                         Image(systemName: "folder.badge.plus")
-                                            .font(.title3)
+                                            .font(.subheadline.bold())
                                             .foregroundStyle(Color.accentColor)
-                                        Text("Select Folders or Files…")
-                                            .font(.headline)
+                                        Text("Click to Choose Folders or Files…")
+                                            .font(.subheadline.bold())
                                             .foregroundStyle(Color.accentColor)
+                                            .lineLimit(1)
                                     }
-                                    Text("Click to browse this Mac or drag & drop folders here")
+                                    Text("Or drag & drop 1 or multiple folders here")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    Text("Opens selector with per-folder shortcut (symlink) options")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
                                 }
+                                .padding(.vertical, 4)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(11)
-                    .frame(maxWidth: .infinity, minHeight: 115, alignment: .leading)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(isLocationADropTargeted ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(isLocationADropTargeted ? Color.accentColor : Color.secondary.opacity(0.15), lineWidth: 1.2)
+                            .stroke(isLocationADropTargeted ? Color.accentColor : Color.secondary.opacity(0.15), lineWidth: 1)
                     )
                     .onDrop(of: [.fileURL], isTargeted: $isLocationADropTargeted) { providers in
                         handleDropOnLocationA(providers)
                         return true
                     }
 
-                    // MIDDLE CONNECTOR: Local Transfer Speed or Ready State
-                    VStack(spacing: 4) {
-                        Spacer(minLength: 16)
+                    // MIDDLE CONNECTOR (Fixed Height, Zero Vertical Stretching!)
+                    VStack(spacing: 3) {
                         if turbo.isLocalTransferRunning {
-                            if turbo.localTelemetry.speedMBps > 0.1 {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "bolt.fill")
-                                        .foregroundStyle(Color.orange)
-                                        .font(.caption)
-                                    Text(String(format: "%.1f MB/s", turbo.localTelemetry.speedMBps))
-                                        .font(.headline.monospacedDigit())
-                                        .foregroundStyle(Color.primary)
-                                }
-                                Text(String(format: "%.1f%% Done", turbo.localTelemetry.percent))
-                                    .font(.caption2.bold().monospacedDigit())
-                                    .foregroundStyle(Color.accentColor)
-                            } else {
-                                HStack(spacing: 4) {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                    Text("Moving…")
-                                        .font(.subheadline.bold())
-                                        .foregroundStyle(Color.blue)
-                                }
-                            }
-
-                            HStack(spacing: 2) {
-                                Rectangle()
-                                    .fill(Color.accentColor)
-                                    .frame(height: 2)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(Color.accentColor)
-                            }
-
-                            Text(formatETA(turbo.localTelemetry.etaSeconds))
-                                .font(.caption2.bold().monospacedDigit())
+                            Text(String(format: "%.1f MB/s", turbo.localTelemetry.speedMBps))
+                                .font(.caption.bold().monospacedDigit())
                                 .foregroundStyle(Color.accentColor)
                         } else {
-                            HStack(spacing: 4) {
-                                Image(systemName: !selectedSymlinkPaths.isEmpty ? "link.circle.fill" : "arrow.right.circle.fill")
-                                    .foregroundStyle(hasSelection ? Color.accentColor : Color.secondary)
-                                    .font(.caption)
-                                Text(!selectedSymlinkPaths.isEmpty ? "\(selectedSymlinkPaths.count) Linked" : "Move to Cloud")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(hasSelection ? Color.accentColor : Color.secondary)
-                            }
-
-                            HStack(spacing: 2) {
-                                Rectangle()
-                                    .fill(hasSelection ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3))
-                                    .frame(height: 2)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(hasSelection ? Color.accentColor : Color.secondary.opacity(0.3))
-                            }
-
-                            Text("0 KB used on Mac")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Text(!selectedSymlinkPaths.isEmpty ? "\(selectedSymlinkPaths.count) Linked" : "0 KB on Mac")
+                                .font(.caption2.bold())
+                                .foregroundStyle(hasSelection ? Color.accentColor : Color.secondary)
                         }
-                        Spacer(minLength: 16)
-                    }
-                    .frame(width: 110)
 
-                    // RIGHT BOX: 2. TO MY DRIVE (INTERACTIVE VAULT DESTINATION PICKER!)
+                        HStack(spacing: 2) {
+                            Rectangle()
+                                .fill(hasSelection || turbo.isLocalTransferRunning ? Color.accentColor : Color.secondary.opacity(0.35))
+                                .frame(height: 2)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.bold())
+                                .foregroundStyle(hasSelection || turbo.isLocalTransferRunning ? Color.accentColor : Color.secondary.opacity(0.35))
+                        }
+                    }
+                    .frame(width: 82)
+
+                    // RIGHT BOX: 2. TO MY DRIVE (CLEAN SINGLE-LINE HEADER + FULL-WIDTH DROPDOWN)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 5) {
                             Image(systemName: "icloud.fill")
+                                .font(.caption)
                                 .foregroundStyle(.green)
-                            Text("2. TO MY DRIVE (VAULT FOLDER)")
+                            Text("2. TO MY DRIVE")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                             Spacer()
+                            Button {
+                                isCreatingNewDestFolder.toggle()
+                                newDestFolderInput = ""
+                            } label: {
+                                Text("+ New Folder")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .buttonStyle(.plain)
+
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+
                             Button {
                                 browseOrCreateFolderInMyDrive()
                             } label: {
@@ -371,32 +329,16 @@ public struct FabricDriveMigrationCard: View {
                             .buttonStyle(.plain)
                         }
 
-                        HStack(spacing: 4) {
-                            Image(systemName: "externaldrive.fill")
-                                .font(.caption2)
-                                .foregroundStyle(Color.accentColor)
-                            Text("My Drive")
-                                .font(.caption.bold())
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(.tertiary)
-                            Text(effectiveDestinationLabel)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-
                         if turbo.isLocalTransferRunning {
-                            Text("Saved: \(ByteCountFormatter.string(fromByteCount: turbo.localTelemetry.movedBytes, countStyle: .file))")
+                            Text("My Drive ▸ \(effectiveDestinationLabel)")
+                                .font(.subheadline.bold())
+                                .lineLimit(1)
+                            Text("Saved: \(ByteCountFormatter.string(fromByteCount: turbo.localTelemetry.movedBytes, countStyle: .file)) (\(turbo.localTelemetry.movedFiles)/\(turbo.localTelemetry.totalFiles) files)")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.green)
-                            Text("\(turbo.localTelemetry.movedFiles) of \(turbo.localTelemetry.totalFiles) files safe")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
                         } else if isCreatingNewDestFolder {
                             HStack(spacing: 6) {
-                                TextField("New folder name (e.g. _DEV)", text: $newDestFolderInput)
+                                TextField("Folder name in My Drive (e.g. _DEV)", text: $newDestFolderInput)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.caption)
                                 Button("Create") {
@@ -413,70 +355,70 @@ public struct FabricDriveMigrationCard: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
-                                Button("✕") {
-                                    isCreatingNewDestFolder = false
-                                }
-                                .controlSize(.small)
                             }
                         } else {
-                            // Direct Folder Picker Dropdown + "+ New Folder" right on the Main Card!
-                            HStack(spacing: 6) {
-                                Menu {
-                                    Button("Top Level (My Drive)") {
-                                        customDestinationSubfolder = ""
-                                    }
-                                    if let first = primarySelectedURL {
-                                        let parent = first.deletingLastPathComponent().lastPathComponent
-                                        let home = FileManager.default.homeDirectoryForCurrentUser.lastPathComponent
-                                        if !parent.isEmpty && parent != home && parent != "/" {
-                                            Button("Parent Folder (\(parent))") {
-                                                customDestinationSubfolder = parent
-                                            }
-                                        }
-                                    }
-                                    Divider()
-                                    Section("Existing Folders in My Drive") {
-                                        ForEach(existingVaultFolders, id: \.self) { folder in
-                                            Button {
-                                                customDestinationSubfolder = folder
-                                            } label: {
-                                                Label(folder, systemImage: "folder")
-                                            }
-                                        }
-                                    }
-                                    Divider()
-                                    Button {
-                                        isCreatingNewDestFolder = true
-                                        newDestFolderInput = ""
-                                    } label: {
-                                        Label("New Folder…", systemImage: "folder.badge.plus")
-                                    }
-                                } label: {
-                                    Label(customDestinationSubfolder.isEmpty ? "Choose Vault Folder…" : "Folder: \(customDestinationSubfolder)", systemImage: "folder")
-                                        .font(.caption2.bold())
+                            // Full-width Folder Picker Menu (Never Truncates!)
+                            Menu {
+                                Button("Top Level (My Drive)") {
+                                    customDestinationSubfolder = ""
                                 }
-                                .controlSize(.small)
-
+                                if let first = primarySelectedURL {
+                                    let parent = first.deletingLastPathComponent().lastPathComponent
+                                    let home = FileManager.default.homeDirectoryForCurrentUser.lastPathComponent
+                                    if !parent.isEmpty && parent != home && parent != "/" {
+                                        Button("Same Parent Folder (\(parent))") {
+                                            customDestinationSubfolder = parent
+                                        }
+                                    }
+                                }
+                                Divider()
+                                Section("Existing Folders in My Drive") {
+                                    ForEach(existingVaultFolders, id: \.self) { folder in
+                                        Button {
+                                            customDestinationSubfolder = folder
+                                        } label: {
+                                            Label(folder, systemImage: "folder")
+                                        }
+                                    }
+                                }
+                                Divider()
                                 Button {
                                     isCreatingNewDestFolder = true
                                     newDestFolderInput = ""
                                 } label: {
-                                    Label("New Folder", systemImage: "plus")
-                                        .font(.caption2.bold())
+                                    Label("Create New Folder…", systemImage: "folder.badge.plus")
                                 }
-                                .controlSize(.small)
-                                .buttonStyle(.bordered)
+                                Button {
+                                    browseOrCreateFolderInMyDrive()
+                                } label: {
+                                    Label("Browse My Drive in Finder…", systemImage: "folder")
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(Color.accentColor)
+                                    Text("My Drive ▸ \(effectiveDestinationLabel)")
+                                        .font(.subheadline.weight(.semibold))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                }
                             }
-                            .padding(.top, 2)
+                            .controlSize(.regular)
+
+                            Text("Click above to pick an existing folder or create a new one")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
                         }
                     }
-                    .padding(11)
-                    .frame(maxWidth: .infinity, minHeight: 115, alignment: .leading)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.secondary.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.15), lineWidth: 1.2)
+                            .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
                     )
                 }
 
@@ -503,27 +445,33 @@ public struct FabricDriveMigrationCard: View {
                 }
 
                 Divider()
-                    .padding(.vertical, 2)
 
-                // Clean Action Bar
+                // Single Clean Footer Bar: Mac Free Space on Left, Primary Action Button on Right
                 HStack(alignment: .center, spacing: 10) {
-                    Button {
-                        openFinderFilePicker()
-                    } label: {
-                        Label(hasSelection ? "Select / Add Folders…" : "Select Folders or Files…", systemImage: "folder.badge.plus")
+                    HStack(spacing: 6) {
+                        Image(systemName: "internaldrive")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("\(ByteCountFormatter.string(fromByteCount: Int64(shutilCurrentFree()), countStyle: .file)) free on this Mac")
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(.green)
+                        if let ledger = turbo.ledger, ledger.totalFreedOnMacBytes > 0 {
+                            Text("• +\(ByteCountFormatter.string(fromByteCount: ledger.totalFreedOnMacBytes, countStyle: .file)) reclaimed")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .controlSize(.regular)
+
+                    Spacer()
 
                     if hasSelection {
                         Button(role: .destructive) {
                             clearCurrentSelection()
                         } label: {
-                            Label("Clear Selection", systemImage: "xmark.circle")
+                            Text("Clear Selection")
                         }
                         .controlSize(.regular)
                     }
-
-                    Spacer()
 
                     Button {
                         if hasSelection {
@@ -532,11 +480,14 @@ public struct FabricDriveMigrationCard: View {
                             openFinderFilePicker()
                         }
                     } label: {
-                        Text(hasSelection
-                             ? (selectedItemURLs.count > 1
-                                ? "Configure & Move \(selectedItemURLs.count) Selected Items…"
-                                : "Configure & Move \"\(selectedItemName)\"…")
-                             : "Choose Folders & Configure Move…")
+                        Label(
+                            hasSelection
+                                ? (selectedItemURLs.count > 1
+                                    ? "Review & Move \(selectedItemURLs.count) Selected Items…"
+                                    : "Review & Move \"\(selectedItemName)\"…")
+                                : "Select Folders or Files to Move…",
+                            systemImage: hasSelection ? "arrow.up.right.circle.fill" : "folder.badge.plus"
+                        )
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
@@ -631,6 +582,14 @@ public struct FabricDriveMigrationCard: View {
         }
     }
 
+    private func shutilCurrentFree() -> UInt64 {
+        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
+           let free = attrs[.systemFreeSize] as? NSNumber {
+            return free.uint64Value
+        }
+        return 0
+    }
+
     private func isURLDirectory(_ url: URL) -> Bool {
         var isDir: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
@@ -701,7 +660,6 @@ public struct FabricDriveMigrationCard: View {
                 }
             }
             updateSourceStats(urls)
-            // Always open the popup selector immediately so the user sees the full list of selected items, per-folder symlink checkboxes, and destination picker!
             pendingTransfer = PendingTransferItem(
                 urls: urls,
                 destinationFolder: customDestinationSubfolder,
