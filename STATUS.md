@@ -1,28 +1,37 @@
-# ZeroDrive status
+# ZeroDrive Session Handoff & Live Status Tracker
 
-## Mount and terminal access checked November 6, 2026
+**Last Updated:** November 6, 2026 (21:16 EST)  
+**Current Branch:** `main`  
+**Active Mac Free Space:** ~116–124 GB (`df -h /`)  
+**Live Mount Path:** `~/.zerodrive-mount` $\rightarrow$ `~/ZeroDrive/My Drive` (`primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f`)
 
-Andrew asked whether ZeroDrive can live under his home folder and support terminal access.
+---
 
-The live macOS mount table showed `localhost:/` mounted through NFS at `/Users/Naegele/.zerodrive-mount`. `/Users/Naegele/ZeroDrive` is a symbolic link to that mount. A fresh zsh process successfully entered both `/Users/Naegele/ZeroDrive` and `/Users/Naegele/ZeroDrive/My Drive` and listed their contents. The latter contained the cloud collections.
+## 1. Where Supporting Research & Plans Live
 
-`ZeroDriveProject/Sources/Core/RcloneDaemonSupervisor.swift` defines these paths, creates the link, mounts with `nobrowse` and pins the My Drive folder into Finder Favorites. The Finder extension also references the hidden mount. Moving the mount itself would require coordinating those references and the sleep and recovery paths.
+- **Product Strategy, 3-Bucket Inventory, Competitor Research & Pricing:** [`docs/product-strategy-and-market-research.md`](./docs/product-strategy-and-market-research.md)
+- **Apple HIG UI/UX Audit & 6th-Grade Simplicity Redesign:** [`docs/ui-ux-review-and-redesign.md`](./docs/ui-ux-review-and-redesign.md)
+- **Step-by-Step Execution Plan & Full Scope Outline:** [`docs/execution-plan.md`](./docs/execution-plan.md)
+- **Object Storage Backend Cost Comparison:** [`2026-11-05-storage-alternatives.md`](./2026-11-05-storage-alternatives.md)
 
-Terminal access is working with the existing layout. No mount, app, transfer or cloud data was changed during this assessment. Existing uncommitted work was preserved. This was a focused mount assessment, not a complete code audit or verification of the reported storage savings and RAM usage.
+---
 
-Use `cd "$HOME/ZeroDrive/My Drive"` to enter the cloud collections. No repair is needed for the terminal access tested here. A direct mount at the visible path remains an optional implementation change if Andrew wants that appearance.
+## 2. Step-by-Step Execution Status
 
+| Step | Task Description | Status | Verification Notes |
+| :--- | :--- | :--- | :--- |
+| **Step 0** | Halt runaway iCloud `bird` download loop, purge 40 GB `MMCS` cache, clear AI/npm caches, fix `My Drive` root prefix (`usr_andrew_8bc7fb477f`) | **DONE** | Reclaimed 110+ GB on Mac SSD (`df -h /` = 124 GB free); `ls ~/ZeroDrive/"My Drive"` lists all 9 user folders cleanly. |
+| **Step 1** | Save complete strategy, competitor research, UI/UX audit, and step-by-step execution plan in `docs/` + commit to Git | **IN PROGRESS** | Files written to `docs/` and `STATUS.md`; committing now. |
+| **Step 2** | Audit `~/Desktop/MAIN` vs. R2 Vault `MAIN` (`74.38 GB` already in R2) and safely remove/evict verified local duplicates | **NOT STARTED** | Next up immediately after Git commit of Step 1. |
+| **Step 3** | Upgrade `turbo-migrate-dashboard.py` with strict 1-by-1 cloud-stub hydration, `--leave-symlink` folder shortcut creation, and activity logging | **NOT STARTED** | Pending Step 2. |
+| **Step 4** | Implement UI/UX overhaul & Folder Symlink toggle in `ZeroDriveProject` (Menu bar live telemetry, cut menu bar drop box, cut hardcoded `82.4 GB` projections, merge Overview drop boxes, wire Activity ledger, add Multi-Device card) | **NOT STARTED** | Pending Step 3. |
+| **Step 5** | Harden `RcloneDaemonSupervisor.swift` self-healing mount & deploy `ZeroDrive.app` to `naegele-mm` (`100.114.74.17`) for instant multi-device access | **NOT STARTED** | Pending Step 4. |
+| **Step 6** | End-to-end verification (symlink test, `naegele-mm` mount test, release build deployment) & final Git commit | **NOT STARTED** | Pending Step 5. |
 
-## Storage assessment on November 6, 2026
+---
 
-Andrew asked what terminal access means for video editing, coding agents and the claim that ZeroDrive solves Mac storage limits. This was a read only assessment of runtime settings, selected source and public documentation. No transfers, settings, mount state or cloud objects were changed.
+## 3. Immediate Next Action (For Current or Resumed Session)
 
-The live mount table showed NFS at `/Users/Naegele/.zerodrive-mount`. The running bundled rclone used `serve nfs`, `--vfs-cache-mode=full`, `--cache-dir=/Users/Naegele/.zerodrive-cache`, `--vfs-cache-max-size=250G`, `--vfs-write-back=15s` and `--vfs-cache-max-age=24h`. Its command line had no `--vfs-cache-min-free-space` setting. A filesystem walk measured about 9.72 GiB allocated in that cache. `df -h /System/Volumes/Data` reported about 98 GiB available. These are changing snapshots.
-
-`ZeroDriveProject/Sources/Core/RcloneDaemonSupervisor.swift` lines 170 to 198 matched the cache settings and enabled `--vfs-links`. The mount command at line 220 used `nolocks`. `SpoolAndGuardManager.swift` has disk space warnings and checks for its drop workflow. This inspection does not establish an enforced reserve for arbitrary writes from editors or terminal tools. Its `purgeLocally` function at line 219 calls file removal on `item.localCachePath`, which elsewhere can point into the mounted drive. Whether this action can delete a remote object needs a focused review using disposable data before presenting it as safe local cache removal. No deletion test was run.
-
-The supported interpretation is a local filesystem interface to cloud objects, with local caching. R2 supplies storage rather than execution or RAM. Entering a folder proves navigation, not complete editor, build, database, file locking, upload durability or recovery compatibility. No full video project, code build, disconnect or restart test was performed. Provider upload completion and actual reclaimed storage were not verified.
-
-[Official rclone documentation](https://rclone.org/commands/rclone_mount/) describes partial read caching, delayed uploads and soft cache limits that can be exceeded. [NFS documentation](https://rclone.org/commands/rclone_serve_nfs/) describes the experimental NFS implementation. [Cloudflare pricing](https://developers.cloudflare.com/r2/pricing/) lists Standard storage at $0.015 per GB month, request charges and free direct egress. [Mountain Duck](https://mountainduck.io/) establishes an existing product category for mounted cloud storage.
-
-Next work, if requested, is a disposable project test in Andrew's actual editor. Measure cold and cached playback, save and cloud readback, cache growth, free disk space, export and recovery. Retain local originals and avoid changing the active transfer. Evaluate the cache budget and local purge behavior before making a general promise that the Mac cannot fill up.
+1. Commit `docs/product-strategy-and-market-research.md`, `docs/ui-ux-review-and-redesign.md`, `docs/execution-plan.md`, and `STATUS.md` to Git.
+2. Execute **Step 2**: Run the read-only comparison between `/Users/Naegele/Desktop/MAIN` and `primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f/MAIN`, remove any local files already verified in R2 with identical byte sizes, and report exact reclaimed space.
+3. Proceed directly through **Steps 3, 4, 5, and 6**.
