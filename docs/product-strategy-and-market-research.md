@@ -112,3 +112,42 @@ Unlike consumer sync apps (iCloud Drive, Dropbox, Google Drive) that rely on App
 - **[RESOLVED-1] Prove Direct iCloud-to-R2 Stream on Our Own Setup First:** Built [`stream-icloud-to-vault.py`](../stream-icloud-to-vault.py) and wired it into `ZeroDrive.app` (`Devices & Clouds` tab) to authenticate `naegele412@gmail.com` via `rclone`'s native `iclouddrive` backend, sync the trust token to `naegele-mm`, and prove the zero-local-disk RAM stream on our own setup before exposing it to external Beta users.
 - **[RESOLVED-2] Storage Backend Locked to Cloudflare R2 Only:** Backblaze B2 cannot be proxied through Cloudflare Workers for bulk file/video storage without violating Cloudflare Section 2.8 terms, and external S3 providers lose our native zero-hop Worker binding (`env.VAULT_BUCKET`) and 190+ MB/s edge performance. **Cloudflare R2 (`$15/TB/mo`, `$0` egress) is our sole, non-negotiable primary storage backend.**
 - **[RESOLVED-3] Deleted Legacy Web Simulator:** Removed `src/`, `server.ts`, `package.json`, `bun.lock`, `dist/`, `node_modules/`, and `.aistudio/` so the repository contains strictly the native macOS Swift app (`ZeroDriveProject/`), migration/stream scripts, and Cloudflare Worker (`deploy/`).
+
+
+---
+
+## 7. Zero-Risk Free Tier Mechanics & High-Ticket Unit Economics
+
+### 1. The "BYOK Free Tier" vs. "DFY Hosted Upgrade" Model
+- **The Financial Trap of Free:** Hosting thousands of free users on a central ZeroDrive R2 bucket creates an unmetered liability that burns cash before conversion.
+- **The Solution (BYOK OAuth 2.0 Free Tier):**
+  - Users sign up for free using **Cloudflare OAuth 2.0**.
+  - ZeroDrive programmatically provisions a bucket in the *user's own* Cloudflare account.
+  - Cloudflare absorbs the **10 GB / month free storage** and zero-egress cost.
+  - **Hosting cost to ZeroDrive:** **`$0.00`** per free user, allowing infinite viral top-of-funnel acquisition.
+
+### 2. Seamless "Zero-Downtime" Migration: Free BYOK $\rightarrow$ Paid DFY Vault
+When a free user upgrades to a paid plan, they must not experience broken paths, data loss, or long wait times.
+- **Phase A (Instant Dual-Mount / Union):**
+  - The moment payment clears via Stripe, ZeroDrive provisions the user's new managed 1 TB+ R2 vault prefix (`usr_<id>`).
+  - The local rclone mount reconfigures in-memory to an `rclone union`: it serves files from both the old user-owned 10 GB bucket (Read-Only) and the new 1 TB vault (Read-Write).
+  - *User Experience:* The user never loses access to their files for a single second; their Finder path `~/ZeroDrive/My Drive` never breaks.
+- **Phase B (Server-Side S3-to-S3 Cloud Copy):**
+  - A background Cloudflare Worker / headless stream executes `rclone copy user_r2: zerodrive_vault:usr_<id>/` directly cloud-to-cloud at ~80–120 MB/s.
+  - 10 GB migrates in **less than 90 seconds** without touching the user's MacBook bandwidth or SSD.
+- **Phase C (Cutover & Clean Handshake):**
+  - ZeroDrive verifies MD5/ETag checksums for every file.
+  - Once 100% verified, the union unbinds the old user bucket and switches the mount exclusively to the paid vault.
+  - The old user bucket is retained or safely unlinked with zero data loss.
+
+### 3. High-Ticket Pricing & The Math to $1,000,000 ARR
+Low-ticket pricing (`$9.99/mo`) is a commodity trap for desktop utility software. High-value vibe coders, creative studios, and AI builders pay for reliability, infinite local SSD freedom, and multi-device agent workflows.
+
+| Tier | Retail Price | Included Storage | Wholesale COGS (R2) | Gross Margin | Paid Users Needed for $1M ARR |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Free Starter** | **`$0`** (BYOK Cloudflare) | 10 GB (via User CF) | `$0.00/mo` | **100%** | N/A (Acquisition Wedge) |
+| **ZeroDrive Pro** | **`$19.99 / mo`** (`$199/yr`) | 500 GB DFY Storage | `~$4.50/mo` | **77.5%** | **4,168 users** |
+| **ZeroDrive Studio / Builder** | **`$39.00 / mo`** (`$390/yr`) | 2 TB DFY Storage | `~$18.00/mo` | **53.8%** | **2,136 users** |
+| **ZeroDrive Team / Agency** | **`$79.00 / mo`** (`$790/yr`) | 5 TB DFY Storage + 3 Seats | `~$45.00/mo` | **43.0%** | **1,054 users** |
+
+*Key Takeaway:* At `$39/mo`, reaching **$1,000,000 ARR requires only ~2,136 active subscribers** instead of 8,300+ at `$10/mo`.

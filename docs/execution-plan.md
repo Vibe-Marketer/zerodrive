@@ -147,3 +147,9 @@
   - *Token Optimization Value:* Essential for vibe coders and AI agents running in terminal sandboxes (Claude Code, Cursor, Codex). Agents can run `zd ls /path`, `zd cat file.txt --lines 1-50`, or `zd grep "pattern"` to fetch precise context directly without burning hundreds of thousands of LLM tokens on bloated directory dumps.
 - [ ] **ZeroDrive Hosted Model Context Protocol (MCP) Server**:
   - Official MCP server integration for Claude Desktop, ChatGPT plugins, Cursor, and headless cloud agents. Exposes native tools (`read_file`, `write_file`, `search_vault`, `share_link`) governed by the user's ZeroDrive API key.
+
+
+### Phase 13: Seamless Free-to-Paid Vault Migration Architecture
+- [ ] **Dual-Mount Live Union Cutover**: When a free BYOK user upgrades to a paid DFY vault, mount both storage backends simultaneously using `rclone union` so the user's Finder files remain online with zero downtime.
+- [ ] **Cloud-to-Cloud Fast Migration Stream**: Trigger a server-side transfer between the user's personal R2 bucket and the managed ZeroDrive vault at edge speeds (10 GB in <90 seconds).
+- [ ] **Checksum Verification & Safe Unbind**: Verify MD5/ETag hashes on all migrated objects before silently unbinding the old user bucket and locking the mount to the managed vault.
