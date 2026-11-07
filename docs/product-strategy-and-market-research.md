@@ -48,7 +48,9 @@ Unlike consumer sync apps (iCloud Drive, Dropbox, Google Drive) that rely on App
 2. **RAM-Direct / VPS Cloud-to-Cloud Drain (`rclone iclouddrive:`) + Strict 1-by-1 Local Fallback (Approved):** Using `rclone v1.74.3`'s native `iclouddrive` backend to stream files directly from Apple's iCloud HTTP servers to R2 in RAM (or on `naegele-mm` / `naegele-vps`) with zero local SSD usage, plus strict 1-file-at-a-time hydration fallback.
 3. **Instant Multi-Device Deployment on `naegele-mm` + Device Pairing (Approved):** Deploying ZeroDrive + vault config to `naegele-mm` (`100.114.74.17`) and adding directory cache refresh so both Macs see changes immediately without requiring Tailscale.
 4. **6th-Grade Apple-Native UI/UX Overhaul (Approved):** Cutting the broken menu bar drop zone, wiring live Turbo Migration + VFS status into the menu bar, cutting hardcoded target strings (`~82.4 GB` / `~48 GB`), merging duplicate drop zones on Overview, and wiring `migration-ledger.json` into the Activity tab.
-5. **Cloudflare D1 Edge Metadata Index (Planned Next Phase):** Borrowing the LucidLink/JuiceFS decoupled-metadata pattern so 1,000,000+ file trees list and search in 0 ms without S3 `ListObjectsV2` pagination lag.
+5. **Headless Linux / VPS Direct Mount for AI Coding Agents:**
+   - Developers and vibe coders run autonomous agents (Claude Code, Cursor, custom Python/Node scripts) on remote cloud VPS boxes. Standard cloud drives (Dropbox, iCloud, OneDrive) cannot run headlessly on a Linux server without fragile GUI hacks. ZeroDrive provides a 1-line script that mounts the exact same vault (or a dedicated folder like `My Drive/_AGENT_WORKSPACE`) directly at `/mnt/zerodrive` on any Linux VPS using FUSE. Anything the remote agent writes is immediately visible in the Mac Finder, and anything the user drops in on Mac is instantly accessible to the agent.
+6. **Decoupled Metadata Index Without Proprietary Block Lock-In (Borrowed from JuiceFS / LucidLink):**
 
 ---
 
@@ -86,7 +88,9 @@ Unlike consumer sync apps (iCloud Drive, Dropbox, Google Drive) that rely on App
    - Bypasses Apple's buggy `bird` daemon completely by streaming directly from Apple's iCloud HTTP servers to R2 in memory or on a background worker (`naegele-mm` / `naegele-vps`).
 3. **Symlink-Preserving Offload:**
    - Moving a folder leaves a 0-byte POSIX symlink at the original path so terminal scripts, AI coding agents, and media timelines continue working without modification.
-4. **Decoupled Metadata Index Without Proprietary Block Lock-In (Borrowed from JuiceFS / LucidLink):**
+4. **Headless Cloud Agent Persistence (VPS Filesystem Mount):**
+   - Competitors build exclusively for local Mac/Windows desktops. When an AI agent runs on a remote VPS or Docker container, files are stranded. ZeroDrive allows any Linux cloud server to mount the same vault at `/mnt/zerodrive` with 1 command, giving AI agents direct bidirectional filesystem access to the user's Finder.
+5. **Decoupled Metadata Index Without Proprietary Block Lock-In (Borrowed from JuiceFS / LucidLink):**
    - Unlike LucidLink (which shreds files into proprietary 512 KB blocks), ZeroDrive keeps files as plain, portable S3/R2 objects while maintaining a fast edge/local metadata index for instant directory listings and search.
 
 ---
