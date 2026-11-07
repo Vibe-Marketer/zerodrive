@@ -149,6 +149,7 @@ public final class TurboMigrationManager: ObservableObject {
     public static let shared = TurboMigrationManager()
 
     @Published public var telemetry: TurboMigrationTelemetry = TurboMigrationTelemetry()
+    @Published public var localTelemetry: TurboMigrationTelemetry = TurboMigrationTelemetry()
     @Published public var remoteTelemetry: TurboMigrationTelemetry? = nil
     @Published public var queuedSpaces: [String] = []
     @Published public var queuedPathMap: [String: String] = [:]
@@ -173,12 +174,12 @@ public final class TurboMigrationManager: ObservableObject {
 
     public var isLocalTransferRunning: Bool {
         if isLocalProcessActive { return true }
-        return telemetry.isRunning && !telemetry.sourceLocation.contains("naegele-mm")
+        return localTelemetry.isRunning && !localTelemetry.sourceLocation.contains("naegele-mm")
     }
 
     public var isRemoteStreamActive: Bool {
         if let rem = remoteTelemetry, rem.isRunning { return true }
-        return telemetry.isRunning && telemetry.sourceLocation.contains("naegele-mm")
+        return false
     }
 
     private init() {
@@ -225,9 +226,12 @@ public final class TurboMigrationManager: ObservableObject {
             return t
         }()
 
+        if let loc = localT {
+            self.localTelemetry = loc
+        }
         self.remoteTelemetry = remoteT
 
-        // Prefer local running job; if local is idle and remote (e.g. naegele-mm direct iCloud stream) is running, stream remote in UI!
+        // Menu bar & combined telemetry: prefer local running job; if local is idle and remote is running, expose remote for Menu Bar
         if let loc = localT, loc.isRunning {
             self.telemetry = loc
         } else if let rem = remoteT, rem.isRunning {
@@ -553,11 +557,12 @@ public final class TurboMigrationManager: ObservableObject {
         let prefix = sourcePath.contains("FabricDrive") ? "Fabric" : (sourcePath.contains("CloudStorage") || sourcePath.contains("Mobile Documents") || sourcePath.contains("Desktop") ? "iCloud" : "Mac")
 
         isLocalProcessActive = true
-        telemetry.spaceName = name
-        telemetry.isRunning = true
-        telemetry.statusMessage = "Preparing \(isCopy ? "copy" : "move") for \(name)…"
-        telemetry.sourceLocation = "\(prefix): \(name)"
-        telemetry.destLocation = "My Drive/\(name)"
+        localTelemetry.spaceName = name
+        localTelemetry.isRunning = true
+        localTelemetry.statusMessage = "Preparing \(isCopy ? "copy" : "move") for \(name)…"
+        localTelemetry.sourceLocation = "\(prefix): \(name)"
+        localTelemetry.destLocation = "My Drive/\(name)"
+        telemetry = localTelemetry
 
         Task.detached(priority: .userInitiated) {
             let proc = Process()
@@ -578,8 +583,8 @@ public final class TurboMigrationManager: ObservableObject {
 
             await MainActor.run {
                 self.isLocalProcessActive = false
-                self.telemetry.isRunning = false
-                self.telemetry.isComplete = true
+                self.localTelemetry.isRunning = false
+                self.localTelemetry.isComplete = true
                 self.readTelemetry()
                 self.readLedger()
                 self.readSymlinks()
