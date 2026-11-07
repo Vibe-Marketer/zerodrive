@@ -8,18 +8,20 @@ public struct PendingTransferItem: Identifiable {
     public var destinationFolder: String
     public var isCopy: Bool = false
     public var leaveSymlink: Bool = false
+    /// Exact set of source folder paths that should leave a symlink behind (per-folder control)
+    public var symlinkPaths: Set<String>
 
     public init(
         urls: [URL],
         destinationFolder: String = "",
         isCopy: Bool = false,
-        leaveSymlink: Bool = false
+        leaveSymlink: Bool = false,
+        symlinkPaths: Set<String>? = nil
     ) {
         self.urls = urls
         if !destinationFolder.isEmpty {
             self.destinationFolder = destinationFolder
         } else if urls.count > 1, let first = urls.first {
-            // For multiple items (e.g. 54 folders inside ~/_DEV), default destination to their parent folder name (e.g. "_DEV")
             let parentName = first.deletingLastPathComponent().lastPathComponent
             let homeName = FileManager.default.homeDirectoryForCurrentUser.lastPathComponent
             if !parentName.isEmpty && parentName != homeName && parentName != "/" {
@@ -34,6 +36,20 @@ public struct PendingTransferItem: Identifiable {
         }
         self.isCopy = isCopy
         self.leaveSymlink = leaveSymlink
+        if let explicit = symlinkPaths {
+            self.symlinkPaths = explicit
+        } else if leaveSymlink {
+            var paths = Set<String>()
+            for u in urls {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue {
+                    paths.insert(u.path)
+                }
+            }
+            self.symlinkPaths = paths
+        } else {
+            self.symlinkPaths = []
+        }
     }
 }
 
@@ -45,13 +61,12 @@ public struct TransferConfirmationSheet: View {
     @ObservedObject private var vaultStats = VaultStats.shared
 
     @State private var selectedURLs: [URL] = []
+    @State private var symlinkPaths: Set<String> = []
     @State private var destinationFolder: String = ""
     @State private var isCopy: Bool = false
-    @State private var leaveSymlink: Bool = false
     @State private var isCalculating: Bool = true
     @State private var totalSizeBytes: Int64 = 0
     @State private var totalItemCount: Int = 0
-    @State private var showAllSelectedItems: Bool = true
     @State private var isCreatingNewFolder: Bool = false
     @State private var newFolderNameInput: String = ""
 
@@ -64,9 +79,9 @@ public struct TransferConfirmationSheet: View {
         self.onConfirm = onConfirm
         self.onCancel = onCancel
         _selectedURLs = State(initialValue: pendingItem.urls)
+        _symlinkPaths = State(initialValue: pendingItem.symlinkPaths)
         _destinationFolder = State(initialValue: pendingItem.destinationFolder)
         _isCopy = State(initialValue: pendingItem.isCopy)
-        _leaveSymlink = State(initialValue: pendingItem.leaveSymlink)
     }
 
     private var primaryURL: URL? {
@@ -80,35 +95,18 @@ public struct TransferConfirmationSheet: View {
         return (parent == home || parent == "/") ? "" : parent
     }
 
-    private var displayName: String {
-        if selectedURLs.count > 1 {
-            return "\(selectedURLs.count) Items Selected"
-        }
-        return primaryURL?.lastPathComponent ?? "Item"
+    private var directoryURLs: [URL] {
+        selectedURLs.filter { isURLDirectory($0) }
     }
 
     private var hasAnyDirectory: Bool {
-        for url in selectedURLs {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                return true
-            }
-        }
-        return false
+        !directoryURLs.isEmpty
     }
 
-    private var directoryCount: Int {
-        selectedURLs.filter { url in
-            var isDir: ObjCBool = false
-            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
-        }.count
-    }
-
-    private var iconName: String {
-        if selectedURLs.count > 1 {
-            return "square.stack.3d.up.fill"
-        }
-        return hasAnyDirectory ? "folder.fill" : "doc.fill"
+    private var allDirectoriesSymlinked: Bool {
+        let dirs = directoryURLs
+        guard !dirs.isEmpty else { return false }
+        return dirs.allSatisfy { symlinkPaths.contains($0.path) }
     }
 
     private var formattedSize: String {
@@ -124,18 +122,6 @@ public struct TransferConfirmationSheet: View {
 
     private var existingVaultFolders: [String] {
         var set = Set<String>(vaultStats.folders.filter { $0 != "Google Drive" && !$0.hasPrefix(".") })
-        let myDriveURL = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
-        if let localDirs = try? FileManager.default.contentsOfDirectory(at: myDriveURL, includingPropertiesForKeys: [.isDirectoryKey]) {
-            for d in localDirs {
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: d.path, isDirectory: &isDir), isDir.boolValue {
-                    let name = d.lastPathComponent
-                    if !name.hasPrefix(".") && name != "Google Drive" {
-                        set.insert(name)
-                    }
-                }
-            }
-        }
         if !parentFolderName.isEmpty {
             set.insert(parentFolderName)
         }
@@ -146,12 +132,12 @@ public struct TransferConfirmationSheet: View {
         let cleanDest = destinationFolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         if selectedURLs.count == 1, let first = primaryURL {
             let target = cleanDest.isEmpty ? first.lastPathComponent : cleanDest
-            return "Will be saved to: My Drive/\(target)"
+            return "Destination: My Drive/\(target)"
         } else {
             if cleanDest.isEmpty {
-                return "Each of the \(selectedURLs.count) items will be saved at: My Drive/<folder-name>"
+                return "Each of the \(selectedURLs.count) items will be placed at: My Drive/<folder-name>"
             } else {
-                return "Each of the \(selectedURLs.count) items will be saved inside: My Drive/\(cleanDest)/<folder-name>"
+                return "Each of the \(selectedURLs.count) items will be placed inside: My Drive/\(cleanDest)/<folder-name>"
             }
         }
     }
@@ -164,27 +150,29 @@ public struct TransferConfirmationSheet: View {
                     .font(.title2)
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Move to ZeroDrive Cloud")
+                    Text("Move Folders & Files to ZeroDrive Cloud")
                         .font(.headline)
-                    Text("Review selected folders, choose their destination in My Drive, and optionally leave a shortcut")
+                    Text("Check your selected items, toggle shortcuts (symlinks) per folder, and pick where they go in My Drive")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 14)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
 
             Divider()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
 
-                    // MARK: - 1. Source Card (With Full Selected Items List + Remove + Clear All + Add More)
+                    // =========================================================================
+                    // 1. SELECTED FOLDERS & FILES LIST (WITH PER-FOLDER SYMLINK TOGGLE!)
+                    // =========================================================================
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("FROM THIS MAC (\(selectedURLs.count) SELECTED)")
+                        HStack(alignment: .center) {
+                            Text("1. SELECTED FOLDERS & FILES (\(selectedURLs.count) SELECTED • \(formattedSize.uppercased()))")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
 
@@ -193,130 +181,153 @@ public struct TransferConfirmationSheet: View {
                             Button {
                                 addMoreItemsViaPicker()
                             } label: {
-                                Label("Add More…", systemImage: "plus.circle")
-                                    .font(.caption2.bold())
+                                Label("Add Folders / Files…", systemImage: "plus.circle.fill")
+                                    .font(.caption.bold())
                             }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
 
                             Button(role: .destructive) {
                                 selectedURLs.removeAll()
+                                symlinkPaths.removeAll()
                                 onCancel()
                             } label: {
-                                Label("Clear Selection", systemImage: "xmark.circle")
-                                    .font(.caption2.bold())
+                                Label("Clear All", systemImage: "trash")
+                                    .font(.caption.bold())
                                     .foregroundStyle(.red)
                             }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 12) {
-                                Image(systemName: iconName)
-                                    .font(.system(size: 26))
-                                    .foregroundStyle(Color.accentColor)
-                                    .frame(width: 34, height: 34)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(displayName)
-                                        .font(.title3.weight(.semibold))
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-
-                                    HStack(spacing: 6) {
-                                        Text(formattedSize)
-                                            .font(.caption.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-
-                                        if let url = primaryURL {
-                                            Text("•")
-                                                .font(.caption)
-                                                .foregroundStyle(.tertiary)
-                                            Text(truncatedBreadcrumb(selectedURLs.count > 1 ? url.deletingLastPathComponent().path : url.path))
-                                                .font(.caption)
-                                                .foregroundStyle(.tertiary)
-                                                .help(url.path)
-                                        }
-                                    }
-                                }
+                        VStack(alignment: .leading, spacing: 0) {
+                            // Column Header Bar inside the list box (with Master "Shortcut All" toggle)
+                            HStack(spacing: 8) {
+                                Text("FOLDER / FILE NAME")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.secondary)
 
                                 Spacer()
 
-                                if selectedURLs.count > 1 {
-                                    Button {
-                                        withAnimation(.easeInOut(duration: 0.15)) {
-                                            showAllSelectedItems.toggle()
+                                if !isCopy && hasAnyDirectory {
+                                    HStack(spacing: 6) {
+                                        Text("LEAVE SHORTCUT (SYMLINK) PER FOLDER:")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Color.accentColor)
+
+                                        Button(allDirectoriesSymlinked ? "Uncheck All" : "Check All (\(directoryURLs.count))") {
+                                            toggleAllDirectorySymlinks()
                                         }
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Text(showAllSelectedItems ? "Hide List" : "Show All (\(selectedURLs.count))")
-                                                .font(.caption.bold())
-                                            Image(systemName: showAllSelectedItems ? "chevron.up" : "chevron.down")
-                                                .font(.caption2.bold())
-                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
+                                        .font(.caption2.bold())
                                     }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
                                 }
                             }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.secondary.opacity(0.1))
 
-                            // Scrollable list of all selected folders/files so the user can inspect or remove any item
-                            if showAllSelectedItems && !selectedURLs.isEmpty {
-                                Divider()
+                            Divider()
 
-                                ScrollView {
-                                    LazyVStack(alignment: .leading, spacing: 4) {
-                                        ForEach(selectedURLs, id: \.path) { itemURL in
-                                            HStack(spacing: 8) {
-                                                Image(systemName: isURLDirectory(itemURL) ? "folder.fill" : "doc.fill")
-                                                    .font(.caption)
-                                                    .foregroundStyle(Color.accentColor)
-                                                    .frame(width: 16)
+                            // Scrollable List of Every Selected Folder/File with Per-Folder Symlink Toggle
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(selectedURLs.enumerated()), id: \.element.path) { idx, itemURL in
+                                        let isDir = isURLDirectory(itemURL)
+                                        let isSymlinked = symlinkPaths.contains(itemURL.path)
 
+                                        HStack(spacing: 10) {
+                                            Text("\(idx + 1).")
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                                .frame(width: 22, alignment: .trailing)
+
+                                            Image(systemName: isDir ? "folder.fill" : "doc.fill")
+                                                .font(.subheadline)
+                                                .foregroundStyle(isDir ? Color.accentColor : Color.secondary)
+                                                .frame(width: 18)
+
+                                            VStack(alignment: .leading, spacing: 1) {
                                                 Text(itemURL.lastPathComponent)
-                                                    .font(.caption.weight(.medium))
+                                                    .font(.subheadline.weight(.semibold))
                                                     .lineLimit(1)
                                                     .truncationMode(.middle)
-
-                                                Spacer()
-
-                                                Text(truncatedBreadcrumb(itemURL.deletingLastPathComponent().path))
+                                                Text(truncatedBreadcrumb(itemURL.path))
                                                     .font(.caption2)
                                                     .foregroundStyle(.tertiary)
                                                     .lineLimit(1)
-
-                                                if selectedURLs.count > 1 {
-                                                    Button {
-                                                        removeURLFromSelection(itemURL)
-                                                    } label: {
-                                                        Image(systemName: "xmark.circle.fill")
-                                                            .font(.caption)
-                                                            .foregroundStyle(.secondary)
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                    .help("Remove \(itemURL.lastPathComponent) from selection")
-                                                }
+                                                    .truncationMode(.middle)
                                             }
-                                            .padding(.vertical, 3)
-                                            .padding(.horizontal, 6)
-                                            .background(Color.primary.opacity(0.03))
-                                            .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                                            Spacer()
+
+                                            // PER-FOLDER SYMLINK TOGGLE
+                                            if !isCopy && isDir {
+                                                Toggle(isOn: Binding(
+                                                    get: { symlinkPaths.contains(itemURL.path) },
+                                                    set: { enabled in
+                                                        if enabled {
+                                                            symlinkPaths.insert(itemURL.path)
+                                                        } else {
+                                                            symlinkPaths.remove(itemURL.path)
+                                                        }
+                                                    }
+                                                )) {
+                                                    HStack(spacing: 4) {
+                                                        Image(systemName: "link")
+                                                            .font(.caption2)
+                                                        Text(isSymlinked ? "Shortcut ON" : "Leave Shortcut")
+                                                            .font(.caption.weight(isSymlinked ? .bold : .regular))
+                                                    }
+                                                    .foregroundStyle(isSymlinked ? Color.accentColor : Color.secondary)
+                                                }
+                                                .toggleStyle(.checkbox)
+                                                .help("Leave a 0 KB symlink at \(itemURL.path) pointing to My Drive so apps/scripts still find this folder")
+                                            } else if !isDir {
+                                                Text("File")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.tertiary)
+                                            }
+
+                                            Button {
+                                                removeURLFromSelection(itemURL)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .font(.subheadline)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .padding(.leading, 6)
+                                            .help("Remove \(itemURL.lastPathComponent) from selection")
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 7)
+                                        .background(idx % 2 == 0 ? Color.clear : Color.primary.opacity(0.025))
+
+                                        if idx < selectedURLs.count - 1 {
+                                            Divider()
+                                                .opacity(0.4)
                                         }
                                     }
                                 }
-                                .frame(maxHeight: selectedURLs.count > 4 ? 130 : CGFloat(selectedURLs.count * 28))
                             }
+                            .frame(minHeight: 140, maxHeight: 220)
                         }
-                        .padding(12)
                         .background(Color.secondary.opacity(0.06))
                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+                        )
                     }
 
-                    // MARK: - 2. Destination Card (Existing Folder Picker + New Folder + Browse My Drive)
+                    // =========================================================================
+                    // 2. DESTINATION FOLDER IN MY DRIVE (CLOUD VAULT)
+                    // =========================================================================
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("TO MY DRIVE (CLOUD VAULT)")
+                            Text("2. CHOOSE DESTINATION FOLDER IN MY DRIVE")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
 
@@ -325,15 +336,14 @@ public struct TransferConfirmationSheet: View {
                             Button {
                                 browseOrCreateFolderInMyDrive()
                             } label: {
-                                Label("Browse / New Folder in Finder…", systemImage: "folder.badge.plus")
-                                    .font(.caption2.bold())
+                                Label("Browse / Create Folder in Finder…", systemImage: "folder.badge.plus")
+                                    .font(.caption.bold())
                             }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                         }
 
                         VStack(alignment: .leading, spacing: 10) {
-                            // Row A: Existing Folder Picker Menu + Editable Path
                             HStack(spacing: 8) {
                                 Image(systemName: "externaldrive.fill")
                                     .foregroundStyle(Color.accentColor)
@@ -378,21 +388,29 @@ public struct TransferConfirmationSheet: View {
                                         Label("New Folder…", systemImage: "folder.badge.plus")
                                     }
                                 } label: {
-                                    Label("Choose Folder", systemImage: "folder")
+                                    Label("Select Existing Folder", systemImage: "folder")
                                         .font(.caption.bold())
                                 }
-                                .frame(width: 130)
+                                .frame(width: 170)
+
+                                Button {
+                                    isCreatingNewFolder = true
+                                    newFolderNameInput = ""
+                                } label: {
+                                    Label("New Folder", systemImage: "plus")
+                                        .font(.caption.bold())
+                                }
+                                .buttonStyle(.bordered)
                             }
 
-                            // Inline "+ New Folder" creator when clicked
                             if isCreatingNewFolder {
                                 HStack(spacing: 8) {
                                     Image(systemName: "folder.badge.plus")
                                         .foregroundStyle(Color.accentColor)
-                                    TextField("New folder name (e.g. _DEV or Archive/2026)", text: $newFolderNameInput)
+                                    TextField("Type new folder name in My Drive (e.g. _DEV or Archive/2026)", text: $newFolderNameInput)
                                         .textFieldStyle(.roundedBorder)
                                         .font(.caption)
-                                    Button("Create & Select") {
+                                    Button("Create & Use") {
                                         let trimmed = newFolderNameInput.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
                                         if !trimmed.isEmpty {
                                             createFolderInMyDrive(trimmed)
@@ -417,10 +435,10 @@ public struct TransferConfirmationSheet: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
 
-                            // Row B: 1-Click Quick-Pick Chips for Existing Vault Folders
+                            // 1-Click Existing Folder Pills
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 6) {
-                                    Text("Folders:")
+                                    Text("Quick select:")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
 
@@ -445,31 +463,16 @@ public struct TransferConfirmationSheet: View {
                                             destinationFolder = expectedVal
                                         }
                                     }
-
-                                    Button {
-                                        isCreatingNewFolder = true
-                                        newFolderNameInput = ""
-                                    } label: {
-                                        Label("New Folder", systemImage: "plus")
-                                            .font(.caption2.bold())
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 3)
-                                            .background(Color.accentColor.opacity(0.14))
-                                            .foregroundStyle(Color.accentColor)
-                                            .clipShape(Capsule())
-                                    }
-                                    .buttonStyle(.plain)
                                 }
                             }
 
-                            // Live Destination Preview
                             HStack(spacing: 6) {
                                 Image(systemName: "arrow.turn.down.right")
                                     .font(.caption2)
                                     .foregroundStyle(Color.accentColor)
                                 Text(destinationPreviewText)
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.secondary)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
@@ -479,9 +482,11 @@ public struct TransferConfirmationSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
 
-                    // MARK: - 3. Action Mode (Move vs Copy) + Symlink Toggle (Works for 1 OR Multiple Folders!)
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("HOW TO TRANSFER")
+                    // =========================================================================
+                    // 3. TRANSFER MODE (MOVE vs COPY)
+                    // =========================================================================
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("3. TRANSFER METHOD")
                             .font(.caption2.bold())
                             .foregroundStyle(.secondary)
 
@@ -491,39 +496,22 @@ public struct TransferConfirmationSheet: View {
                         }
                         .pickerStyle(.segmented)
 
-                        if !isCopy && hasAnyDirectory {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Toggle(isOn: $leaveSymlink) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "link")
-                                            .foregroundStyle(Color.accentColor)
-                                        Text(directoryCount > 1
-                                             ? "Leave shortcuts (symlinks) in the old spots for all \(directoryCount) folders"
-                                             : "Leave a shortcut (symlink) in the old spot")
-                                            .font(.subheadline.weight(.medium))
-                                    }
-                                }
-                                Text("Leaves a 0 KB link behind at the original Mac path so your apps, terminal scripts, and automations still find \(directoryCount > 1 ? "these folders" : "this folder") without changing any paths.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.leading, 22)
-                            }
-                            .padding(10)
-                            .background(Color.accentColor.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark.shield.fill")
                                 .foregroundStyle(.green)
                                 .font(.caption)
-                            Text(isCopy
-                                 ? "Copies files to your Cloud Vault and keeps the originals on this Mac."
-                                 : "Every file is verified safe in your Cloud Vault before it is removed from your Mac.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            if !isCopy && !symlinkPaths.isEmpty {
+                                Text("\(symlinkPaths.count) of \(directoryURLs.count) folder(s) will leave a 0 KB shortcut (symlink) in their original Mac spot.")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.accentColor)
+                            } else {
+                                Text(isCopy
+                                     ? "Copies files to your Cloud Vault and keeps the originals on this Mac."
+                                     : "Every file is verified safe in your Cloud Vault before it is removed from your Mac.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        .padding(.top, 2)
                     }
                 }
                 .padding(20)
@@ -545,16 +533,18 @@ public struct TransferConfirmationSheet: View {
                     finalItem.urls = selectedURLs
                     finalItem.destinationFolder = destinationFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                     finalItem.isCopy = isCopy
-                    finalItem.leaveSymlink = (!isCopy && hasAnyDirectory) ? leaveSymlink : false
+                    finalItem.symlinkPaths = isCopy ? [] : symlinkPaths
+                    finalItem.leaveSymlink = !finalItem.symlinkPaths.isEmpty
                     onConfirm(finalItem)
                 } label: {
-                    let countSuffix = selectedURLs.count > 1 ? " (\(selectedURLs.count))" : ""
+                    let countSuffix = selectedURLs.count > 1 ? " (\(selectedURLs.count) Items)" : ""
+                    let symlinkCount = symlinkPaths.count
                     Text(isCopy
                          ? "Copy to Cloud\(countSuffix)"
-                         : (leaveSymlink && hasAnyDirectory
-                            ? "Move & Leave Shortcut\(countSuffix)"
+                         : (symlinkCount > 0
+                            ? "Move\(countSuffix) & Leave \(symlinkCount) Shortcut\(symlinkCount == 1 ? "" : "s")"
                             : "Move & Free Space\(countSuffix)"))
-                        .frame(minWidth: 175)
+                        .frame(minWidth: 200)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedURLs.isEmpty)
@@ -563,9 +553,22 @@ public struct TransferConfirmationSheet: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
         }
-        .frame(width: 560, height: selectedURLs.count > 1 ? 610 : (hasAnyDirectory && !isCopy ? 520 : 460))
+        .frame(width: 640, height: 620)
         .onAppear {
             calculateSourceStats()
+        }
+    }
+
+    private func toggleAllDirectorySymlinks() {
+        let dirs = directoryURLs
+        if allDirectoriesSymlinked {
+            for d in dirs {
+                symlinkPaths.remove(d.path)
+            }
+        } else {
+            for d in dirs {
+                symlinkPaths.insert(d.path)
+            }
         }
     }
 
@@ -593,6 +596,7 @@ public struct TransferConfirmationSheet: View {
 
     private func removeURLFromSelection(_ url: URL) {
         selectedURLs.removeAll { $0.path == url.path }
+        symlinkPaths.remove(url.path)
         if selectedURLs.isEmpty {
             onCancel()
         } else {
@@ -602,8 +606,8 @@ public struct TransferConfirmationSheet: View {
 
     private func addMoreItemsViaPicker() {
         let panel = NSOpenPanel()
-        panel.title = "Add More Folders or Files to Move"
-        panel.prompt = "Add to Selection"
+        panel.title = "Add Folders or Files to Selection"
+        panel.prompt = "Add to List"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
@@ -649,9 +653,12 @@ public struct TransferConfirmationSheet: View {
     }
 
     private func createFolderInMyDrive(_ relativePath: String) {
+        vaultStats.addFolderLocally(relativePath)
         let myDriveURL = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
         let targetURL = myDriveURL.appendingPathComponent(relativePath)
-        try? FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+        }
     }
 
     private func truncatedBreadcrumb(_ path: String) -> String {

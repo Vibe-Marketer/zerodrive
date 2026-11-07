@@ -436,7 +436,8 @@ public final class TurboMigrationManager: ObservableObject {
         _ urls: [URL],
         destinationSubfolder: String = "",
         isCopy: Bool = false,
-        leaveSymlink: Bool = false
+        leaveSymlink: Bool = false,
+        symlinkPaths: Set<String>? = nil
     ) {
         let cleanParent = destinationSubfolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         for url in urls {
@@ -455,6 +456,12 @@ public final class TurboMigrationManager: ObservableObject {
                     itemDest = "\(cleanParent)/\(name)"
                 }
             }
+            let itemShouldSymlink: Bool
+            if let explicitSet = symlinkPaths {
+                itemShouldSymlink = explicitSet.contains(url.path)
+            } else {
+                itemShouldSymlink = leaveSymlink
+            }
             if !queuedSpaces.contains(name) {
                 queuedSpaces.append(name)
             }
@@ -465,7 +472,7 @@ public final class TurboMigrationManager: ObservableObject {
                 sourcePath: url.path,
                 destSubfolder: itemDest,
                 isCopy: isCopy,
-                leaveSymlink: leaveSymlink
+                leaveSymlink: itemShouldSymlink
             ))
         }
     }
@@ -516,25 +523,28 @@ public final class TurboMigrationManager: ObservableObject {
         urls: [URL],
         destinationSubfolder: String,
         isCopy: Bool = false,
-        leaveSymlink: Bool = false
+        leaveSymlink: Bool = false,
+        symlinkPaths: Set<String>? = nil
     ) {
         guard !urls.isEmpty else { return }
         if urls.count == 1 && !isLocalProcessActive {
             let url = urls[0]
             let cleanDest = destinationSubfolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
             let destName = cleanDest.isEmpty ? url.lastPathComponent : cleanDest
+            let shouldSymlink = symlinkPaths?.contains(url.path) ?? leaveSymlink
             runScript(
                 sourcePath: url.path,
                 destSubfolder: destName,
                 isCopy: isCopy,
-                leaveSymlink: leaveSymlink
+                leaveSymlink: shouldSymlink
             )
         } else {
             stageURLs(
                 urls,
                 destinationSubfolder: destinationSubfolder,
                 isCopy: isCopy,
-                leaveSymlink: leaveSymlink
+                leaveSymlink: leaveSymlink,
+                symlinkPaths: symlinkPaths
             )
             if !isLocalProcessActive {
                 runQueuedMoves()

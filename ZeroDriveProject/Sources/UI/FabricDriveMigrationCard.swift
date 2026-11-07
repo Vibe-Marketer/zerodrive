@@ -24,10 +24,10 @@ public struct FabricDriveMigrationCard: View {
 
     @State private var detectedSpaces: [FabricSpaceItem] = []
 
-    // Local Mac Selection State (100% independent of remote/cloud streams)
+    // Local Mac Selection State (with per-folder symlink set)
     @State private var selectedItemURLs: [URL] = []
+    @State private var selectedSymlinkPaths: Set<String> = []
     @State private var customDestinationSubfolder: String = ""
-    @State private var leaveSymlinkOnMainCard: Bool = false
     @State private var isCreatingNewDestFolder: Bool = false
     @State private var newDestFolderInput: String = ""
     @State private var pendingTransfer: PendingTransferItem? = nil
@@ -57,19 +57,7 @@ public struct FabricDriveMigrationCard: View {
     }
 
     private var existingVaultFolders: [String] {
-        var set = Set<String>(vaultStats.folders.filter { $0 != "Google Drive" && !$0.hasPrefix(".") })
-        let myDriveURL = supervisor.mountPoint.appendingPathComponent("My Drive")
-        if let localDirs = try? FileManager.default.contentsOfDirectory(at: myDriveURL, includingPropertiesForKeys: [.isDirectoryKey]) {
-            for d in localDirs {
-                var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: d.path, isDirectory: &isDir), isDir.boolValue {
-                    let name = d.lastPathComponent
-                    if !name.hasPrefix(".") && name != "Google Drive" {
-                        set.insert(name)
-                    }
-                }
-            }
-        }
+        let set = Set<String>(vaultStats.folders.filter { $0 != "Google Drive" && !$0.hasPrefix(".") })
         return set.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
@@ -137,7 +125,7 @@ public struct FabricDriveMigrationCard: View {
                 // 3-Column Pipeline: [1. From This Mac (Source)] ──► [Arrow / Speed] ──► [2. To My Drive (Destination Picker)]
                 HStack(alignment: .top, spacing: 12) {
 
-                    // LEFT BOX: 1. FROM THIS MAC (SOURCE PICKER)
+                    // LEFT BOX: 1. FROM THIS MAC (SOURCE PICKER + MULTI-SELECT LIST + PER-FOLDER SYMLINK)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 5) {
                             Image(systemName: isSourceFromFabric ? "cloud.fill" : "laptopcomputer")
@@ -147,6 +135,19 @@ public struct FabricDriveMigrationCard: View {
                                 .foregroundStyle(.secondary)
                             Spacer()
                             if hasSelection && !turbo.isLocalTransferRunning {
+                                Button {
+                                    openFinderFilePicker()
+                                } label: {
+                                    Text("+ Add")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                                .buttonStyle(.plain)
+
+                                Text("•")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+
                                 Button(role: .destructive) {
                                     clearCurrentSelection()
                                 } label: {
@@ -172,66 +173,98 @@ public struct FabricDriveMigrationCard: View {
                             Text("\(max(0, turbo.localTelemetry.totalFiles - turbo.localTelemetry.movedFiles)) files remaining")
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
-                        } else if !selectedItemURLs.isEmpty, let firstURL = primarySelectedURL {
+                        } else if !selectedItemURLs.isEmpty {
                             HStack(spacing: 6) {
                                 Image(systemName: selectedItemURLs.count > 1 ? "square.stack.3d.up.fill" : "folder.fill")
-                                    .font(.subheadline)
+                                    .font(.caption)
                                     .foregroundStyle(Color.accentColor)
                                 Text(selectedItemName)
-                                    .font(.headline)
+                                    .font(.subheadline.bold())
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
-                                    .truncationMode(.tail)
+                                Spacer()
+                                Text(ByteCountFormatter.string(fromByteCount: sourceSizeBytes, countStyle: .file) + (sourceItemCount > 0 ? " • \(sourceItemCount) files" : ""))
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
                             }
 
-                            Text(ByteCountFormatter.string(fromByteCount: sourceSizeBytes, countStyle: .file) + (sourceItemCount > 0 ? " • \(sourceItemCount) files" : ""))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                            // Visible Multi-Select List right inside 1. FROM THIS MAC with per-folder Symlink toggle!
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 3) {
+                                    ForEach(selectedItemURLs, id: \.path) { url in
+                                        let isDir = isURLDirectory(url)
+                                        let isLinked = selectedSymlinkPaths.contains(url.path)
+                                        HStack(spacing: 6) {
+                                            Image(systemName: isDir ? "folder.fill" : "doc.fill")
+                                                .font(.caption2)
+                                                .foregroundStyle(Color.accentColor)
+                                                .frame(width: 12)
 
-                            Text(truncatedBreadcrumb(selectedItemURLs.count > 1 ? firstURL.deletingLastPathComponent().path : firstURL.path))
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .help(firstURL.path)
+                                            Text(url.lastPathComponent)
+                                                .font(.caption.weight(.medium))
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
 
-                            HStack(spacing: 8) {
-                                Button {
-                                    openFinderFilePicker(openSheetImmediately: false)
-                                } label: {
-                                    Label("Change Source…", systemImage: "folder")
-                                        .font(.caption2.bold())
+                                            Spacer()
+
+                                            if isDir {
+                                                Toggle(isOn: Binding(
+                                                    get: { selectedSymlinkPaths.contains(url.path) },
+                                                    set: { enabled in
+                                                        if enabled {
+                                                            selectedSymlinkPaths.insert(url.path)
+                                                        } else {
+                                                            selectedSymlinkPaths.remove(url.path)
+                                                        }
+                                                    }
+                                                )) {
+                                                    HStack(spacing: 2) {
+                                                        Image(systemName: "link")
+                                                            .font(.system(size: 9))
+                                                        Text("Shortcut")
+                                                            .font(.system(size: 10, weight: isLinked ? .bold : .regular))
+                                                    }
+                                                    .foregroundStyle(isLinked ? Color.accentColor : Color.secondary)
+                                                }
+                                                .toggleStyle(.checkbox)
+                                                .controlSize(.mini)
+                                                .help("Leave a 0 KB symlink for \(url.lastPathComponent)")
+                                            }
+
+                                            Button {
+                                                removeSingleURL(url)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color.primary.opacity(0.035))
+                                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                                    }
                                 }
-                                .controlSize(.small)
-                                .buttonStyle(.bordered)
-
-                                Button {
-                                    reviewAndMoveCurrentSelection()
-                                } label: {
-                                    Label("Inspect List (\(selectedItemURLs.count))…", systemImage: "list.bullet")
-                                        .font(.caption2.bold())
-                                }
-                                .controlSize(.small)
-                                .buttonStyle(.borderless)
                             }
-                            .padding(.top, 2)
+                            .frame(maxHeight: 96)
                         } else {
                             Button {
-                                openFinderFilePicker(openSheetImmediately: false)
+                                openFinderFilePicker()
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(spacing: 6) {
                                         Image(systemName: "folder.badge.plus")
                                             .font(.title3)
                                             .foregroundStyle(Color.accentColor)
-                                        Text("Select Folder or Drive…")
+                                        Text("Select Folders or Files…")
                                             .font(.headline)
                                             .foregroundStyle(Color.accentColor)
                                     }
                                     Text("Click to browse this Mac or drag & drop folders here")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    Text("Select 1 folder or 50+ folders at once")
+                                    Text("Opens selector with per-folder shortcut (symlink) options")
                                         .font(.caption2)
                                         .foregroundStyle(.tertiary)
                                 }
@@ -242,7 +275,7 @@ public struct FabricDriveMigrationCard: View {
                         }
                     }
                     .padding(11)
-                    .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 115, alignment: .leading)
                     .background(isLocationADropTargeted ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
@@ -294,10 +327,10 @@ public struct FabricDriveMigrationCard: View {
                                 .foregroundStyle(Color.accentColor)
                         } else {
                             HStack(spacing: 4) {
-                                Image(systemName: leaveSymlinkOnMainCard ? "link.circle.fill" : "arrow.right.circle.fill")
+                                Image(systemName: !selectedSymlinkPaths.isEmpty ? "link.circle.fill" : "arrow.right.circle.fill")
                                     .foregroundStyle(hasSelection ? Color.accentColor : Color.secondary)
                                     .font(.caption)
-                                Text(leaveSymlinkOnMainCard ? "Move + Link" : "Move to Cloud")
+                                Text(!selectedSymlinkPaths.isEmpty ? "\(selectedSymlinkPaths.count) Linked" : "Move to Cloud")
                                     .font(.caption.bold())
                                     .foregroundStyle(hasSelection ? Color.accentColor : Color.secondary)
                             }
@@ -317,7 +350,7 @@ public struct FabricDriveMigrationCard: View {
                         }
                         Spacer(minLength: 16)
                     }
-                    .frame(width: 118)
+                    .frame(width: 110)
 
                     // RIGHT BOX: 2. TO MY DRIVE (INTERACTIVE VAULT DESTINATION PICKER!)
                     VStack(alignment: .leading, spacing: 6) {
@@ -369,8 +402,11 @@ public struct FabricDriveMigrationCard: View {
                                 Button("Create") {
                                     let trimmed = newDestFolderInput.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
                                     if !trimmed.isEmpty {
+                                        vaultStats.addFolderLocally(trimmed)
                                         let targetURL = supervisor.mountPoint.appendingPathComponent("My Drive").appendingPathComponent(trimmed)
-                                        try? FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+                                        DispatchQueue.global(qos: .userInitiated).async {
+                                            try? FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+                                        }
                                         customDestinationSubfolder = trimmed
                                     }
                                     isCreatingNewDestFolder = false
@@ -435,7 +471,7 @@ public struct FabricDriveMigrationCard: View {
                         }
                     }
                     .padding(11)
-                    .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 115, alignment: .leading)
                     .background(Color.secondary.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
@@ -469,26 +505,12 @@ public struct FabricDriveMigrationCard: View {
                 Divider()
                     .padding(.vertical, 2)
 
-                // Direct Symlink Toggle + Action Buttons Row on Main View
-                HStack(alignment: .center, spacing: 12) {
-                    Toggle(isOn: $leaveSymlinkOnMainCard) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "link")
-                                .foregroundStyle(Color.accentColor)
-                                .font(.caption)
-                            Text("Leave shortcut (symlink) in old spot")
-                                .font(.caption.weight(.medium))
-                        }
-                    }
-                    .toggleStyle(.checkbox)
-                    .help("Leaves a 0 KB link at the original Mac path so scripts, apps, and automations still find your moved folder(s).")
-
-                    Spacer()
-
+                // Clean Action Bar
+                HStack(alignment: .center, spacing: 10) {
                     Button {
-                        openFinderFilePicker(openSheetImmediately: false)
+                        openFinderFilePicker()
                     } label: {
-                        Label(hasSelection ? "Select Different Folders…" : "1. Select Folders on Mac…", systemImage: "folder.badge.plus")
+                        Label(hasSelection ? "Select / Add Folders…" : "Select Folders or Files…", systemImage: "folder.badge.plus")
                     }
                     .controlSize(.regular)
 
@@ -496,23 +518,25 @@ public struct FabricDriveMigrationCard: View {
                         Button(role: .destructive) {
                             clearCurrentSelection()
                         } label: {
-                            Text("Clear")
+                            Label("Clear Selection", systemImage: "xmark.circle")
                         }
                         .controlSize(.regular)
                     }
+
+                    Spacer()
 
                     Button {
                         if hasSelection {
                             reviewAndMoveCurrentSelection()
                         } else {
-                            openFinderFilePicker(openSheetImmediately: true)
+                            openFinderFilePicker()
                         }
                     } label: {
                         Text(hasSelection
                              ? (selectedItemURLs.count > 1
-                                ? "Review & Move \(selectedItemURLs.count) Items…"
-                                : "Review & Move \"\(selectedItemName)\"…")
-                             : "2. Review & Move to Cloud…")
+                                ? "Configure & Move \(selectedItemURLs.count) Selected Items…"
+                                : "Configure & Move \"\(selectedItemName)\"…")
+                             : "Choose Folders & Configure Move…")
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
@@ -589,13 +613,14 @@ public struct FabricDriveMigrationCard: View {
             TransferConfirmationSheet(pendingItem: pending) { confirmed in
                 pendingTransfer = nil
                 selectedItemURLs = confirmed.urls
+                selectedSymlinkPaths = confirmed.symlinkPaths
                 customDestinationSubfolder = confirmed.destinationFolder
-                leaveSymlinkOnMainCard = confirmed.leaveSymlink
                 TurboMigrationManager.shared.startTransfer(
                     urls: confirmed.urls,
                     destinationSubfolder: confirmed.destinationFolder,
                     isCopy: confirmed.isCopy,
-                    leaveSymlink: confirmed.leaveSymlink
+                    leaveSymlink: confirmed.leaveSymlink,
+                    symlinkPaths: confirmed.symlinkPaths
                 )
             } onCancel: {
                 pendingTransfer = nil
@@ -606,8 +631,20 @@ public struct FabricDriveMigrationCard: View {
         }
     }
 
+    private func isURLDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    private func removeSingleURL(_ url: URL) {
+        selectedItemURLs.removeAll { $0.path == url.path }
+        selectedSymlinkPaths.remove(url.path)
+        updateSourceStats(selectedItemURLs)
+    }
+
     private func clearCurrentSelection() {
         selectedItemURLs.removeAll()
+        selectedSymlinkPaths.removeAll()
         customDestinationSubfolder = ""
         sourceItemCount = 0
         sourceSizeBytes = 0
@@ -638,24 +675,11 @@ public struct FabricDriveMigrationCard: View {
         }
     }
 
-    private func truncatedBreadcrumb(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        var clean = path
-        if clean.hasPrefix(home) {
-            clean = "~" + clean.dropFirst(home.count)
-        }
-        let parts = clean.split(separator: "/")
-        if parts.count > 3 {
-            return parts.prefix(2).joined(separator: "/") + "/…/" + parts.last!
-        }
-        return clean
-    }
-
-    private func openFinderFilePicker(openSheetImmediately: Bool) {
+    private func openFinderFilePicker() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Folder or Files on This Mac to Move to ZeroDrive"
-        panel.prompt = openSheetImmediately ? "Review Move" : "Select"
-        panel.message = "Pick 1 or multiple folders or files on this Mac."
+        panel.title = "Choose Folders or Files on This Mac to Move to ZeroDrive"
+        panel.prompt = "Review & Configure Move"
+        panel.message = "Select 1 or multiple folders or files. In the popup sheet next, you can toggle shortcuts (symlinks) per folder and pick the Vault destination."
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
@@ -669,7 +693,6 @@ public struct FabricDriveMigrationCard: View {
             let urls = panel.urls
             guard !urls.isEmpty else { return }
             selectedItemURLs = urls
-            // Auto-default parent folder name when multiple folders are selected and customDestinationSubfolder is empty
             if customDestinationSubfolder.isEmpty && urls.count > 1, let first = urls.first {
                 let parent = first.deletingLastPathComponent().lastPathComponent
                 let home = FileManager.default.homeDirectoryForCurrentUser.lastPathComponent
@@ -678,14 +701,14 @@ public struct FabricDriveMigrationCard: View {
                 }
             }
             updateSourceStats(urls)
-            if openSheetImmediately {
-                pendingTransfer = PendingTransferItem(
-                    urls: urls,
-                    destinationFolder: customDestinationSubfolder,
-                    isCopy: false,
-                    leaveSymlink: leaveSymlinkOnMainCard
-                )
-            }
+            // Always open the popup selector immediately so the user sees the full list of selected items, per-folder symlink checkboxes, and destination picker!
+            pendingTransfer = PendingTransferItem(
+                urls: urls,
+                destinationFolder: customDestinationSubfolder,
+                isCopy: false,
+                leaveSymlink: !selectedSymlinkPaths.isEmpty,
+                symlinkPaths: selectedSymlinkPaths
+            )
         }
     }
 
@@ -712,7 +735,8 @@ public struct FabricDriveMigrationCard: View {
                     urls: droppedURLs,
                     destinationFolder: self.customDestinationSubfolder,
                     isCopy: false,
-                    leaveSymlink: self.leaveSymlinkOnMainCard
+                    leaveSymlink: !self.selectedSymlinkPaths.isEmpty,
+                    symlinkPaths: self.selectedSymlinkPaths
                 )
             }
         }
@@ -734,14 +758,15 @@ public struct FabricDriveMigrationCard: View {
 
     private func reviewAndMoveCurrentSelection() {
         guard !selectedItemURLs.isEmpty else {
-            openFinderFilePicker(openSheetImmediately: true)
+            openFinderFilePicker()
             return
         }
         pendingTransfer = PendingTransferItem(
             urls: selectedItemURLs,
             destinationFolder: customDestinationSubfolder,
             isCopy: false,
-            leaveSymlink: leaveSymlinkOnMainCard
+            leaveSymlink: !selectedSymlinkPaths.isEmpty,
+            symlinkPaths: selectedSymlinkPaths
         )
     }
 

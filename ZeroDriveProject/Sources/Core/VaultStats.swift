@@ -32,6 +32,12 @@ public final class VaultStats: ObservableObject {
         }
     }
 
+    public func addFolderLocally(_ folderName: String) {
+        let topName = folderName.split(separator: "/").first.map(String.init) ?? folderName
+        guard !topName.isEmpty, !folders.contains(topName) else { return }
+        folders = (folders + [topName]).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     public var liveTotalBytes: Int64? {
         guard let base = totalBytes else { return nil }
         let moving = TurboMigrationManager.shared.telemetry.isRunning ? TurboMigrationManager.shared.telemetry.movedBytes : 0

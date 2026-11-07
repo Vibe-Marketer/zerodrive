@@ -94,7 +94,8 @@ public struct MainStudioWindow: View {
                     urls: confirmed.urls,
                     destinationSubfolder: confirmed.destinationFolder,
                     isCopy: confirmed.isCopy,
-                    leaveSymlink: confirmed.leaveSymlink
+                    leaveSymlink: confirmed.leaveSymlink,
+                    symlinkPaths: confirmed.symlinkPaths
                 )
                 selectedTab = 0
             } onCancel: {
