@@ -17,11 +17,11 @@ public final class AppLifecycleController: ObservableObject {
 
     public func setStudioWindowVisible(_ visible: Bool) {
         self.isStudioWindowOpen = visible
+        // Always keep .regular activation policy so the Dock icon remains visible
+        // and clicking ZeroDrive in Dock/Spotlight always reopens the window.
+        NSApp.setActivationPolicy(.regular)
         if visible {
-            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
-        } else {
-            NSApp.setActivationPolicy(.accessory)
         }
     }
 
@@ -68,9 +68,10 @@ public final class AppLifecycleController: ObservableObject {
         let spool = SpoolAndGuardManager.shared
         let turbo = TurboMigrationManager.shared
         let dirtyCount = spool.dirtyFileCount
-        let isMigrating = turbo.telemetry.isRunning
+        // Only warn if a LOCAL migration is running on this Mac (remote streams on naegele-mm keep running independently)
+        let isLocalMigrating = turbo.isLocalTransferRunning
 
-        guard dirtyCount > 0 || isMigrating else {
+        guard dirtyCount > 0 || isLocalMigrating else {
             Task {
                 await RcloneDaemonSupervisor.shared.unmountCleanly()
                 NSApp.reply(toApplicationShouldTerminate: true)
@@ -79,12 +80,12 @@ public final class AppLifecycleController: ObservableObject {
         }
 
         let alert = NSAlert()
-        if isMigrating {
-            alert.messageText = "ZeroDrive: Migration In Progress (\(turbo.telemetry.spaceName))"
-            alert.informativeText = "A turbo batch migration is actively moving files to ZeroDrive. Quitting now will cancel the transfer process."
+        if isLocalMigrating {
+            alert.messageText = "ZeroDrive: Local Transfer In Progress (\(turbo.telemetry.spaceName))"
+            alert.informativeText = "A transfer is actively moving files from this Mac to ZeroDrive. Quitting now will stop the local transfer."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Cancel Quit & Continue Transfer")
-            alert.addButton(withTitle: "Stop Migration & Quit Now")
+            alert.addButton(withTitle: "Stop Local Transfer & Quit Now")
         } else {
             alert.messageText = "ZeroDrive: \(dirtyCount) Unsynced Files in Local Spool"
             alert.informativeText = "You have files queued or actively uploading to your cloud storage in ~/.zerodrive-cache (\(ByteCountFormatter.string(fromByteCount: spool.dirtyBytes, countStyle: .file))). Quitting now could interrupt active transfers."
@@ -95,10 +96,10 @@ public final class AppLifecycleController: ObservableObject {
         }
 
         let response = alert.runModal()
-        if isMigrating {
+        if isLocalMigrating {
             switch response {
             case .alertSecondButtonReturn:
-                turbo.cancel()
+                turbo.cancelLocalOnly()
                 Task {
                     await RcloneDaemonSupervisor.shared.unmountCleanly()
                     NSApp.reply(toApplicationShouldTerminate: true)

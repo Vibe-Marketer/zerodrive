@@ -207,6 +207,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return AppLifecycleController.shared.handleApplicationTerminationRequest()
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        if !flag {
+            for window in sender.windows {
+                if window.canBecomeMain {
+                    window.makeKeyAndOrderFront(self)
+                    break
+                }
+            }
+        }
+        return true
+    }
+
     @objc private func handleSystemWake() {
         Task {
             await RcloneDaemonSupervisor.shared.healDeadMountAfterSleep()

@@ -121,16 +121,42 @@ public struct ConnectedNodeStatus: Codable, Sendable, Identifiable {
     }
 }
 
+public struct QueuedTransferJob: Identifiable, Equatable {
+    public var id: String { sourcePath }
+    public var name: String
+    public var sourcePath: String
+    public var destSubfolder: String
+    public var isCopy: Bool
+    public var leaveSymlink: Bool
+
+    public init(
+        name: String,
+        sourcePath: String,
+        destSubfolder: String,
+        isCopy: Bool = false,
+        leaveSymlink: Bool = false
+    ) {
+        self.name = name
+        self.sourcePath = sourcePath
+        self.destSubfolder = destSubfolder
+        self.isCopy = isCopy
+        self.leaveSymlink = leaveSymlink
+    }
+}
+
 @MainActor
 public final class TurboMigrationManager: ObservableObject {
     public static let shared = TurboMigrationManager()
 
     @Published public var telemetry: TurboMigrationTelemetry = TurboMigrationTelemetry()
+    @Published public var remoteTelemetry: TurboMigrationTelemetry? = nil
     @Published public var queuedSpaces: [String] = []
     @Published public var queuedPathMap: [String: String] = [:]
+    @Published public var queuedJobs: [QueuedTransferJob] = []
     @Published public var ledger: MigrationLedger? = nil
     @Published public var symlinks: [SymlinkEntry] = []
     @Published public var connectedNodes: [ConnectedNodeStatus] = []
+    @Published public private(set) var isLocalProcessActive: Bool = false
 
     private let telemetryFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/rclone/migration-telemetry.json")
@@ -145,11 +171,21 @@ public final class TurboMigrationManager: ObservableObject {
     private var remotePollerTimer: Timer?
     private var isPollingRemote: Bool = false
 
+    public var isLocalTransferRunning: Bool {
+        if isLocalProcessActive { return true }
+        return telemetry.isRunning && !telemetry.sourceLocation.contains("naegele-mm")
+    }
+
+    public var isRemoteStreamActive: Bool {
+        if let rem = remoteTelemetry, rem.isRunning { return true }
+        return telemetry.isRunning && telemetry.sourceLocation.contains("naegele-mm")
+    }
+
     private init() {
         readLedger()
         readSymlinks()
         readTelemetry()
-        refreshConnectedNodes(remoteTelemetry: nil, miniOnline: true, miniFreeBytes: 76_890_652_672)
+        refreshConnectedNodes(remoteTelemetry: remoteTelemetry, miniOnline: true, miniFreeBytes: 76_890_652_672)
         startPoller()
     }
 
@@ -189,6 +225,8 @@ public final class TurboMigrationManager: ObservableObject {
             return t
         }()
 
+        self.remoteTelemetry = remoteT
+
         // Prefer local running job; if local is idle and remote (e.g. naegele-mm direct iCloud stream) is running, stream remote in UI!
         if let loc = localT, loc.isRunning {
             self.telemetry = loc
@@ -206,15 +244,19 @@ public final class TurboMigrationManager: ObservableObject {
         isPollingRemote = true
 
         let dstPath = remoteTelemetryFile.path
+        let sshKeyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_ed25519").path
+
         Task.detached(priority: .utility) {
-            // Pull live telemetry + mount status from naegele-mm over SSH
+            // Pull live telemetry from naegele-mm (100.114.74.17) over SSH using explicit key and IP
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             proc.arguments = [
+                "-i", sshKeyPath,
                 "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
                 "-o", "ConnectTimeout=2",
-                "naegele-mm",
-                "cat ~/.config/rclone/migration-telemetry.json 2>/dev/null"
+                "admin@100.114.74.17",
+                "cat /Users/admin/.config/rclone/migration-telemetry.json 2>/dev/null"
             ]
             let outPipe = Pipe()
             proc.standardOutput = outPipe
@@ -247,7 +289,7 @@ public final class TurboMigrationManager: ObservableObject {
                 self.isPollingRemote = false
                 self.readTelemetry()
                 self.refreshConnectedNodes(
-                    remoteTelemetry: finalTelem,
+                    remoteTelemetry: finalTelem ?? self.remoteTelemetry,
                     miniOnline: finalOnline,
                     miniFreeBytes: finalTelem?.freeDiskBytes ?? 76_890_652_672
                 )
@@ -271,9 +313,9 @@ public final class TurboMigrationManager: ObservableObject {
             kind: "mac",
             icon: "laptopcomputer",
             isOnline: true,
-            statusBadge: "This Mac • Mounted",
+            statusBadge: isLocalTransferRunning ? "Moving Files" : "This Mac • Mounted",
             subtitle: "Mounted at ~/ZeroDrive/My Drive • \(localFreeStr) free on SSD",
-            activeActivity: (telemetry.isRunning && !telemetry.sourceLocation.contains("naegele-mm")) ? telemetry.statusMessage : "",
+            activeActivity: isLocalTransferRunning ? telemetry.statusMessage : "",
             freeBytes: localFree
         ))
 
@@ -318,7 +360,10 @@ public final class TurboMigrationManager: ObservableObject {
         }
 
         // 4. Primary Cloudflare R2 Vault
-        let vaultBytes = VaultStats.shared.liveTotalBytes ?? ledger?.totalMovedToVaultBytes ?? 0
+        // IMPORTANT: Read VaultStats.shared.totalBytes directly (never liveTotalBytes) to avoid recursive dispatch_once during TurboMigrationManager.init()!
+        let baseVaultBytes = VaultStats.shared.totalBytes ?? ledger?.totalMovedToVaultBytes ?? 0
+        let activeMoved = telemetry.isRunning ? telemetry.movedBytes : 0
+        let vaultBytes = baseVaultBytes + activeMoved
         let vaultSizeStr = vaultBytes > 0 ? ByteCountFormatter.string(fromByteCount: vaultBytes, countStyle: .file) : "148+ GB"
         nodes.append(ConnectedNodeStatus(
             id: "cloudflare-r2",
@@ -365,12 +410,16 @@ public final class TurboMigrationManager: ObservableObject {
     }
 
     public func stageSpace(_ spaceName: String) {
+        let spacesDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/CloudStorage/FabricDrive/Andrew Naegeles Workspace/Spaces")
+        let path = spacesDir.appendingPathComponent(spaceName).path
         if !queuedSpaces.contains(spaceName) {
             queuedSpaces.append(spaceName)
         }
-        let spacesDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/CloudStorage/FabricDrive/Andrew Naegeles Workspace/Spaces")
-        queuedPathMap[spaceName] = spacesDir.appendingPathComponent(spaceName).path
+        queuedPathMap[spaceName] = path
+        if !queuedJobs.contains(where: { $0.sourcePath == path }) {
+            queuedJobs.append(QueuedTransferJob(name: spaceName, sourcePath: path, destSubfolder: spaceName))
+        }
     }
 
     public func stageAllSpaces(_ spaceNames: [String]) {
@@ -379,29 +428,71 @@ public final class TurboMigrationManager: ObservableObject {
         }
     }
 
-    public func stageURLs(_ urls: [URL]) {
+    public func stageURLs(
+        _ urls: [URL],
+        destinationSubfolder: String = "",
+        isCopy: Bool = false,
+        leaveSymlink: Bool = false
+    ) {
+        let cleanParent = destinationSubfolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
         for url in urls {
             let name = url.lastPathComponent
             if name.hasPrefix(".") || name.isEmpty { continue }
+            let itemDest: String
+            if urls.count == 1 {
+                itemDest = cleanParent.isEmpty ? name : cleanParent
+            } else {
+                // When multiple folders/items are selected, place each item inside the chosen parent folder (or Top Level if empty)
+                if cleanParent.isEmpty {
+                    itemDest = name
+                } else if cleanParent == name {
+                    itemDest = name
+                } else {
+                    itemDest = "\(cleanParent)/\(name)"
+                }
+            }
             if !queuedSpaces.contains(name) {
                 queuedSpaces.append(name)
             }
             queuedPathMap[name] = url.path
+            queuedJobs.removeAll { $0.sourcePath == url.path }
+            queuedJobs.append(QueuedTransferJob(
+                name: name,
+                sourcePath: url.path,
+                destSubfolder: itemDest,
+                isCopy: isCopy,
+                leaveSymlink: leaveSymlink
+            ))
         }
     }
 
     public func clearQueue() {
         queuedSpaces.removeAll()
         queuedPathMap.removeAll()
+        queuedJobs.removeAll()
     }
 
     public func unstageSpace(_ spaceName: String) {
         queuedSpaces.removeAll { $0 == spaceName }
         queuedPathMap.removeValue(forKey: spaceName)
+        queuedJobs.removeAll { $0.name == spaceName }
     }
 
     public func runQueuedMoves() {
-        guard !queuedSpaces.isEmpty, !telemetry.isRunning else { return }
+        guard !isLocalProcessActive else { return }
+        if !queuedJobs.isEmpty {
+            let job = queuedJobs.removeFirst()
+            queuedSpaces.removeAll { $0 == job.name }
+            queuedPathMap.removeValue(forKey: job.name)
+            runScript(
+                sourcePath: job.sourcePath,
+                destSubfolder: job.destSubfolder,
+                isCopy: job.isCopy,
+                leaveSymlink: job.leaveSymlink
+            )
+            return
+        }
+        guard !queuedSpaces.isEmpty else { return }
         let spaceToMove = queuedSpaces.removeFirst()
         if let customPath = queuedPathMap.removeValue(forKey: spaceToMove) {
             runScript(sourcePath: customPath, destSubfolder: spaceToMove)
@@ -424,9 +515,10 @@ public final class TurboMigrationManager: ObservableObject {
         leaveSymlink: Bool = false
     ) {
         guard !urls.isEmpty else { return }
-        if urls.count == 1 {
+        if urls.count == 1 && !isLocalProcessActive {
             let url = urls[0]
-            let destName = destinationSubfolder.isEmpty ? url.lastPathComponent : destinationSubfolder
+            let cleanDest = destinationSubfolder.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+            let destName = cleanDest.isEmpty ? url.lastPathComponent : cleanDest
             runScript(
                 sourcePath: url.path,
                 destSubfolder: destName,
@@ -434,8 +526,13 @@ public final class TurboMigrationManager: ObservableObject {
                 leaveSymlink: leaveSymlink
             )
         } else {
-            stageURLs(urls)
-            if !telemetry.isRunning {
+            stageURLs(
+                urls,
+                destinationSubfolder: destinationSubfolder,
+                isCopy: isCopy,
+                leaveSymlink: leaveSymlink
+            )
+            if !isLocalProcessActive {
                 runQueuedMoves()
             }
         }
@@ -455,6 +552,7 @@ public final class TurboMigrationManager: ObservableObject {
         let name = destSubfolder.isEmpty ? URL(fileURLWithPath: sourcePath).lastPathComponent : destSubfolder
         let prefix = sourcePath.contains("FabricDrive") ? "Fabric" : (sourcePath.contains("CloudStorage") || sourcePath.contains("Mobile Documents") || sourcePath.contains("Desktop") ? "iCloud" : "Mac")
 
+        isLocalProcessActive = true
         telemetry.spaceName = name
         telemetry.isRunning = true
         telemetry.statusMessage = "Preparing \(isCopy ? "copy" : "move") for \(name)…"
@@ -479,6 +577,7 @@ public final class TurboMigrationManager: ObservableObject {
             proc.waitUntilExit()
 
             await MainActor.run {
+                self.isLocalProcessActive = false
                 self.telemetry.isRunning = false
                 self.telemetry.isComplete = true
                 self.readTelemetry()
@@ -488,24 +587,36 @@ public final class TurboMigrationManager: ObservableObject {
                 if let rclone = RcloneDaemonSupervisor.shared.resolveRcloneBinary() {
                     Task { await VaultStats.shared.refresh(rclone: rclone) }
                 }
-                if !self.queuedSpaces.isEmpty {
+                if !self.queuedJobs.isEmpty || !self.queuedSpaces.isEmpty {
                     self.runQueuedMoves()
                 }
             }
         }
     }
 
-    public func cancel() {
+    public func cancelLocalOnly() {
         let k = Process()
         k.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         k.arguments = ["-f", "turbo-migrate-dashboard.py"]
         try? k.run()
+        isLocalProcessActive = false
+    }
+
+    public func cancel() {
+        cancelLocalOnly()
 
         // Also stop remote stream on naegele-mm if active
+        let sshKeyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_ed25519").path
         Task.detached {
             let sshKill = Process()
             sshKill.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            sshKill.arguments = ["naegele-mm", "pkill -f stream-icloud-to-vault.py; pkill -f 'rclone copy icloud_direct'"]
+            sshKill.arguments = [
+                "-i", sshKeyPath,
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "admin@100.114.74.17",
+                "pkill -f stream-icloud-to-vault.py; pkill -f 'rclone copy icloud_direct'"
+            ]
             try? sshKill.run()
         }
 
