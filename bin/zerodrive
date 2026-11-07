@@ -1,0 +1,697 @@
+#!/usr/bin/env python3
+"""
+ZeroDrive CLI (zd) — Blazing-fast Cloud Drive & AI Agent File Engine
+Combines Cloudflare R2 object storage with multi-stream rclone engine
+and loopback NFS mount controls.
+"""
+
+import os
+import sys
+import json
+import time
+import shutil
+import urllib.request
+import urllib.error
+import subprocess
+import fnmatch
+from pathlib import Path
+
+VERSION = "1.0.0"
+DEFAULT_BUCKET_PREFIX = "zerodrive-vault-prod/usr_andrew_8bc7fb477f"
+SETTINGS_PATH = os.path.expanduser("~/.config/rclone/zerodrive-vault.json")
+RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
+SYMLINKS_PATH = os.path.expanduser("~/.config/rclone/zerodrive-symlinks.json")
+LOCAL_TELEMETRY = os.path.expanduser("~/.config/rclone/migration-telemetry.json")
+REMOTE_TELEMETRY = os.path.expanduser("~/.config/rclone/remote-migration-telemetry.json")
+MOUNT_DIR = os.path.expanduser("~/ZeroDrive/My Drive")
+RC_URL = "http://127.0.0.1:55729"
+
+# Find rclone binary
+RCLONE_BIN = "/Applications/ZeroDrive.app/Contents/Resources/rclone"
+if not os.path.exists(RCLONE_BIN):
+    RCLONE_BIN = shutil.which("rclone") or "/opt/homebrew/bin/rclone"
+
+# ANSI Colors
+COLOR_RESET = "\033[0m"
+COLOR_BOLD = "\033[1m"
+COLOR_DIM = "\033[2m"
+COLOR_CYAN = "\033[36m"
+COLOR_GREEN = "\033[32m"
+COLOR_YELLOW = "\033[33m"
+COLOR_BLUE = "\033[34m"
+COLOR_MAGENTA = "\033[35m"
+COLOR_RED = "\033[31m"
+
+IS_TTY = sys.stdout.isatty() and "--no-color" not in sys.argv
+
+def c(text, color):
+    return f"{color}{text}{COLOR_RESET}" if IS_TTY else text
+
+def format_bytes(bytes_count):
+    if bytes_count is None or bytes_count < 0:
+        return "0 B"
+    for unit in ["B", "KB", "MB", "GB", "TB", "PB"]:
+        if bytes_count < 1024.0 or unit == "PB":
+            return f"{bytes_count:.2f} {unit}" if unit in ["GB", "TB", "PB"] else f"{bytes_count:.1f} {unit}"
+        bytes_count /= 1024.0
+    return f"{bytes_count:.1f} B"
+
+def load_vault_prefix():
+    prefix = DEFAULT_BUCKET_PREFIX
+    if os.path.exists(SETTINGS_PATH):
+        try:
+            with open(SETTINGS_PATH, "r") as f:
+                data = json.load(f)
+                bp = data.get("bucketAndPrefix", "").strip("/")
+                if bp and bp != "zerodrive-vault-prod":
+                    prefix = bp
+        except Exception:
+            pass
+    return prefix
+
+def get_vault_remote_base():
+    prefix = load_vault_prefix()
+    return f"primary_vault:{prefix}"
+
+def resolve_path(arg, prefer_remote=True):
+    """
+    Translates user/agent inputs into appropriate remote or local path.
+    - If arg starts with primary_vault: or other remote, keep as is.
+    - If arg is inside ~/ZeroDrive/My Drive, strip local mount and make remote path.
+    - If prefer_remote and path isn't an existing local path, make it remote.
+    """
+    if not arg or arg == "." or arg == "/":
+        return get_vault_remote_base()
+
+    if ":" in arg and not arg.startswith("/") and not arg.startswith("~"):
+        return arg  # Already a remote spec
+
+    expanded = os.path.abspath(os.path.expanduser(arg))
+    mount_root = os.path.abspath(MOUNT_DIR)
+
+    if expanded.startswith(mount_root):
+        rel = os.path.relpath(expanded, mount_root)
+        if rel == ".":
+            return get_vault_remote_base()
+        return f"{get_vault_remote_base()}/{rel}"
+
+    if not prefer_remote and os.path.exists(expanded):
+        return expanded
+
+    # Check if user passed a relative vault path like 'Course' or 'MAIN/file.mp4'
+    clean = arg.lstrip("/")
+    return f"{get_vault_remote_base()}/{clean}"
+
+def run_rc_post(endpoint, payload=None, timeout=3.0):
+    url = f"{RC_URL}/{endpoint.lstrip('/')}"
+    data = json.dumps(payload or {}).encode("utf-8") if payload else b"{}"
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+def exec_rclone(args, capture_output=True, text=True):
+    cmd = [RCLONE_BIN] + args + [f"--config={RCLONE_CONF}"]
+    if capture_output:
+        return subprocess.run(cmd, capture_output=True, text=text)
+    return subprocess.run(cmd)
+
+# --- COMMANDS ---
+
+def cmd_status(args):
+    """zd status: Show live mount status, SSD free space & vault metrics"""
+    json_mode = "--json" in args
+
+    # Local SSD
+    usage = shutil.disk_usage("/")
+    free_gb = usage.free / (1024 ** 3)
+    total_gb = usage.total / (1024 ** 3)
+
+    # Check mount
+    mount_proc = subprocess.run(["mount"], capture_output=True, text=True)
+    is_mounted = ".zerodrive-mount" in mount_proc.stdout or "ZeroDrive" in mount_proc.stdout
+
+    # Check live daemon
+    rc_stats = run_rc_post("core/stats", timeout=0.8)
+    vfs_stats = run_rc_post("vfs/stats", timeout=0.8)
+    daemon_online = rc_stats is not None
+
+    # Cache info
+    cache_bytes = 0
+    cache_files = 0
+    if vfs_stats and "diskCache" in vfs_stats:
+        cache_bytes = vfs_stats["diskCache"].get("bytesUsed", 0)
+        cache_files = vfs_stats["diskCache"].get("files", 0)
+
+    # Symlinks
+    symlink_count = 0
+    if os.path.exists(SYMLINKS_PATH):
+        try:
+            with open(SYMLINKS_PATH, "r") as f:
+                symlink_count = len(json.load(f))
+        except Exception:
+            pass
+
+    # Active stream telemetry
+    active_stream = None
+    for tpath in [LOCAL_TELEMETRY, REMOTE_TELEMETRY]:
+        if os.path.exists(tpath):
+            try:
+                with open(tpath, "r") as f:
+                    tdata = json.load(f)
+                    if tdata.get("isRunning"):
+                        active_stream = tdata
+                        break
+            except Exception:
+                pass
+
+    if json_mode:
+        print(json.dumps({
+            "mounted": is_mounted,
+            "mountPath": MOUNT_DIR,
+            "daemonOnline": daemon_online,
+            "macSsdFreeGB": round(free_gb, 2),
+            "macSsdTotalGB": round(total_gb, 2),
+            "vfsCacheBytes": cache_bytes,
+            "vfsCacheFiles": cache_files,
+            "activeSymlinks": symlink_count,
+            "activeStream": active_stream,
+            "vaultPrefix": load_vault_prefix()
+        }, indent=2))
+        return
+
+    print(c("\n⚡ ZeroDrive System Status", COLOR_BOLD + COLOR_CYAN))
+    print(c("═" * 52, COLOR_DIM))
+    mount_status_str = c("✓ Connected & Mounted", COLOR_GREEN) if is_mounted else c("✗ Not Mounted", COLOR_RED)
+    print(f"  {c('Finder Mount:', COLOR_BOLD):<24} {mount_status_str}")
+    print(f"  {c('Mount Path:', COLOR_BOLD):<24} {MOUNT_DIR}")
+    print(f"  {c('Mac SSD Free:', COLOR_BOLD):<24} {c(f'{free_gb:.1f} GiB available', COLOR_GREEN)} ({total_gb:.0f} GB total)")
+    print(f"  {c('Local VFS Cache:', COLOR_BOLD):<24} {format_bytes(cache_bytes)} ({cache_files:,} files cached in RAM/SSD)")
+    print(f"  {c('Active Symlinks:', COLOR_BOLD):<24} {symlink_count} local folder shortcuts active")
+    print(f"  {c('Vault Prefix:', COLOR_BOLD):<24} {load_vault_prefix()}")
+
+    if active_stream:
+        print(c("\n  Active Background Transfer:", COLOR_YELLOW))
+        print(f"    Task:      {active_stream.get('spaceName')}")
+        print(f"    Progress:  {active_stream.get('percent', 0)}% @ {active_stream.get('speedMBps', 0)} MB/s")
+        print(f"    Status:    {active_stream.get('statusMessage')}")
+    else:
+        print(f"  {c('Transfer Status:', COLOR_BOLD):<24} {c('Idle (All files synced)', COLOR_DIM)}")
+
+    print(c("═" * 52, COLOR_DIM) + "\n")
+
+def cmd_ls(args):
+    """zd ls [path]: Blazing-fast listing of directory contents"""
+    json_mode = "--json" in args
+    recursive = "-R" in args or "--recursive" in args
+    path_args = [a for a in args if not a.startswith("-")]
+    target = resolve_path(path_args[0] if path_args else "")
+
+    if json_mode:
+        cmd_args = ["lsjson", target, "--fast-list"]
+        if not recursive:
+            cmd_args.extend(["--max-depth", "1"])
+        res = exec_rclone(cmd_args)
+        if res.returncode == 0:
+            print(res.stdout)
+        else:
+            print(json.dumps({"error": res.stderr.strip()}), file=sys.stderr)
+            sys.exit(res.returncode)
+        return
+
+    # Formatted terminal output
+    cmd_args = ["lsf", target, "--fast-list", "--format", "pst"]
+    if not recursive:
+        cmd_args.extend(["--max-depth", "1"])
+    res = exec_rclone(cmd_args)
+    if res.returncode != 0:
+        print(c(f"Error listing {target}: {res.stderr.strip()}", COLOR_RED), file=sys.stderr)
+        sys.exit(res.returncode)
+
+    lines = res.stdout.strip().splitlines()
+    if not lines or (len(lines) == 1 and not lines[0]):
+        print(c("(directory is empty)", COLOR_DIM))
+        return
+
+    print(c(f"\n📂 {target.replace(get_vault_remote_base(), 'ZeroDrive: /')}", COLOR_BOLD + COLOR_CYAN))
+    print(c("─" * 60, COLOR_DIM))
+
+    dirs = []
+    files = []
+    for line in lines:
+        parts = line.split(";")
+        name = parts[0]
+        size = int(parts[1]) if len(parts) > 1 and parts[1] != "-1" else None
+        mod = parts[2] if len(parts) > 2 else ""
+
+        if name.endswith("/"):
+            dirs.append((name, mod))
+        else:
+            files.append((name, size, mod))
+
+    for d, mod in sorted(dirs):
+        print(f"  {c(d, COLOR_BLUE + COLOR_BOLD):<36} {c('DIR', COLOR_DIM):<10} {c(mod[:16], COLOR_DIM)}")
+
+    for f, size, mod in sorted(files):
+        sz_str = format_bytes(size) if size is not None else ""
+        print(f"  {f:<36} {c(sz_str, COLOR_GREEN):<10} {c(mod[:16], COLOR_DIM)}")
+
+    print(c("─" * 60, COLOR_DIM))
+    print(c(f"  Total: {len(dirs)} folders, {len(files)} files\n", COLOR_DIM))
+
+def cmd_size(args):
+    """zd size [path]: Query instant Cloudflare R2 metadata size and count"""
+    json_mode = "--json" in args
+    path_args = [a for a in args if not a.startswith("-")]
+    target = resolve_path(path_args[0] if path_args else "")
+
+    start_time = time.time()
+    res = exec_rclone(["size", target, "--fast-list", "--json"])
+    elapsed = time.time() - start_time
+
+    if res.returncode != 0:
+        print(c(f"Error calculating size: {res.stderr.strip()}", COLOR_RED), file=sys.stderr)
+        sys.exit(res.returncode)
+
+    try:
+        data = json.loads(res.stdout)
+        total_files = data.get("count", 0)
+        total_bytes = data.get("bytes", 0)
+    except Exception:
+        print(res.stdout)
+        return
+
+    display_target = target.replace(get_vault_remote_base(), "").strip("/") or "(Vault Root)"
+
+    if json_mode:
+        print(json.dumps({
+            "target": display_target,
+            "remote": target,
+            "count": total_files,
+            "bytes": total_bytes,
+            "humanSize": format_bytes(total_bytes),
+            "durationSeconds": round(elapsed, 2)
+        }, indent=2))
+        return
+
+    print(c(f"\n📊 ZeroDrive Vault Size", COLOR_BOLD + COLOR_CYAN))
+    print(c("═" * 48, COLOR_DIM))
+    print(f"  {c('Folder/Path:', COLOR_BOLD):<18} {display_target}")
+    print(f"  {c('File Count:', COLOR_BOLD):<18} {c(f'{total_files:,} files', COLOR_BOLD)}")
+    print(f"  {c('Total Size:', COLOR_BOLD):<18} {c(format_bytes(total_bytes), COLOR_GREEN + COLOR_BOLD)} ({total_bytes:,} bytes)")
+    print(f"  {c('Query Time:', COLOR_BOLD):<18} {elapsed:.2f}s (Cloudflare R2 metadata API)")
+    print(c("═" * 48, COLOR_DIM) + "\n")
+
+def cmd_cat(args):
+    """zd cat <path>: Stream file contents directly from cloud without disk caching"""
+    lines_spec = None
+    head_count = None
+    tail_count = None
+
+    filtered_args = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--lines" and i + 1 < len(args):
+            lines_spec = args[i + 1]
+            i += 2
+        elif args[i] == "--head" and i + 1 < len(args):
+            head_count = int(args[i + 1])
+            i += 2
+        elif args[i] == "--tail" and i + 1 < len(args):
+            tail_count = int(args[i + 1])
+            i += 2
+        else:
+            filtered_args.append(args[i])
+            i += 1
+
+    if not filtered_args:
+        print("Usage: zd cat <path> [--lines N-M] [--head N] [--tail N]", file=sys.stderr)
+        sys.exit(1)
+
+    target_rel = filtered_args[0].lstrip("/")
+    local_path = os.path.join(MOUNT_DIR, target_rel)
+
+    # Check if file is already mounted and local
+    if os.path.exists(local_path) and os.path.isfile(local_path):
+        try:
+            with open(local_path, "r", errors="replace") as f:
+                content_stream = f
+                _output_sliced_lines(content_stream, lines_spec, head_count, tail_count)
+                return
+        except Exception:
+            pass
+
+    # Stream from R2 directly via rclone cat
+    target = resolve_path(filtered_args[0])
+    proc = subprocess.Popen(
+        [RCLONE_BIN, "cat", target, f"--config={RCLONE_CONF}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1
+    )
+
+    _output_sliced_lines(proc.stdout, lines_spec, head_count, tail_count)
+    proc.wait()
+    if proc.returncode != 0:
+        err = proc.stderr.read()
+        if err:
+            print(c(f"Error reading {target}: {err.strip()}", COLOR_RED), file=sys.stderr)
+        sys.exit(proc.returncode)
+
+def _output_sliced_lines(stream, lines_spec, head_count, tail_count):
+    start_l, end_l = None, None
+    if lines_spec:
+        if "-" in lines_spec:
+            parts = lines_spec.split("-")
+            start_l = int(parts[0]) if parts[0] else 1
+            end_l = int(parts[1]) if parts[1] else None
+        else:
+            start_l = int(lines_spec)
+            end_l = int(lines_spec)
+
+    if tail_count:
+        # Buffer lines for tail
+        all_lines = stream.readlines() if hasattr(stream, "readlines") else [line for line in stream]
+        for line in all_lines[-tail_count:]:
+            sys.stdout.write(line)
+        return
+
+    line_num = 1
+    for line in stream:
+        if head_count and line_num > head_count:
+            break
+        if start_l and line_num < start_l:
+            line_num += 1
+            continue
+        if end_l and line_num > end_l:
+            break
+
+        sys.stdout.write(line)
+        line_num += 1
+
+def cmd_find(args):
+    """zd find <pattern> [path]: Fast search for files matching a pattern"""
+    json_mode = "--json" in args
+    clean_args = [a for a in args if not a.startswith("-")]
+    if not clean_args:
+        print("Usage: zd find <pattern> [path] [--json]", file=sys.stderr)
+        sys.exit(1)
+
+    pattern = clean_args[0]
+    path_arg = clean_args[1] if len(clean_args) > 1 else ""
+    target = resolve_path(path_arg)
+
+    # Use rclone's server-side filtering via --include for fast listing
+    include_pat = pattern if pattern.startswith("*") else f"*{pattern}*"
+    cmd_args = ["lsf", target, "-R", "--fast-list", "--files-only", f"--include={include_pat}"]
+
+    res = exec_rclone(cmd_args)
+    if res.returncode != 0:
+        print(c(f"Error searching: {res.stderr.strip()}", COLOR_RED), file=sys.stderr)
+        sys.exit(res.returncode)
+
+    matches = [f for f in res.stdout.strip().splitlines() if f.strip()]
+
+    if json_mode:
+        print(json.dumps({"pattern": pattern, "target": target, "count": len(matches), "matches": matches}, indent=2))
+        return
+
+    print(c(f"\n🔍 Found {len(matches)} files matching '{pattern}' in {target.replace(get_vault_remote_base(), 'ZeroDrive: /')}:", COLOR_BOLD + COLOR_CYAN))
+    print(c("─" * 60, COLOR_DIM))
+    for m in matches[:100]:
+        print(f"  {m}")
+    if len(matches) > 100:
+        print(c(f"  ... and {len(matches) - 100} more files (use --json for complete list)", COLOR_DIM))
+    print(c("─" * 60, COLOR_DIM) + "\n")
+
+def cmd_cp(args):
+    """zd cp <src> <dst>: High-speed multi-stream copy"""
+    if len(args) < 2:
+        print("Usage: zd cp <source> <destination>", file=sys.stderr)
+        sys.exit(1)
+
+    src = resolve_path(args[0], prefer_remote=False)
+    dst = resolve_path(args[1], prefer_remote=True)
+
+    print(c(f"Copying: {src} -> {dst}", COLOR_CYAN))
+    is_src_file = os.path.isfile(src) if not ":" in src else False
+
+    subcmd = "copyto" if is_src_file else "copy"
+    exec_args = [
+        subcmd, src, dst,
+        "--transfers=16",
+        "--checkers=32",
+        "--fast-list",
+        "--s3-upload-cutoff=32M",
+        "--s3-chunk-size=16M",
+        "-P"
+    ]
+    exec_rclone(exec_args, capture_output=False)
+
+def cmd_mv(args):
+    """zd mv <src> <dst> [--symlink]: High-speed move with optional POSIX symlink creation"""
+    leave_symlink = "--symlink" in args
+    clean_args = [a for a in args if not a.startswith("--")]
+
+    if len(clean_args) < 2:
+        print("Usage: zd mv <source> <destination> [--symlink]", file=sys.stderr)
+        sys.exit(1)
+
+    src_arg = clean_args[0]
+    dst_arg = clean_args[1]
+
+    src_local = os.path.abspath(os.path.expanduser(src_arg))
+    dst_remote = resolve_path(dst_arg, prefer_remote=True)
+
+    print(c(f"Moving: {src_local} -> {dst_remote}", COLOR_CYAN))
+
+    # Move via rclone
+    is_dir = os.path.isdir(src_local)
+    subcmd = "moveto" if os.path.isfile(src_local) else "move"
+    exec_args = [
+        subcmd, src_local, dst_remote,
+        "--transfers=32",
+        "--checkers=64",
+        "--fast-list",
+        "--s3-upload-cutoff=32M",
+        "--s3-chunk-size=16M",
+        "-P"
+    ]
+    res = exec_rclone(exec_args, capture_output=False)
+
+    if res.returncode == 0 and leave_symlink and is_dir:
+        # Create symlink at original location
+        rel_dst = dst_remote.replace(get_vault_remote_base(), "").lstrip("/")
+        target_mount = os.path.join(MOUNT_DIR, rel_dst)
+
+        # Remove local empty source directory
+        try:
+            shutil.rmtree(src_local, ignore_errors=True)
+            os.symlink(target_mount, src_local)
+            print(c(f"✓ Left shortcut at {src_local} -> {target_mount}", COLOR_GREEN))
+
+            # Record in symlinks ledger
+            syms = []
+            if os.path.exists(SYMLINKS_PATH):
+                try:
+                    with open(SYMLINKS_PATH, "r") as f:
+                        syms = json.load(f)
+                except Exception:
+                    pass
+            syms.append({
+                "localPath": src_local,
+                "targetMountPath": target_mount,
+                "folderName": os.path.basename(src_local),
+                "createdTimestamp": time.time()
+            })
+            with open(SYMLINKS_PATH, "w") as f:
+                json.dump(syms, f, indent=2)
+        except Exception as e:
+            print(c(f"Notice: could not create symlink: {e}", COLOR_YELLOW))
+
+def cmd_share(args):
+    """zd share <path> [--hours N]: Generate public pre-signed link"""
+    expire_hours = 24
+    clean_args = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--hours" and i + 1 < len(args):
+            expire_hours = int(args[i + 1])
+            i += 2
+        else:
+            clean_args.append(args[i])
+            i += 1
+
+    if not clean_args:
+        print("Usage: zd share <path> [--hours 24]", file=sys.stderr)
+        sys.exit(1)
+
+    target = resolve_path(clean_args[0])
+    res = exec_rclone(["link", target, f"--expire={expire_hours}h"])
+    if res.returncode != 0:
+        print(c(f"Error creating share link: {res.stderr.strip()}", COLOR_RED), file=sys.stderr)
+        sys.exit(res.returncode)
+
+    # Extract URL from stdout
+    link = ""
+    for line in res.stdout.strip().splitlines():
+        if "http" in line:
+            link = line.strip()
+            break
+
+    if not link:
+        link = res.stdout.strip()
+
+    print(c(f"\n🔗 ZeroDrive Public Link ({expire_hours}h expiry):", COLOR_BOLD + COLOR_GREEN))
+    print(f"  {link}\n")
+
+def cmd_refresh(args):
+    """zd refresh / zd sync: Instantly invalidate local VFS cache so Finder updates"""
+    resp = run_rc_post("vfs/refresh", timeout=3.0)
+    if resp:
+        print(c("✓ ZeroDrive directory cache refreshed! Finder and Terminal are up to date.", COLOR_GREEN))
+    else:
+        print(c("Notice: ZeroDrive mount daemon not responding on 127.0.0.1:55729.", COLOR_YELLOW))
+
+def cmd_tree(args):
+    """zd tree [path] [--depth N]: Visual tree of cloud hierarchy"""
+    depth = 2
+    clean_args = []
+    i = 0
+    while i < len(args):
+        if (args[i] == "--depth" or args[i] == "-d") and i + 1 < len(args):
+            depth = int(args[i + 1])
+            i += 2
+        else:
+            clean_args.append(args[i])
+            i += 1
+
+    target = resolve_path(clean_args[0] if clean_args else "")
+    res = exec_rclone(["tree", target, f"--level={depth}", "--fast-list"])
+    if res.returncode == 0:
+        print(res.stdout)
+    else:
+        print(c(f"Error generating tree: {res.stderr.strip()}", COLOR_RED), file=sys.stderr)
+
+def cmd_symlinks(args):
+    """zd symlinks: List all active local folder shortcuts"""
+    if not os.path.exists(SYMLINKS_PATH):
+        print(c("No active ZeroDrive symlink shortcuts found.", COLOR_DIM))
+        return
+
+    try:
+        with open(SYMLINKS_PATH, "r") as f:
+            syms = json.load(f)
+    except Exception:
+        syms = []
+
+    if not syms:
+        print(c("No active ZeroDrive symlink shortcuts found.", COLOR_DIM))
+        return
+
+    print(c(f"\n🔗 Active ZeroDrive Shortcuts ({len(syms)}):", COLOR_BOLD + COLOR_CYAN))
+    print(c("─" * 60, COLOR_DIM))
+    for s in syms:
+        local_p = s.get("localPath", "")
+        target_p = s.get("targetMountPath", "")
+        status = c("✓ Active", COLOR_GREEN) if os.path.islink(local_p) else c("✗ Missing", COLOR_RED)
+        print(f"  {s.get('folderName', 'Shortcut'):<20} {status}")
+        print(f"    Local:  {c(local_p, COLOR_DIM)}")
+        print(f"    Target: {c(target_p, COLOR_DIM)}")
+    print(c("─" * 60, COLOR_DIM) + "\n")
+
+def cmd_raw(args):
+    """zd raw <rclone_command...>: Direct pass-through to underlying rclone engine"""
+    if not args:
+        print("Usage: zd raw <command...> (e.g. zd raw lsd primary_vault:)", file=sys.stderr)
+        sys.exit(1)
+    exec_rclone(args, capture_output=False)
+
+def cmd_version(args):
+    print(f"ZeroDrive CLI (zd) v{VERSION}")
+    print(f"Storage Backend: Cloudflare R2 via {load_vault_prefix()}")
+    print(f"Local Mount:     {MOUNT_DIR}")
+    print(f"Engine Core:     {RCLONE_BIN}")
+
+def print_help():
+    help_text = f"""
+{c("ZeroDrive CLI (zd)", COLOR_BOLD + COLOR_CYAN)} — Blazing-fast Cloud Drive & AI Agent Engine
+Version {VERSION}
+
+{c("USAGE:", COLOR_BOLD)}
+    zd <command> [arguments...] [options]
+    zerodrive <command> [arguments...] [options]
+
+{c("COMMANDS:", COLOR_BOLD)}
+    {c("status", COLOR_GREEN):<16} Show live mount state, local SSD free space & active transfers
+    {c("ls [path]", COLOR_GREEN):<16} List directory contents ({c('--json', COLOR_DIM)}, {c('-R', COLOR_DIM)})
+    {c("tree [path]", COLOR_GREEN):<16} Display visual directory tree ({c('--depth N', COLOR_DIM)})
+    {c("size [path]", COLOR_GREEN):<16} Instant metadata size & file count check in seconds ({c('--json', COLOR_DIM)})
+    {c("cat <path>", COLOR_GREEN):<16} Stream file contents ({c('--lines N-M', COLOR_DIM)}, {c('--head N', COLOR_DIM)}, {c('--tail N', COLOR_DIM)})
+    {c("find <glob>", COLOR_GREEN):<16} Search for files matching a wildcard or pattern ({c('--json', COLOR_DIM)})
+    {c("cp <src> <dst>", COLOR_GREEN):<16} High-speed parallel copy (16 parallel streams)
+    {c("mv <src> <dst>", COLOR_GREEN):<16} High-speed parallel move ({c('--symlink', COLOR_DIM)} leaves local shortcut)
+    {c("share <path>", COLOR_GREEN):<16} Generate instant public / pre-signed link ({c('--hours 24', COLOR_DIM)})
+    {c("refresh / sync", COLOR_GREEN):<16} Invalidate directory cache so Finder & Terminal update instantly
+    {c("symlinks", COLOR_GREEN):<16} List all active local folder shortcuts
+    {c("raw <command>", COLOR_GREEN):<16} Pass through directly to underlying rclone engine
+    {c("version", COLOR_GREEN):<16} Print ZeroDrive CLI version and system info
+
+{c("GLOBAL OPTIONS:", COLOR_BOLD)}
+    --json          Format output as machine-readable JSON
+    --no-color      Disable ANSI color output
+    -h, --help      Show this help documentation
+"""
+    print(help_text.strip())
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ["-h", "--help", "help"]:
+        print_help()
+        sys.exit(0)
+
+    cmd = sys.argv[1].lower()
+    args = sys.argv[2:]
+
+    dispatch = {
+        "status": cmd_status,
+        "ls": cmd_ls,
+        "list": cmd_ls,
+        "tree": cmd_tree,
+        "size": cmd_size,
+        "cat": cmd_cat,
+        "read": cmd_cat,
+        "find": cmd_find,
+        "search": cmd_find,
+        "cp": cmd_cp,
+        "copy": cmd_cp,
+        "mv": cmd_mv,
+        "move": cmd_mv,
+        "share": cmd_share,
+        "link": cmd_share,
+        "refresh": cmd_refresh,
+        "sync": cmd_refresh,
+        "symlinks": cmd_symlinks,
+        "raw": cmd_raw,
+        "version": cmd_version,
+        "-v": cmd_version,
+        "--version": cmd_version,
+    }
+
+    handler = dispatch.get(cmd)
+    if handler:
+        handler(args)
+    else:
+        # Fallback to raw if not a known subcommand
+        print(c(f"Unknown command '{cmd}'. Running as raw engine command...\n", COLOR_YELLOW), file=sys.stderr)
+        cmd_raw(sys.argv[1:])
+
+if __name__ == "__main__":
+    main()

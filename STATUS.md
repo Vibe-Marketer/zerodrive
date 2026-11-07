@@ -29,6 +29,7 @@
 | **Step 5** | Harden `RcloneDaemonSupervisor.swift` (`--dir-cache-time=30s`) & `MultiCloudCombineBuilder.swift` prefix safety; deploy `ZeroDrive.app` to `naegele-mm` (`100.114.74.17`) | **DONE** | Verified via `ssh naegele-mm "ls -la ~/ZeroDrive/'My Drive'"` — all top-level folders are live and mounted on `naegele-mm`. |
 | **Step 6** | Authenticate `[icloud_direct]` (`naegele412@gmail.com`) and stream `Desktop/MAIN` $\rightarrow$ R2 Vault `MAIN` directly in RAM on `naegele-mm` | **DONE** | Completed at 01:32 AM with 100% success (0 local Mac SSD used, all files synced to `My Drive/MAIN`). Telemetry confirmed: `✓ Direct iCloud -> Vault stream complete for MAIN`. |
 | **Step 7** | Fix `dispatch_once` launch crash, SSH live telemetry poller, multi-folder symlink toggle, selected items list + remove/clear controls, and Vault folder picker / `+ New Folder` in `TransferConfirmationSheet` | **DONE** | Verified live: `ZeroDrive.app` running (PID 18587), `My Drive` mounted on `localhost:55730`, live `naegele-mm` telemetry streaming in UI, and confirmation sheet upgraded. |
+| **Step 8** | Build, brand, and deploy complete `zerodrive` / `zd` CLI binary (`bin/zerodrive` with `zd -> zerodrive` symlink) across `naegele-pro` and `naegele-mm` | **DONE** | Installed in `~/.local/bin/` on both Macs. Features `status`, `ls`, `size` (8s for 10k files), `cat` (with `--lines`, `--head`, `--tail`), `find`, `cp`, `mv --symlink`, `share` (Cloudflare pre-signed link), `refresh`, and `--json` support. |
 
 ---
 
