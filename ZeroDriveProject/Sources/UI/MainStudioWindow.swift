@@ -12,12 +12,8 @@ public struct MainStudioWindow: View {
 
     @State private var selectedTab: Int = 0
     @State private var isDropTargeted: Bool = false
-    @State private var lastActionFeedback: String = ""
     @State private var pairDeviceFeedback: String = ""
     @State private var connectedClouds: Set<ExternalCloudProvider> = MultiCloudCombineBuilder.shared.connectedExternalClouds()
-    @State private var oauthBusyProvider: ExternalCloudProvider? = nil
-    @State private var oauthStatusMessage: String = ""
-    @State private var providerPendingDisconnect: ExternalCloudProvider? = nil
     @State private var pendingTransfer: PendingTransferItem? = nil
 
     public init() {}
@@ -42,7 +38,17 @@ public struct MainStudioWindow: View {
                 }
 
                 NavigationLink(value: 2) {
-                    Label("Devices & Clouds", systemImage: "laptopcomputer.and.iphone")
+                    HStack {
+                        Label("Devices & Clouds", systemImage: "laptopcomputer.and.iphone")
+                        Spacer()
+                        Text("\(turbo.connectedNodes.filter { $0.isOnline }.count)")
+                            .font(.caption2.bold().monospacedDigit())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.green.opacity(0.16))
+                            .foregroundStyle(.green)
+                            .clipShape(Capsule())
+                    }
                 }
 
                 NavigationLink(value: 3) {
@@ -50,7 +56,7 @@ public struct MainStudioWindow: View {
                 }
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 185, ideal: 205, max: 235)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
         } detail: {
             Group {
                 switch selectedTab {
@@ -103,16 +109,23 @@ public struct MainStudioWindow: View {
         }
     }
 
-    // MARK: - Tab 0: Overview (Single Unified Transfer Card + Cloud Folders)
+    // MARK: - Tab 0: Overview (Live Transfer Card + Active Connections + Cloud Folders)
 
     private var overviewView: some View {
         Form {
-            // 1. Unified Transfer Card (No Duplicate Drop Zones!)
+            // 1. Live Transfer Card (Streams Local Moves AND Remote/Cloud Moves Live)
             Section {
                 FabricDriveMigrationCard()
             }
 
-            // 2. Cloud Vault Status & Finder Shortcut
+            // 2. Active Connections & Devices (Live Presence)
+            Section("Active Connections & Devices (\(turbo.connectedNodes.filter { $0.isOnline }.count) Online)") {
+                ForEach(turbo.connectedNodes) { node in
+                    connectedNodeRow(node)
+                }
+            }
+
+            // 3. Cloud Vault Status & Finder Shortcut
             Section("Your Cloud Vault") {
                 HStack(spacing: 12) {
                     Circle()
@@ -155,7 +168,7 @@ public struct MainStudioWindow: View {
                 .padding(.vertical, 4)
             }
 
-            // 3. Folders inside My Drive
+            // 4. Folders inside My Drive
             Section("Folders in My Drive") {
                 ForEach(vaultStats.folders.filter { $0 != "Google Drive" }, id: \.self) { folderName in
                     folderRow(
@@ -173,6 +186,55 @@ public struct MainStudioWindow: View {
             handleDropProviders(providers)
             return true
         }
+    }
+
+    private func connectedNodeRow(_ node: ConnectedNodeStatus) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: node.icon)
+                .font(.title3)
+                .foregroundStyle(node.isOnline ? Color.accentColor : Color.secondary)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(node.name)
+                        .font(.body.weight(.medium))
+                    Text(node.statusBadge)
+                        .font(.caption2.bold())
+                        .foregroundStyle(node.statusBadge.contains("Streaming") || node.statusBadge.contains("Active") ? Color.accentColor : (node.isOnline ? Color.green : Color.secondary))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background((node.statusBadge.contains("Streaming") || node.statusBadge.contains("Active") ? Color.accentColor : (node.isOnline ? Color.green : Color.secondary)).opacity(0.14))
+                        .clipShape(Capsule())
+                }
+
+                Text(node.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !node.activeActivity.isEmpty {
+                    HStack(spacing: 5) {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text(node.activeActivity)
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(Color.accentColor)
+                            .lineLimit(1)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+
+            Spacer()
+
+            if node.id == "naegele-pro" || node.id == "cloudflare-r2" {
+                Button("Open My Drive") {
+                    supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent("My Drive"))
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     private var formattedTotalStorage: String {
@@ -206,27 +268,17 @@ public struct MainStudioWindow: View {
         }
     }
 
-    // MARK: - Tab 2: Devices & Cloud Sources
+    // MARK: - Tab 2: Devices & Cloud Connections
 
     private var devicesAndCloudsView: some View {
         Form {
-            Section("My Macs & Devices (Instant Access Everywhere)") {
-                deviceRow(
-                    name: Host.current().localizedName ?? "MacBook Pro (This Mac)",
-                    detail: "Mounted at ~/ZeroDrive/My Drive • Live Sync Active",
-                    icon: "laptopcomputer",
-                    isCurrent: true
-                )
-
-                deviceRow(
-                    name: "naegele-mm (Mac mini)",
-                    detail: "Connected to same Cloud Vault • Instant HTTPS Access",
-                    icon: "macmini.fill",
-                    isCurrent: false
-                )
+            Section("Connected Macs, Servers & Cloud Streams (\(turbo.connectedNodes.filter { $0.isOnline }.count) Active)") {
+                ForEach(turbo.connectedNodes) { node in
+                    connectedNodeRow(node)
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Want My Drive on another Mac or server? Every device connected to your Vault sees your folders immediately—no Tailscale or VPN needed.")
+                    Text("Every device connected to your Vault sees your folders and active cloud moves immediately—no Tailscale or VPN required.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -258,7 +310,7 @@ public struct MainStudioWindow: View {
                             .font(.subheadline.weight(.medium))
                     }
 
-                    Text("Connects to naegele412@gmail.com via rclone's native iCloud API—bypasses Finder/bird completely and uses 0 bytes of local SSD space.")
+                    Text("Connected to naegele412@gmail.com via rclone's native iCloud API—bypasses Finder/bird completely and uses 0 bytes of local SSD space.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -308,42 +360,6 @@ public struct MainStudioWindow: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Devices & Clouds")
-    }
-
-    private func deviceRow(name: String, detail: String, icon: String, isCurrent: Bool) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(name)
-                        .font(.body.weight(.medium))
-                    Text(isCurrent ? "This Mac" : "Connected")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.green.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if isCurrent {
-                Button("Open My Drive") {
-                    supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent("My Drive"))
-                }
-                .controlSize(.small)
-            }
-        }
-        .padding(.vertical, 2)
     }
 
     private func copyPairingCommandToClipboard() {

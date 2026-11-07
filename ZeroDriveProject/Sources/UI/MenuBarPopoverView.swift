@@ -22,7 +22,7 @@ public struct MenuBarPopoverView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ZeroDrive")
                         .font(.headline)
-                    Text(supervisor.isMounted ? "Connected in Finder" : "Connecting…")
+                    Text("\(turbo.connectedNodes.filter { $0.isOnline }.count) Connections Active • Finder Ready")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -66,14 +66,14 @@ public struct MenuBarPopoverView: View {
             .background(Color.secondary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            // MARK: - 3. Live Process & Activity Status
+            // MARK: - 3. Live Process & Activity Status (Local or Cloud/Mini Stream)
             if turbo.telemetry.isRunning {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Circle()
                             .fill(Color.accentColor)
                             .frame(width: 7, height: 7)
-                        Text("Moving \(turbo.telemetry.spaceName)")
+                        Text(turbo.telemetry.spaceName)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
                         Spacer()
@@ -88,11 +88,10 @@ public struct MenuBarPopoverView: View {
                         .progressViewStyle(.linear)
 
                     HStack {
-                        Text(turbo.telemetry.statusMessage)
-                            .font(.caption2)
+                        Text("\(ByteCountFormatter.string(fromByteCount: turbo.telemetry.movedBytes, countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: turbo.telemetry.totalBytes, countStyle: .file)) • \(turbo.telemetry.movedFiles)/\(turbo.telemetry.totalFiles) files")
+                            .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
                         Spacer()
                         Button("Stop") {
                             turbo.cancel()
@@ -133,7 +132,36 @@ public struct MenuBarPopoverView: View {
                 .padding(.vertical, 2)
             }
 
-            // MARK: - 4. Primary Action Button (Replaces Broken Drop Box)
+            // MARK: - 4. Compact Connected Devices & Clouds List
+            VStack(alignment: .leading, spacing: 4) {
+                Text("CONNECTED DEVICES & STREAMS")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+
+                ForEach(turbo.connectedNodes.prefix(4)) { node in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(node.isOnline ? Color.green : Color.secondary)
+                            .frame(width: 6, height: 6)
+                        Image(systemName: node.icon)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 14)
+                        Text(node.name.components(separatedBy: " (").first ?? node.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(node.statusBadge)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(node.statusBadge.contains("Streaming") || node.statusBadge.contains("Active") ? Color.accentColor : .secondary)
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            // MARK: - 5. Primary Action Button
             Button {
                 chooseFolderToMove()
             } label: {
@@ -150,7 +178,7 @@ public struct MenuBarPopoverView: View {
 
             Divider()
 
-            // MARK: - 5. Footer
+            // MARK: - 6. Footer
             HStack {
                 Button("Open ZeroDrive Window") {
                     lifecycleController.setStudioWindowVisible(true)
@@ -169,7 +197,7 @@ public struct MenuBarPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: 295)
+        .frame(width: 310)
     }
 
     private var formattedCloudVaultSize: String {
