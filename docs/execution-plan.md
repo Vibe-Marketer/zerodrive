@@ -88,3 +88,18 @@
   ```
   Copy `/Applications/ZeroDrive.app` and `~/.config/rclone/{rclone.conf,zerodrive-vault.json}` to `naegele-mm`, launch `/Applications/ZeroDrive.app` on `naegele-mm`, and run `ls -la ~/ZeroDrive/"My Drive"` on `naegele-mm`.
 - **Verification:** `naegele-mm` lists all 9 top-level folders inside `~/ZeroDrive/My Drive` immediately.
+
+
+---
+
+## 3. Roadmapped Future Initiatives (To-Do)
+
+### Phase 7: Native iCloud Integration & Cloud-to-Cloud UI Flow
+- [ ] **Native In-App Sign-In & 2FA Flow**: Embed Apple ID credential entry + native 6-digit 2FA modal directly in ZeroDrive's GUI (leveraging rclone's SRP protocol without requiring Terminal interaction).
+- [ ] **Connection Presence & Session Management**: Display live iCloud connection status badge in `Devices & Clouds` with 1-click token refresh (tokens expire after 30 days).
+- [ ] **Interactive Remote Cloud Browser**: Browse remote iCloud Drive folders (`icloud_direct:`) in a Finder-like modal, select specific items, and execute **Move** (drain to free space) or **Copy** directly into the ZeroDrive Vault.
+- [ ] **iCloud Photos Ingestion**: Leverage rclone's `photos` service backend to allow one-click cloud-to-cloud archiving of Apple Photos into ZeroDrive.
+
+### Phase 8: Drive Customization & AI Agent Knowledge Base (MCP)
+- [ ] **Drive Renaming in UI**: Provide user-facing setting in the app to customize the drive name and mount alias (e.g., renaming "My Drive" to a custom branded or workspace name).
+- [ ] **ZeroDrive Agent MCP Server**: Build a native Model Context Protocol (MCP) server for ZeroDrive. This allows AI coding agents (Claude Code, Gemini CLI, Cursor, or remote cloud/VPS instances) to query, search, read, and write directly into the user's ZeroDrive knowledge base with instant bidirectional synchronization back to the Mac Finder.
