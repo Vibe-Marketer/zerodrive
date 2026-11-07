@@ -8,6 +8,7 @@ struct ZeroDriveApp: App {
     @StateObject private var supervisor = RcloneDaemonSupervisor.shared
     @StateObject private var spoolManager = SpoolAndGuardManager.shared
     @StateObject private var indexer = RAMTreeIndexer.shared
+    @StateObject private var turbo = TurboMigrationManager.shared
 
     var body: some Scene {
         WindowGroup("ZeroDrive", id: "studio") {
@@ -41,8 +42,12 @@ struct ZeroDriveApp: App {
                 .environmentObject(indexer)
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: spoolManager.dirtyFileCount > 0 ? "arrow.up.icloud.fill" : (supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill"))
-                if spoolManager.dirtyFileCount > 0 && spoolManager.telemetry.uploadSpeedMBps > 0.05 {
+                let isBusy = turbo.telemetry.isRunning || spoolManager.dirtyFileCount > 0
+                Image(systemName: isBusy ? "arrow.up.icloud.fill" : (supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill"))
+                if turbo.telemetry.isRunning && turbo.telemetry.speedMBps > 0.1 {
+                    Text(String(format: "↑ %.1f MB/s", turbo.telemetry.speedMBps))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                } else if spoolManager.dirtyFileCount > 0 && spoolManager.telemetry.uploadSpeedMBps > 0.05 {
                     Text(String(format: "↑ %.1f MB/s", spoolManager.telemetry.uploadSpeedMBps))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 }

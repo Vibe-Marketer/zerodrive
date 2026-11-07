@@ -19,7 +19,7 @@ public struct TurboMigrationTelemetry: Codable, Sendable {
     public var currentFile: String
     public var sourceLocation: String
     public var destLocation: String
-    
+
     public init(
         spaceName: String = "",
         isRunning: Bool = false,
@@ -67,7 +67,7 @@ public struct MigrationLedger: Codable, Sendable {
     public var totalFreedOnMacBytes: Int64
     public var totalMovedToVaultBytes: Int64
     public var completedSpaces: [CompletedSpaceEntry]
-    
+
     public struct CompletedSpaceEntry: Codable, Sendable, Identifiable {
         public var id: String { spaceName }
         public var spaceName: String
@@ -78,37 +78,51 @@ public struct MigrationLedger: Codable, Sendable {
     }
 }
 
+public struct SymlinkEntry: Codable, Sendable, Identifiable {
+    public var id: String { originalPath }
+    public var folderName: String
+    public var originalPath: String
+    public var cloudTargetPath: String
+    public var bytesSaved: Int64
+    public var createdAt: String
+}
+
 @MainActor
 public final class TurboMigrationManager: ObservableObject {
     public static let shared = TurboMigrationManager()
-    
+
     @Published public var telemetry: TurboMigrationTelemetry = TurboMigrationTelemetry()
     @Published public var queuedSpaces: [String] = []
     @Published public var queuedPathMap: [String: String] = [:]
     @Published public var ledger: MigrationLedger? = nil
-    
+    @Published public var symlinks: [SymlinkEntry] = []
+
     private let telemetryFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/rclone/migration-telemetry.json")
     private let ledgerFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/rclone/migration-ledger.json")
-    
+    private let symlinksFile = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/rclone/zerodrive-symlinks.json")
+
     private var pollerTimer: Timer?
-    
+
     private init() {
         readLedger()
+        readSymlinks()
         startPoller()
     }
-    
+
     public func startPoller() {
         pollerTimer?.invalidate()
         pollerTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.readTelemetry()
                 self?.readLedger()
+                self?.readSymlinks()
             }
         }
     }
-    
+
     private func readTelemetry() {
         guard let data = try? Data(contentsOf: telemetryFile),
               let t = try? JSONDecoder().decode(TurboMigrationTelemetry.self, from: data) else {
@@ -124,7 +138,15 @@ public final class TurboMigrationManager: ObservableObject {
         }
         self.ledger = l
     }
-    
+
+    public func readSymlinks() {
+        guard let data = try? Data(contentsOf: symlinksFile),
+              let s = try? JSONDecoder().decode([SymlinkEntry].self, from: data) else {
+            return
+        }
+        self.symlinks = s
+    }
+
     public func stageSpace(_ spaceName: String) {
         if !queuedSpaces.contains(spaceName) {
             queuedSpaces.append(spaceName)
@@ -133,7 +155,7 @@ public final class TurboMigrationManager: ObservableObject {
             .appendingPathComponent("Library/CloudStorage/FabricDrive/Andrew Naegeles Workspace/Spaces")
         queuedPathMap[spaceName] = spacesDir.appendingPathComponent(spaceName).path
     }
-    
+
     public func stageAllSpaces(_ spaceNames: [String]) {
         for name in spaceNames {
             stageSpace(name)
@@ -150,17 +172,17 @@ public final class TurboMigrationManager: ObservableObject {
             queuedPathMap[name] = url.path
         }
     }
-    
+
     public func clearQueue() {
         queuedSpaces.removeAll()
         queuedPathMap.removeAll()
     }
-    
+
     public func unstageSpace(_ spaceName: String) {
         queuedSpaces.removeAll { $0 == spaceName }
         queuedPathMap.removeValue(forKey: spaceName)
     }
-    
+
     public func runQueuedMoves() {
         guard !queuedSpaces.isEmpty, !telemetry.isRunning else { return }
         let spaceToMove = queuedSpaces.removeFirst()
@@ -170,7 +192,7 @@ public final class TurboMigrationManager: ObservableObject {
             startMove(spaceName: spaceToMove)
         }
     }
-    
+
     public func startMove(spaceName: String) {
         let spacesDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/CloudStorage/FabricDrive/Andrew Naegeles Workspace/Spaces")
@@ -178,11 +200,22 @@ public final class TurboMigrationManager: ObservableObject {
         runScript(sourcePath: spaceURL.path, destSubfolder: spaceName)
     }
 
-    public func startDirectMove(urls: [URL]) {
+    public func startTransfer(
+        urls: [URL],
+        destinationSubfolder: String,
+        isCopy: Bool = false,
+        leaveSymlink: Bool = false
+    ) {
         guard !urls.isEmpty else { return }
         if urls.count == 1 {
             let url = urls[0]
-            runScript(sourcePath: url.path, destSubfolder: url.lastPathComponent)
+            let destName = destinationSubfolder.isEmpty ? url.lastPathComponent : destinationSubfolder
+            runScript(
+                sourcePath: url.path,
+                destSubfolder: destName,
+                isCopy: isCopy,
+                leaveSymlink: leaveSymlink
+            )
         } else {
             stageURLs(urls)
             if !telemetry.isRunning {
@@ -190,18 +223,27 @@ public final class TurboMigrationManager: ObservableObject {
             }
         }
     }
-    
-    private func runScript(sourcePath: String, destSubfolder: String) {
+
+    public func startDirectMove(urls: [URL]) {
+        startTransfer(urls: urls, destinationSubfolder: "", isCopy: false, leaveSymlink: false)
+    }
+
+    private func runScript(
+        sourcePath: String,
+        destSubfolder: String,
+        isCopy: Bool = false,
+        leaveSymlink: Bool = false
+    ) {
         let scriptPath = "/Users/Naegele/_LAB/zerodrive/turbo-migrate-dashboard.py"
         let name = destSubfolder.isEmpty ? URL(fileURLWithPath: sourcePath).lastPathComponent : destSubfolder
-        let prefix = sourcePath.contains("FabricDrive") ? "Fabric" : "MacBook"
-        
+        let prefix = sourcePath.contains("FabricDrive") ? "Fabric" : (sourcePath.contains("CloudStorage") || sourcePath.contains("Mobile Documents") || sourcePath.contains("Desktop") ? "iCloud" : "Mac")
+
         telemetry.spaceName = name
         telemetry.isRunning = true
-        telemetry.statusMessage = "Starting 32-stream turbo move for \(name)..."
+        telemetry.statusMessage = "Preparing \(isCopy ? "copy" : "move") for \(name)…"
         telemetry.sourceLocation = "\(prefix): \(name)"
         telemetry.destLocation = "My Drive/\(name)"
-        
+
         Task.detached(priority: .userInitiated) {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
@@ -209,15 +251,22 @@ public final class TurboMigrationManager: ObservableObject {
             if !destSubfolder.isEmpty {
                 args.append(destSubfolder)
             }
+            if isCopy {
+                args.append("--copy")
+            }
+            if leaveSymlink && !isCopy {
+                args.append("--leave-symlink")
+            }
             proc.arguments = args
             try? proc.run()
             proc.waitUntilExit()
-            
+
             await MainActor.run {
                 self.telemetry.isRunning = false
                 self.telemetry.isComplete = true
-                self.telemetry.statusMessage = "✓ Finished moving \(name) to ZeroDrive!"
+                self.readTelemetry()
                 self.readLedger()
+                self.readSymlinks()
                 VaultStats.shared.refreshFromCache()
                 if let rclone = RcloneDaemonSupervisor.shared.resolveRcloneBinary() {
                     Task { await VaultStats.shared.refresh(rclone: rclone) }
@@ -228,13 +277,13 @@ public final class TurboMigrationManager: ObservableObject {
             }
         }
     }
-    
+
     public func cancel() {
         let k = Process()
         k.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         k.arguments = ["-f", "turbo-migrate-dashboard.py"]
         try? k.run()
         telemetry.isRunning = false
-        telemetry.statusMessage = "Migration stopped."
+        telemetry.statusMessage = "Transfer stopped."
     }
 }

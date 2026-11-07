@@ -21,10 +21,17 @@ public struct FabricDriveMigrationCard: View {
     @ObservedObject private var turbo = TurboMigrationManager.shared
 
     @State private var detectedSpaces: [FabricSpaceItem] = []
-    
-    // Unified Selected Source
-    @State private var selectedItemURL: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/CloudStorage/FabricDrive/Andrew Naegeles Workspace/Spaces/_SKILLS")
+
+    // Selected Source (Defaults to Desktop/MAIN if present, otherwise Home)
+    @State private var selectedItemURL: URL = {
+        let desktopMain = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/MAIN")
+        if FileManager.default.fileExists(atPath: desktopMain.path) {
+            return desktopMain
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+    }()
+    @State private var customDestinationSubfolder: String = ""
+    @State private var pendingTransfer: PendingTransferItem? = nil
     @State private var sourceItemCount: Int = 0
     @State private var sourceSizeBytes: Int64 = 0
     @State private var isLocationADropTargeted: Bool = false
@@ -41,8 +48,8 @@ public struct FabricDriveMigrationCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            
-            // MARK: - 1. Visual Left-to-Right Transfer Pipeline Card
+
+            // MARK: - 1. Visual Left-to-Right Transfer Card
             VStack(alignment: .leading, spacing: 12) {
                 // Header Row
                 HStack(alignment: .center) {
@@ -50,7 +57,7 @@ public struct FabricDriveMigrationCard: View {
                         Circle()
                             .fill(turbo.telemetry.isRunning ? Color.green : (turbo.telemetry.isComplete ? Color.blue : Color.secondary))
                             .frame(width: 9, height: 9)
-                        Text(turbo.telemetry.isRunning ? "Direct Pipeline Move Active" : "ZeroDrive Direct Migration Pipeline")
+                        Text(turbo.telemetry.isRunning ? "Moving to Cloud Vault…" : "Move Folders to Cloud & Free Up Mac Space")
                             .font(.headline)
                     }
 
@@ -60,29 +67,25 @@ public struct FabricDriveMigrationCard: View {
                         HStack(spacing: 6) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("32 Parallel Streams • Auto De-dupe")
+                            Text("Verifying & Freeing Space")
                                 .font(.caption.bold())
                                 .foregroundStyle(Color.accentColor)
                         }
-                    } else if turbo.telemetry.isComplete {
-                        Text("Ready for Next Move")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     } else {
                         HStack(spacing: 4) {
                             Image(systemName: "checkmark.shield.fill")
                                 .foregroundStyle(.green)
                                 .font(.caption2)
-                            Text("Auto De-duplication Active")
+                            Text("Skips Duplicates • Verifies Before Deleting")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
 
-                // 3-Column Pipeline: [Location A (Source)] ──► [Pipeline Speed & Progress] ──► [ZeroDrive (Destination)]
+                // 3-Column Pipeline: [From This Mac] ──► [Speed & Progress] ──► [To My Drive (Cloud)]
                 HStack(alignment: .center, spacing: 12) {
-                    // LEFT BOX: Location A (Source) - Click to Open Finder / Multi-select or Drop Files
+                    // LEFT BOX: From This Mac (Click to Browse or Drop Folder/Files)
                     Button {
                         if !turbo.telemetry.isRunning {
                             openFinderFilePicker()
@@ -92,62 +95,66 @@ public struct FabricDriveMigrationCard: View {
                             HStack(spacing: 5) {
                                 Image(systemName: isSourceFromFabric ? "cloud.fill" : "laptopcomputer")
                                     .foregroundStyle(.blue)
-                                Text("LOCATION A (SOURCE)")
+                                Text("FROM THIS MAC")
                                     .font(.caption2.bold())
                                     .foregroundStyle(.secondary)
                                 Spacer()
                                 if !turbo.telemetry.isRunning {
-                                    Text("Browse (Cmd+A)…")
+                                    Text("Click or Drop…")
                                         .font(.caption2.bold())
                                         .foregroundStyle(Color.accentColor)
                                 }
                             }
-                            
+
                             if turbo.telemetry.isRunning {
                                 Text(turbo.telemetry.sourceLocation.isEmpty ? turbo.telemetry.spaceName : turbo.telemetry.sourceLocation)
                                     .font(.subheadline.bold())
                                     .lineLimit(1)
                                     .truncationMode(.tail)
-                                Text("Drain: \(ByteCountFormatter.string(fromByteCount: turbo.telemetry.remainingBytes, countStyle: .file)) left")
+                                Text("\(ByteCountFormatter.string(fromByteCount: turbo.telemetry.remainingBytes, countStyle: .file)) left to move")
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
-                                Text("\(max(0, turbo.telemetry.totalFiles - turbo.telemetry.movedFiles)) items remaining")
-                                    .font(.caption2)
+                                Text("\(max(0, turbo.telemetry.totalFiles - turbo.telemetry.movedFiles)) files remaining")
+                                    .font(.caption2.monospacedDigit())
                                     .foregroundStyle(.secondary)
                             } else if !turbo.queuedSpaces.isEmpty {
                                 HStack(spacing: 5) {
                                     Image(systemName: "square.stack.3d.up.fill")
                                         .font(.caption)
                                         .foregroundStyle(Color.accentColor)
-                                    Text("\(turbo.queuedSpaces.count) Items Staged in Queue")
+                                    Text("\(turbo.queuedSpaces.count) Folders Ready")
                                         .font(.subheadline.bold())
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
                                 }
-                                Text("Drain: \(totalQueuedSizeFormatted)")
+                                Text("Total: \(totalQueuedSizeFormatted)")
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
-                                Text("Click to browse or drop more items")
+                                Text("Click to choose different folders")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary.opacity(0.8))
                             } else {
-                                HStack(spacing: 5) {
+                                HStack(spacing: 6) {
                                     Image(systemName: "folder.fill")
                                         .font(.caption)
                                         .foregroundStyle(Color.accentColor)
                                     Text(selectedItemName)
-                                        .font(.subheadline.bold())
+                                        .font(.headline)
                                         .foregroundStyle(.primary)
                                         .lineLimit(1)
                                         .truncationMode(.tail)
                                 }
 
-                                Text("Drain: \(ByteCountFormatter.string(fromByteCount: sourceSizeBytes, countStyle: .file)) (\(sourceItemCount) items)")
+                                Text(ByteCountFormatter.string(fromByteCount: sourceSizeBytes, countStyle: .file) + (sourceItemCount > 0 ? " • \(sourceItemCount) files" : ""))
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
-                                Text("Click to search Finder or drop files here")
+
+                                Text(truncatedBreadcrumb(selectedItemURL.path))
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary.opacity(0.8))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .help(selectedItemURL.path)
                             }
                         }
                         .padding(10)
@@ -167,72 +174,113 @@ public struct FabricDriveMigrationCard: View {
                     }
 
                     // MIDDLE CONNECTOR: Transfer Speed, Direction Arrow & ETA
-                    VStack(spacing: 5) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill")
-                                .foregroundStyle(turbo.telemetry.isRunning ? Color.orange : Color.secondary)
-                                .font(.caption)
-                            Text(turbo.telemetry.isRunning ? String(format: "%.1f MB/s", turbo.telemetry.speedMBps) : "0.0 MB/s")
-                                .font(.headline.monospacedDigit())
-                                .foregroundStyle(turbo.telemetry.isRunning ? Color.primary : Color.secondary)
-                        }
+                    VStack(spacing: 4) {
+                        if turbo.telemetry.isRunning {
+                            if turbo.telemetry.speedMBps > 0.1 {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "bolt.fill")
+                                        .foregroundStyle(Color.orange)
+                                        .font(.caption)
+                                    Text(String(format: "%.1f MB/s", turbo.telemetry.speedMBps))
+                                        .font(.headline.monospacedDigit())
+                                        .foregroundStyle(Color.primary)
+                                }
+                                Text("Saving to Cloud")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(Color.accentColor)
+                            } else {
+                                HStack(spacing: 4) {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                    Image(systemName: "icloud.and.arrow.down.fill")
+                                        .foregroundStyle(Color.blue)
+                                        .font(.caption)
+                                    Text("Step 1 of 2")
+                                        .font(.subheadline.bold())
+                                        .foregroundStyle(Color.blue)
+                                }
+                                Text("Fetching 1 file…")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        // Animated / Directional Flow Arrow
-                        HStack(spacing: 2) {
-                            Rectangle()
-                                .fill(turbo.telemetry.isRunning ? Color.accentColor : Color.secondary.opacity(0.3))
-                                .frame(height: 2)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.bold())
-                                .foregroundStyle(turbo.telemetry.isRunning ? Color.accentColor : Color.secondary.opacity(0.3))
-                        }
+                            HStack(spacing: 2) {
+                                Rectangle()
+                                    .fill(Color.accentColor)
+                                    .frame(height: 2)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(Color.accentColor)
+                            }
 
-                        Text(turbo.telemetry.isRunning ? formatETA(turbo.telemetry.etaSeconds) : "Idle")
-                            .font(.caption2.bold().monospacedDigit())
-                            .foregroundStyle(turbo.telemetry.isRunning ? Color.accentColor : Color.secondary)
+                            Text(turbo.telemetry.speedMBps > 0.1 ? formatETA(turbo.telemetry.etaSeconds) : "1-by-1 Safe Drain")
+                                .font(.caption2.bold().monospacedDigit())
+                                .foregroundStyle(Color.accentColor)
+                        } else {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.right.circle.fill")
+                                    .foregroundStyle(Color.secondary)
+                                    .font(.caption)
+                                Text("Ready")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(Color.secondary)
+                            }
+
+                            HStack(spacing: 2) {
+                                Rectangle()
+                                    .fill(Color.secondary.opacity(0.3))
+                                    .frame(height: 2)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(Color.secondary.opacity(0.3))
+                            }
+
+                            Text("0 KB used on Mac")
+                                .font(.caption2)
+                                .foregroundStyle(Color.secondary)
+                        }
                     }
                     .frame(width: 140)
 
-                    // RIGHT BOX: ZeroDrive Vault (Destination)
+                    // RIGHT BOX: To My Drive (Cloud Vault)
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 5) {
                             Image(systemName: "icloud.fill")
                                 .foregroundStyle(.green)
-                            Text("ZERODRIVE (DEST)")
+                            Text("TO MY DRIVE (CLOUD VAULT)")
                                 .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
                         }
-                        
-                        // Destination Path Bar
+
                         HStack(spacing: 4) {
                             Image(systemName: "externaldrive.fill")
                                 .font(.caption2)
                                 .foregroundStyle(Color.accentColor)
-                            Text("ZeroDrive")
+                            Text("My Drive")
                                 .font(.caption.bold())
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 7, weight: .bold))
                                 .foregroundStyle(.tertiary)
-                            Text(turbo.telemetry.isRunning ? (turbo.telemetry.destLocation.isEmpty ? "My Drive/\(turbo.telemetry.spaceName)" : turbo.telemetry.destLocation) : "My Drive/\(selectedItemName)")
-                                .font(.subheadline.bold())
+                            Text(turbo.telemetry.isRunning ? (turbo.telemetry.destLocation.replacingOccurrences(of: "My Drive/", with: "")) : (customDestinationSubfolder.isEmpty ? selectedItemName : customDestinationSubfolder))
+                                .font(.headline)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                         }
-                        
+
                         if turbo.telemetry.isRunning {
-                            Text("Landed: \(ByteCountFormatter.string(fromByteCount: turbo.telemetry.movedBytes, countStyle: .file))")
+                            Text("Saved: \(ByteCountFormatter.string(fromByteCount: turbo.telemetry.movedBytes, countStyle: .file))")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.green)
-                            Text("\(turbo.telemetry.movedFiles)/\(turbo.telemetry.totalFiles) items landed")
-                                .font(.caption2)
+                            Text("\(turbo.telemetry.movedFiles) of \(turbo.telemetry.totalFiles) files safe")
+                                .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("ZeroDrive Vault")
+                            Text("Available in Finder on all your Macs")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("Available via ~/ZeroDrive")
+                            Text("~/ZeroDrive/My Drive")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     .padding(10)
@@ -242,81 +290,70 @@ public struct FabricDriveMigrationCard: View {
                 }
 
                 // High-visibility Progress Bar
-                ProgressView(value: turbo.telemetry.isRunning ? (turbo.telemetry.percent / 100.0) : (turbo.telemetry.isComplete ? 1.0 : 0.0))
+                ProgressView(value: turbo.telemetry.isRunning ? min(1.0, max(0.0, turbo.telemetry.percent / 100.0)) : (turbo.telemetry.isComplete ? 1.0 : 0.0))
                     .progressViewStyle(.linear)
 
-                // Sub-Bar: "In Progress" & "Up Next in Queue"
-                VStack(alignment: .leading, spacing: 4) {
-                    if turbo.telemetry.isRunning && !turbo.telemetry.currentFile.isEmpty {
-                        HStack(spacing: 6) {
-                            Image(systemName: "doc.text.fill")
-                                .font(.caption)
-                                .foregroundStyle(Color.accentColor)
-                            Text("In Progress:")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            Text(turbo.telemetry.currentFile)
-                                .font(.caption.monospaced())
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
+                // Sub-Bar: Live Status Message
+                if turbo.telemetry.isRunning {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(turbo.telemetry.speedMBps > 0.1 ? Color.green : Color.blue)
+                            .frame(width: 7, height: 7)
+                        Text(turbo.telemetry.statusMessage.isEmpty ? "Moving files to Cloud Vault…" : turbo.telemetry.statusMessage)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
                     }
-
-                    if !turbo.queuedSpaces.isEmpty {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.right.to.line.compact")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                            Text("Up Next in Queue:")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            Text(turbo.queuedSpaces.joined(separator: " ➔ "))
-                                .font(.caption)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
+                } else if turbo.telemetry.isComplete && !turbo.telemetry.statusMessage.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                        Text(turbo.telemetry.statusMessage)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
 
                 Divider()
                     .padding(.vertical, 2)
 
-                // Bottom Metrics & "All Said and Done" Projections
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("🎯 ALL SAID & DONE PROJECTION")
+                // Live Honest Storage Receipts (Zero Hardcoded Projections)
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SPACE FREED ON THIS MAC")
                             .font(.caption2.bold())
                             .foregroundStyle(.secondary)
-                        HStack(spacing: 12) {
-                            Text("• Vault Target: ~82.4 GB in ZeroDrive")
-                                .font(.caption)
-                            Text("• Target Mac SSD: ~48 GB Free Headroom")
-                                .font(.caption)
-                        }
                         if let ledger = turbo.ledger, ledger.totalFreedOnMacBytes > 0 {
-                            Text("• Space Recovered: +\(ByteCountFormatter.string(fromByteCount: ledger.totalFreedOnMacBytes, countStyle: .file)) SSD space permanently freed on Mac")
-                                .font(.caption.bold())
+                            Text("+\(ByteCountFormatter.string(fromByteCount: ledger.totalFreedOnMacBytes, countStyle: .file)) reclaimed by ZeroDrive")
+                                .font(.caption.bold().monospacedDigit())
                                 .foregroundStyle(.green)
+                        } else {
+                            Text("Drop any folder above or click Choose Folder to free up Mac space")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
                     Spacer()
 
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("Mac SSD Free:")
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("MAC FREE SPACE RIGHT NOW")
                             .font(.caption2.bold())
                             .foregroundStyle(.secondary)
-                        Text(ByteCountFormatter.string(fromByteCount: turbo.telemetry.freeDiskBytes > 0 ? turbo.telemetry.freeDiskBytes : Int64(shutilCurrentFree()), countStyle: .file))
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(shutilCurrentFree()), countStyle: .file) + " available")
                             .font(.caption.bold().monospacedDigit())
                             .foregroundStyle(Color.green)
-                        if turbo.telemetry.isRunning {
-                            Button("Stop Transfer") {
-                                turbo.cancel()
-                            }
-                            .controlSize(.small)
-                            .buttonStyle(.bordered)
+                    }
+
+                    if turbo.telemetry.isRunning {
+                        Button("Stop") {
+                            turbo.cancel()
                         }
+                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        .padding(.leading, 8)
                     }
                 }
             }
@@ -328,118 +365,47 @@ public struct FabricDriveMigrationCard: View {
                     .stroke(turbo.telemetry.isRunning ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.12), lineWidth: 1)
             )
 
-            // MARK: - 2. Action Controls & Finder Multi-Select Button
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
+            // MARK: - 2. Clean Primary Action Bar
+            HStack(spacing: 12) {
+                Button {
+                    openFinderFilePicker()
+                } label: {
+                    Label("Choose Folder or Files…", systemImage: "folder.badge.plus")
+                }
+                .controlSize(.regular)
+
+                Spacer()
+
+                if !turbo.queuedSpaces.isEmpty && !turbo.telemetry.isRunning {
                     Button {
-                        openFinderFilePicker()
+                        turbo.runQueuedMoves()
                     } label: {
-                        Label("Choose in Finder (Multi-Select / Cmd+A)…", systemImage: "folder.badge.gearshape")
+                        Text("Move All Queued (\(turbo.queuedSpaces.count))")
                     }
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
-
+                } else {
                     Button {
-                        turbo.stageSpace(selectedItemName)
+                        startDirectMoveCurrentSource()
                     } label: {
-                        Label("Stage Item", systemImage: "plus.circle")
+                        Text(turbo.telemetry.isRunning ? "Add Another Folder…" : "Move \"\(selectedItemName)\" to Cloud…")
                     }
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
-                    .disabled(turbo.queuedSpaces.contains(selectedItemName))
-
-                    Spacer()
-
-                    if !turbo.queuedSpaces.isEmpty && !turbo.telemetry.isRunning {
-                        Button {
-                            turbo.runQueuedMoves()
-                        } label: {
-                            Text("Start All (\(turbo.queuedSpaces.count) Queued Moves)")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
-                    } else {
-                        Button {
-                            startDirectMoveCurrentSource()
-                        } label: {
-                            Text(turbo.telemetry.isRunning ? "Add to Queue" : "Turbo Move to ZeroDrive")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
-                    }
                 }
-
-                // Fabric Quick Stage All option
-                if !detectedSpaces.isEmpty {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 7, height: 7)
-                        Text("Fabric Drive: \(detectedSpaces.count) spaces available")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Stage All Fabric Spaces (\(detectedSpaces.count))") {
-                            turbo.stageAllSpaces(detectedSpaces.map { $0.name })
-                        }
-                        .controlSize(.small)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(Color.accentColor)
-                    }
-                }
-
-                // Staged Queue Area
-                if !turbo.queuedSpaces.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Staged Moves (\(turbo.queuedSpaces.count) queued • \(totalQueuedSizeFormatted)):")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Clear Queue") {
-                                turbo.clearQueue()
-                            }
-                            .controlSize(.small)
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-
-                            if !turbo.telemetry.isRunning {
-                                Button("Go Ahead (Start Staged Moves)") {
-                                    turbo.runQueuedMoves()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                            }
-                        }
-
-                        ForEach(turbo.queuedSpaces, id: \.self) { space in
-                            HStack {
-                                Image(systemName: "clock.arrow.circlepath")
-                                    .foregroundStyle(Color.accentColor)
-                                Text(space)
-                                    .font(.subheadline.weight(.medium))
-                                if let found = detectedSpaces.first(where: { $0.name == space }) {
-                                    Text("(\(found.formattedSize))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button {
-                                    turbo.unstageSpace(space)
-                                } label: {
-                                    Image(systemName: "xmark.circle")
-                                        .foregroundStyle(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 8)
-                            .background(Color.secondary.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                        }
-                    }
-                    .padding(10)
-                    .background(Color.secondary.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
+            }
+        }
+        .sheet(item: $pendingTransfer) { pending in
+            TransferConfirmationSheet(pendingItem: pending) { confirmed in
+                pendingTransfer = nil
+                TurboMigrationManager.shared.startTransfer(
+                    urls: confirmed.urls,
+                    destinationSubfolder: confirmed.destinationFolder,
+                    isCopy: confirmed.isCopy,
+                    leaveSymlink: confirmed.leaveSymlink
+                )
+            } onCancel: {
+                pendingTransfer = nil
             }
         }
         .onAppear {
@@ -448,31 +414,38 @@ public struct FabricDriveMigrationCard: View {
         }
     }
 
-    // MARK: - Native Finder Search & Multi-Select File Picker
+    private func truncatedBreadcrumb(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var clean = path
+        if clean.hasPrefix(home) {
+            clean = "~" + clean.dropFirst(home.count)
+        }
+        let parts = clean.split(separator: "/")
+        if parts.count > 3 {
+            return parts.prefix(2).joined(separator: "/") + "/…/" + parts.last!
+        }
+        return clean
+    }
 
     private func openFinderFilePicker() {
         let panel = NSOpenPanel()
-        panel.title = "Select Files or Folders to Move to ZeroDrive"
-        panel.prompt = "Select for Move"
-        panel.message = "Choose any folder(s) or file(s). Use Cmd+A or Shift-click to select everything at once."
+        panel.title = "Choose Folder or Files to Move to ZeroDrive"
+        panel.prompt = "Review Move"
+        panel.message = "Pick any folder or files on your Mac. You can also leave a shortcut (symlink) behind so apps and scripts still find your folder."
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true // <--- ENABLED: Multi-select & Cmd+A
+        panel.allowsMultipleSelection = true
         panel.directoryURL = selectedItemURL.deletingLastPathComponent()
 
         if panel.runModal() == .OK {
             let urls = panel.urls
             guard !urls.isEmpty else { return }
-
-            if urls.count == 1 {
-                selectedItemURL = urls[0]
-                updateSourceStats(urls[0])
-            } else {
-                // Multi-select: Stage all selected items into the queue!
-                turbo.stageURLs(urls)
-                selectedItemURL = urls[0]
-                updateSourceStats(urls[0])
-            }
+            selectedItemURL = urls[0]
+            updateSourceStats(urls[0])
+            pendingTransfer = PendingTransferItem(
+                urls: urls,
+                destinationFolder: customDestinationSubfolder.isEmpty ? urls[0].lastPathComponent : customDestinationSubfolder
+            )
         }
     }
 
@@ -487,14 +460,12 @@ public struct FabricDriveMigrationCard: View {
                 }
                 if let url = targetURL {
                     DispatchQueue.main.async {
-                        if providers.count == 1 {
-                            self.selectedItemURL = url
-                            self.updateSourceStats(url)
-                        } else {
-                            self.turbo.stageURLs([url])
-                            self.selectedItemURL = url
-                            self.updateSourceStats(url)
-                        }
+                        self.selectedItemURL = url
+                        self.updateSourceStats(url)
+                        self.pendingTransfer = PendingTransferItem(
+                            urls: [url],
+                            destinationFolder: self.customDestinationSubfolder.isEmpty ? url.lastPathComponent : self.customDestinationSubfolder
+                        )
                     }
                 }
             }
@@ -502,14 +473,13 @@ public struct FabricDriveMigrationCard: View {
     }
 
     private func startDirectMoveCurrentSource() {
-        if isSourceFromFabric {
-            if turbo.telemetry.isRunning {
-                turbo.stageSpace(selectedItemName)
-            } else {
-                turbo.startMove(spaceName: selectedItemName)
-            }
+        if turbo.telemetry.isRunning {
+            openFinderFilePicker()
         } else {
-            turbo.startDirectMove(urls: [selectedItemURL])
+            pendingTransfer = PendingTransferItem(
+                urls: [selectedItemURL],
+                destinationFolder: customDestinationSubfolder.isEmpty ? selectedItemName : customDestinationSubfolder
+            )
         }
     }
 
@@ -561,10 +531,10 @@ public struct FabricDriveMigrationCard: View {
     }
 
     private func formatETA(_ seconds: Int) -> String {
-        if seconds <= 0 { return "Calculating..." }
+        if seconds <= 0 { return "Calculating…" }
         let mins = seconds / 60
         let secs = seconds % 60
-        return mins > 0 ? "ETA: \(mins)m \(secs)s" : "ETA: \(secs)s"
+        return mins > 0 ? "\(mins)m \(secs)s left" : "\(secs)s left"
     }
 
     private func shutilCurrentFree() -> UInt64 {
@@ -572,7 +542,7 @@ public struct FabricDriveMigrationCard: View {
            let free = attrs[.systemFreeSize] as? NSNumber {
             return free.uint64Value
         }
-        return 41 * 1024 * 1024 * 1024
+        return 0
     }
 
     private func scanFabricSpaces() {
@@ -616,13 +586,6 @@ public struct FabricDriveMigrationCard: View {
             let sorted = scanned.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             DispatchQueue.main.async {
                 self.detectedSpaces = sorted
-                if let first = sorted.first(where: { $0.name == "_SKILLS" }) ?? sorted.first {
-                    if self.selectedItemURL.path.contains("FabricDrive") {
-                        self.selectedItemURL = first.url
-                        self.sourceItemCount = first.fileCount
-                        self.sourceSizeBytes = first.sizeBytes
-                    }
-                }
             }
         }
     }

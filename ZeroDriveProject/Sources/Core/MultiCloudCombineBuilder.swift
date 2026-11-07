@@ -59,14 +59,28 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
     }
 
     public func loadVaultMetadata() -> PrimaryVaultMetadata {
+        let sections = parseConfigSections()
+        let accessKey = sections["primary_vault"]?
+            .first(where: { $0.hasPrefix("access_key_id") })?
+            .components(separatedBy: "=")
+            .last?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "usr_andrew_8bc7fb477f"
+        let defaultBucketPath = accessKey.hasPrefix("usr_")
+            ? "zerodrive-vault-prod/\(accessKey)"
+            : "zerodrive-vault-prod/usr_andrew_8bc7fb477f"
+
         if let data = try? Data(contentsOf: metadataPath),
-           let meta = try? JSONDecoder().decode(PrimaryVaultMetadata.self, from: data) {
+           var meta = try? JSONDecoder().decode(PrimaryVaultMetadata.self, from: data) {
+            if meta.bucketAndPrefix == "zerodrive-vault-prod" || meta.bucketAndPrefix.isEmpty {
+                meta.bucketAndPrefix = defaultBucketPath
+                saveVaultMetadata(meta)
+            }
             return meta
         }
         return PrimaryVaultMetadata(
             mode: .dfyManaged,
             preset: .cloudflareR2,
-            bucketAndPrefix: "zerodrive-vault-prod",
+            bucketAndPrefix: defaultBucketPath,
             displayLabel: "ZeroDrive Managed R2 Vault",
             quotaTB: 5.0,
             spoolCapGB: 50,

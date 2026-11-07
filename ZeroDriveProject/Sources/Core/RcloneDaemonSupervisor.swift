@@ -185,7 +185,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--vfs-read-chunk-size-limit=512M",
             "--buffer-size=64M",
             "--vfs-read-ahead=128M",
-            "--dir-cache-time=9999h",
+            "--dir-cache-time=30s",
             "--vfs-fast-fingerprint",
             "--transfers=16",
             "--s3-upload-cutoff=32M",

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 public struct SessionMoveEvent: Identifiable, Codable, Sendable {
     public let id: String
@@ -6,8 +7,8 @@ public struct SessionMoveEvent: Identifiable, Codable, Sendable {
     public let spaceOrFolder: String
     public let sizeBytes: Int64
     public let timestamp: Date
-    public let status: String // "Completed", "Moving", "Timed out"
-    
+    public let status: String
+
     public init(
         id: String = UUID().uuidString,
         filename: String,
@@ -31,18 +32,17 @@ public struct TransfersView: View {
     @ObservedObject private var turbo = TurboMigrationManager.shared
 
     @State private var sessionEvents: [SessionMoveEvent] = []
-    @State private var sessionStartTime = Date()
 
     public init() {}
 
     public var body: some View {
         Form {
-            // Live Transfer Banner (if active)
+            // MARK: - 1. Live Transfer Banner (if active)
             if turbo.telemetry.isRunning {
-                Section("Live Transfer") {
+                Section("Moving Right Now") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Active: \(turbo.telemetry.spaceName)")
+                            Text("Moving \(turbo.telemetry.spaceName)")
                                 .font(.headline)
                             Spacer()
                             Text(String(format: "%.1f MB/s", turbo.telemetry.speedMBps))
@@ -50,16 +50,16 @@ public struct TransfersView: View {
                                 .foregroundStyle(Color.accentColor)
                         }
 
-                        ProgressView(value: turbo.telemetry.percent / 100.0)
+                        ProgressView(value: min(1.0, max(0.0, turbo.telemetry.percent / 100.0)))
                             .progressViewStyle(.linear)
 
                         HStack {
-                            Text("\(turbo.telemetry.movedFiles) of \(turbo.telemetry.totalFiles) files moved (\(ByteCountFormatter.string(fromByteCount: turbo.telemetry.movedBytes, countStyle: .file)))")
-                                .font(.caption)
+                            Text("\(turbo.telemetry.movedFiles) of \(turbo.telemetry.totalFiles) files saved (\(ByteCountFormatter.string(fromByteCount: turbo.telemetry.movedBytes, countStyle: .file)))")
+                                .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Spacer()
                             if turbo.telemetry.etaSeconds > 0 {
-                                Text("ETA: \(turbo.telemetry.etaSeconds / 60)m \(turbo.telemetry.etaSeconds % 60)s")
+                                Text("Time left: \(turbo.telemetry.etaSeconds / 60)m \(turbo.telemetry.etaSeconds % 60)s")
                                     .font(.caption.monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
@@ -69,19 +69,90 @@ public struct TransfersView: View {
                 }
             }
 
-            // Session History Section
-            Section("Current Session Activity") {
-                if sessionEvents.isEmpty && !turbo.telemetry.isRunning {
+            // MARK: - 2. Active Folder Shortcuts (Symlinks)
+            if !turbo.symlinks.isEmpty {
+                Section("Folder Shortcuts on This Mac (Symlinks)") {
+                    ForEach(turbo.symlinks) { link in
+                        HStack(spacing: 10) {
+                            Image(systemName: "link.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(link.folderName)
+                                    .font(.body.weight(.medium))
+                                Text("\(link.originalPath) → My Drive/\(link.folderName)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+
+                            Spacer()
+
+                            if link.bytesSaved > 0 {
+                                Text("+\(ByteCountFormatter.string(fromByteCount: link.bytesSaved, countStyle: .file)) freed")
+                                    .font(.caption.bold().monospacedDigit())
+                                    .foregroundStyle(.green)
+                            }
+
+                            Button("Show in Finder") {
+                                NSWorkspace.shared.selectFile(link.originalPath, inFileViewerRootedAtPath: (link.originalPath as NSString).deletingLastPathComponent)
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+
+            // MARK: - 3. Completed Folder Transfers (From Migration Ledger)
+            Section("Completed Moves & Space Freed") {
+                if let ledger = turbo.ledger, !ledger.completedSpaces.isEmpty {
+                    HStack {
+                        Text("Total Mac Space Freed: +\(ByteCountFormatter.string(fromByteCount: ledger.totalFreedOnMacBytes, countStyle: .file))")
+                            .font(.caption.bold().monospacedDigit())
+                            .foregroundStyle(.green)
+                        Spacer()
+                        Text("\(ledger.completedSpaces.count) folders verified in Cloud Vault")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    ForEach(ledger.completedSpaces) { entry in
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.spaceName)
+                                    .font(.body.weight(.medium))
+                                Text("\(entry.filesMoved) files • \(ByteCountFormatter.string(fromByteCount: entry.bytesMoved, countStyle: .file)) • \(entry.status)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button("Open in Cloud") {
+                                let target = supervisor.mountPoint.appendingPathComponent("My Drive").appendingPathComponent(entry.spaceName)
+                                supervisor.openInFinder(target)
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } else if sessionEvents.isEmpty && !turbo.telemetry.isRunning {
                     HStack {
                         Spacer()
                         VStack(spacing: 8) {
-                            Image(systemName: "clock.arrow.circlepath")
+                            Image(systemName: "checkmark.icloud")
                                 .font(.title2)
                                 .foregroundStyle(.secondary)
-                            Text("No files moved in this session yet.")
+                            Text("No transfers recorded yet.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                            Text("Files moved via ZeroDrive or Turbo Import will log here with exact timestamps and sizes.")
+                            Text("When you move folders to ZeroDrive, your completed transfers and freed Mac space will appear here.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -89,53 +160,16 @@ public struct TransfersView: View {
                         .padding(.vertical, 20)
                         Spacer()
                     }
-                } else {
-                    HStack {
-                        Text("Session Total: \(sessionEvents.count) items moved (\(ByteCountFormatter.string(fromByteCount: totalSessionBytes, countStyle: .file)))")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Clear Session Log") {
-                            sessionEvents.removeAll()
-                            clearDiskLog()
-                        }
-                        .controlSize(.mini)
-                    }
-
-                    ForEach(sessionEvents.reversed()) { event in
-                        HStack(spacing: 10) {
-                            Image(systemName: event.status == "Completed" ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                .foregroundStyle(event.status == "Completed" ? Color.green : Color.orange)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(event.filename)
-                                    .font(.body)
-                                    .lineLimit(1)
-                                Text("\(event.spaceOrFolder) • \(ByteCountFormatter.string(fromByteCount: event.sizeBytes, countStyle: .file))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Text(event.timestamp, style: .time)
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    }
                 }
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Activity")
         .onAppear {
+            turbo.readLedger()
+            turbo.readSymlinks()
             loadSessionLog()
         }
-    }
-
-    private var totalSessionBytes: Int64 {
-        sessionEvents.reduce(Int64(0)) { $0 + $1.sizeBytes }
     }
 
     private func loadSessionLog() {
@@ -146,11 +180,5 @@ public struct TransfersView: View {
             return
         }
         self.sessionEvents = list
-    }
-
-    private func clearDiskLog() {
-        let logURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/rclone/session-activity.json")
-        try? FileManager.default.removeItem(at: logURL)
     }
 }

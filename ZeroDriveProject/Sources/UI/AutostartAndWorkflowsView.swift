@@ -14,19 +14,19 @@ public struct AutostartAndWorkflowsView: View {
     public var body: some View {
         Form {
             Section("General") {
-                Toggle("Open at Login", isOn: $autoStartEnabled)
+                Toggle("Open ZeroDrive automatically when you log in", isOn: $autoStartEnabled)
                     .onChange(of: autoStartEnabled) { enabled in
                         setAutoStart(enabled)
                     }
 
-                Toggle("Smooth video playback", isOn: $supervisor.boostVideoBufferEnabled)
+                Toggle("Smooth video playback (faster pre-buffering)", isOn: $supervisor.boostVideoBufferEnabled)
                     .onChange(of: supervisor.boostVideoBufferEnabled) { _ in
                         if supervisor.isMounted {
                             Task { await supervisor.forceCleanAndRemount() }
                         }
                     }
 
-                Toggle("Slow uploads during calls", isOn: $streamGuardEnabled)
+                Toggle("Pause heavy uploads during Zoom or video calls", isOn: $streamGuardEnabled)
                     .onChange(of: streamGuardEnabled) { active in
                         spoolManager.telemetry.streamGuardActive = active
                         Task {
@@ -35,37 +35,38 @@ public struct AutostartAndWorkflowsView: View {
                     }
             }
 
-            Section("Finder") {
-                LabeledContent("Finder sidebar") {
-                    Button("Add to Sidebar") {
+            Section("Finder Integration") {
+                LabeledContent("Finder Favorites Sidebar") {
+                    Button("Pin My Drive to Sidebar") {
                         supervisor.pinToFinderSidebarIfNeeded()
-                        showFeedback("Added to Finder sidebar.")
+                        showFeedback("Pinned My Drive to Finder sidebar.")
                     }
                     .controlSize(.small)
                 }
 
-                LabeledContent("Right-click menu") {
-                    Button("Update") {
+                LabeledContent("Finder Right-Click Menu") {
+                    Button("Refresh Quick Actions") {
                         supervisor.installFinderWorkflowsAndEnableExtension()
-                        showFeedback("Updated right-click menu.")
+                        showFeedback("Updated Finder right-click menu.")
                     }
                     .controlSize(.small)
                 }
             }
 
-            Section("Storage & SSD Breathing Room") {
-                LabeledContent("Space used on this Mac") {
+            Section("Mac Disk Protection") {
+                LabeledContent("Temporary cache used on this Mac") {
                     HStack(spacing: 8) {
                         Text(ByteCountFormatter.string(fromByteCount: spoolManager.telemetry.spoolUsedBytes, countStyle: .file))
+                            .font(.body.monospacedDigit())
                             .foregroundStyle(.secondary)
-                        Button("Clear Cache Safely") {
+                        Button("Empty Temporary Cache") {
                             clearLocalCache()
                         }
                         .controlSize(.small)
                     }
                 }
-                
-                Picker("Cache Size Target", selection: Binding(
+
+                Picker("Max temporary cache size", selection: Binding(
                     get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().spoolCapGB },
                     set: { newVal in
                         var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
@@ -74,12 +75,12 @@ public struct AutostartAndWorkflowsView: View {
                     }
                 )) {
                     Text("25 GB").tag(25)
-                    Text("50 GB (Default)").tag(50)
+                    Text("50 GB (Recommended)").tag(50)
                     Text("100 GB").tag(100)
                     Text("200 GB").tag(200)
                 }
 
-                Picker("Guaranteed Minimum Free Mac SSD Space", selection: Binding(
+                Picker("Always keep at least this much Mac space free", selection: Binding(
                     get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().minFreeSpaceGB },
                     set: { newVal in
                         var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
@@ -92,11 +93,10 @@ public struct AutostartAndWorkflowsView: View {
                     Text("25 GB").tag(25)
                     Text("40 GB").tag(40)
                 }
-
             }
 
-            Section("Dot-Files & Privacy Controls") {
-                Toggle("Include Notes & Workspaces (.obsidian, .vscode, .cursor)", isOn: Binding(
+            Section("Hidden & Developer Files") {
+                Toggle("Include Notes & Editor Folders (.obsidian, .vscode, .cursor)", isOn: Binding(
                     get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().uploadAppWorkspaces },
                     set: { newVal in
                         var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
@@ -105,7 +105,7 @@ public struct AutostartAndWorkflowsView: View {
                     }
                 ))
 
-                Toggle("Include Developer Version Control (.git, .github, .claude)", isOn: Binding(
+                Toggle("Include Git & Agent Folders (.git, .github, .claude)", isOn: Binding(
                     get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().uploadDevConfigs },
                     set: { newVal in
                         var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
@@ -114,7 +114,7 @@ public struct AutostartAndWorkflowsView: View {
                     }
                 ))
 
-                Toggle("Include Secret & Environment Files (.env, keys, credentials)", isOn: Binding(
+                Toggle("Include Secret Key Files (.env, .pem, .key)", isOn: Binding(
                     get: { MultiCloudCombineBuilder.shared.loadVaultMetadata().uploadSecretEnvFiles },
                     set: { newVal in
                         var m = MultiCloudCombineBuilder.shared.loadVaultMetadata()
@@ -122,8 +122,8 @@ public struct AutostartAndWorkflowsView: View {
                         MultiCloudCombineBuilder.shared.saveVaultMetadata(m)
                     }
                 ))
-                
-                Text("Default excludes .env files so API keys and secrets stay strictly on your local machine.")
+
+                Text("By default, .env and key files are skipped so your API keys never leave your Mac.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -132,7 +132,7 @@ public struct AutostartAndWorkflowsView: View {
                 Section {
                     Text(statusFeedback)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.green)
                 }
             }
         }
@@ -195,10 +195,7 @@ public struct AutostartAndWorkflowsView: View {
 
     private func clearLocalCache() {
         Task {
-            // Safe eviction: tell rclone VFS to drop all cached clean read chunks without deleting uncommitted writes
             _ = await RcloneRCClient.shared.forgetAll()
-            
-            // On-disk prune: only remove .bin chunk files inside vfs cache subdirectories, NEVER touching dirty write queues
             let cacheDir = supervisor.cacheDir.appendingPathComponent("vfs")
             if FileManager.default.fileExists(atPath: cacheDir.path) {
                 if let enumerator = FileManager.default.enumerator(at: cacheDir, includingPropertiesForKeys: [.isRegularFileKey]) {
@@ -210,7 +207,7 @@ public struct AutostartAndWorkflowsView: View {
                 }
             }
             await MainActor.run {
-                showFeedback("Safely cleared read cache on this Mac.")
+                showFeedback("Safely cleared temporary read cache on this Mac.")
             }
         }
     }
