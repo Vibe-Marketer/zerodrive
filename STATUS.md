@@ -1,9 +1,9 @@
 # ZeroDrive Session Handoff & Live Status Tracker
 
-**Last Updated:** November 6, 2026 (22:15 EST)  
+**Last Updated:** November 7, 2026 (12:10 EST)  
 **Current Branch:** `main`  
-**Active Mac Free Space (`naegele-pro`):** ~125 GB (`df -h /`)  
-**Active Mac Mini Free Space (`naegele-mm`):** 72 GiB (`df -h /`)  
+**Active Mac Free Space (`naegele-pro`):** 151 GiB (`df -h /`)  
+**Active Mac Mini Free Space (`naegele-mm`):** 71 GiB (`df -h /`)  
 **Live Mount Path (Both Macs):** `~/.zerodrive-mount` $\rightarrow$ `~/ZeroDrive/My Drive` (`primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f`)
 
 ---
@@ -21,17 +21,21 @@
 
 | Step | Task Description | Status | Verification Notes |
 | :--- | :--- | :--- | :--- |
-| **Step 0** | Halt runaway iCloud `bird` download loop, purge 40 GB `MMCS` cache, clear AI/npm caches, fix `My Drive` root prefix (`usr_andrew_8bc7fb477f`) | **DONE** | Reclaimed 110+ GB on Mac SSD (`df -h /` = 124 GB free); `ls ~/ZeroDrive/"My Drive"` lists all user folders cleanly. |
+| **Step 0** | Halt runaway iCloud `bird` download loop, purge 40 GB `MMCS` cache, clear AI/npm caches, fix `My Drive` root prefix (`usr_andrew_8bc7fb477f`) | **DONE** | Reclaimed 149+ GB on Mac SSD (`df -h /` = 151 GiB free); `ls ~/ZeroDrive/"My Drive"` lists all user folders cleanly. |
 | **Step 1** | Save complete strategy, competitor research, UI/UX audit, and step-by-step execution plan in `docs/` + commit to Git | **DONE** | Committed in `4057866` (`docs/product-strategy-and-market-research.md`, `docs/ui-ux-review-and-redesign.md`, `docs/execution-plan.md`). |
 | **Step 2** | Audit `~/Desktop/MAIN` vs. R2 Vault `MAIN` (`33,960` files already in R2), remove verified duplicates, and move remaining local files | **DONE** | Removed 289 redundant stubs already verified in R2 (`st.st_size == r2_size`), moved all 137 remaining materialized local files (60 MB) into `My Drive/MAIN` in 8s. |
 | **Step 3** | Upgrade `turbo-migrate-dashboard.py` with strict 1-by-1 cloud-stub hydration, `--leave-symlink` folder shortcut creation, dataless `.git` directory guard, and activity logging | **DONE** | Tested end-to-end with `/tmp/zd-symlink-test`: verified file moved to R2, local directory replaced with POSIX symlink (`lrwxr-xr-x`), file readable through symlink, and logged to `zerodrive-symlinks.json`. |
 | **Step 4** | Implement UI/UX overhaul & Folder Symlink toggle in `ZeroDriveProject` (Menu bar live telemetry, cut menu bar drop box, cut hardcoded `82.4 GB` projections, merge Overview drop boxes, wire Activity ledger + Symlinks section, add Multi-Device card) | **DONE** | Built with `swift build -c release` (0 errors) and deployed to `/Applications/ZeroDrive.app` on both `naegele-pro` and `naegele-mm`. |
 | **Step 5** | Harden `RcloneDaemonSupervisor.swift` (`--dir-cache-time=30s`) & `MultiCloudCombineBuilder.swift` prefix safety; deploy `ZeroDrive.app` to `naegele-mm` (`100.114.74.17`) | **DONE** | Verified via `ssh naegele-mm "ls -la ~/ZeroDrive/'My Drive'"` — all top-level folders are live and mounted on `naegele-mm`. |
-| **Step 6** | Authenticate `[icloud_direct]` (`naegele412@gmail.com`) and start live RAM stream (`Desktop/MAIN` $\rightarrow$ R2 Vault `MAIN`) on `naegele-mm` | **DONE** | Active on `naegele-mm` (PID 51916): streaming at ~30 MB/s with 0 local SSD used (30.9+ GB moved so far). |
-| **Step 7** | Fix `dispatch_once` launch crash, SSH live telemetry poller, multi-folder symlink toggle, selected items list + remove/clear controls, and Vault folder picker / `+ New Folder` in `TransferConfirmationSheet` | **DONE** | Verified live: `ZeroDrive.app` running (PID 99511), `My Drive` mounted on `localhost:55730`, live `naegele-mm` telemetry streaming in UI (`30.1 MB/s`, `10.8%`), and confirmation sheet upgraded. |
+| **Step 6** | Authenticate `[icloud_direct]` (`naegele412@gmail.com`) and stream `Desktop/MAIN` $\rightarrow$ R2 Vault `MAIN` directly in RAM on `naegele-mm` | **DONE** | Completed at 01:32 AM with 100% success (0 local Mac SSD used, all files synced to `My Drive/MAIN`). Telemetry confirmed: `✓ Direct iCloud -> Vault stream complete for MAIN`. |
+| **Step 7** | Fix `dispatch_once` launch crash, SSH live telemetry poller, multi-folder symlink toggle, selected items list + remove/clear controls, and Vault folder picker / `+ New Folder` in `TransferConfirmationSheet` | **DONE** | Verified live: `ZeroDrive.app` running (PID 18587), `My Drive` mounted on `localhost:55730`, live `naegele-mm` telemetry streaming in UI, and confirmation sheet upgraded. |
 
 ---
 
-## 3. Immediate Next Action
+## 3. Immediate Next Decisions & Actions
 
-- Monitor the live `iCloud Direct: MAIN` stream in `ZeroDrive.app` (currently at ~31 GB / 287 GB at ~30 MB/s on `naegele-mm`), or use **Choose Folder or Files…** to move local folders (such as `~/_DEV` folders) with destination folder selection and optional folder symlinks.
+1. **Local `~/Desktop/MAIN` Symlink Cutover:** Since the direct iCloud-to-Vault stream is 100% complete and verified in R2, verify if `~/Desktop/MAIN` can be archived or replaced with a 0-byte symlink to `~/ZeroDrive/My Drive/MAIN` to reclaim the remaining local folder space.
+2. **Next Feature from Roadmap:**
+   - **Phase 7 (Native in-app Apple ID + 2FA GUI):** Embed the iCloud login dialog natively into SwiftUI so users never see a terminal prompt.
+   - **Phase 8 (Headless Linux VPS 1-line mount):** Provide the `curl ... | bash` command for AI agents on cloud VMs.
+   - **Phase 12 (Developer CLI `zd`):** Create the lightweight `zd` CLI tool so AI coding agents can query file and folder sizes in milliseconds without triggering slow `du -sh` POSIX walks over the mount.
