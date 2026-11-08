@@ -139,12 +139,30 @@ Reads file contents directly.
 ### `zd find <pattern> [path] [--json]`
 Performs server-side wildcard matching via rclone `--include` glob filter.
 - **Syntax:** `zd find "*.mov" Course`
-- **Options:** `--json` outputs array of matching relative paths.
+- **Options:**
+  - Standard: lists matching paths up to 100 entries.
+  - `--json`: returns a JSON object:
+    ```json
+    {
+      "pattern": "*.md",
+      "target": "primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f/Course",
+      "count": 3832,
+      "matches": [ ... ]
+    }
+    ```
+
+### `zd tree [path] [--depth N] [--dirs-only]`
+Generates a visual hierarchy tree of cloud folders using server-side listing.
+- **Syntax:** `zd tree Course --depth 2`
+- **Options:**
+  - `-d N`, `--depth N`: Folder depth limit (default: 2).
+  - `--dirs-only`: Display directories only.
 
 ### `zd share <path> [--hours N] [--json]`
 Generates a public pre-signed Cloudflare R2 HTTPS URL.
-- **Default Expiry:** 24 hours (`--hours 24`). Configurable up to 168 hours (7 days).
+- **Expiry Range:** 1 to 168 hours (1 hour to 7 days, default: 24).
 - **Options:** `--json` outputs `{"target": ..., "expiryHours": ..., "url": ...}`.
+- **Error Behavior:** Exits with code 2 if `--hours` is outside 1–168.
 
 ### `zd refresh [path] [-R] [--json]`
 Invalidates loopback VFS directory cache via `POST http://127.0.0.1:55729/vfs/refresh`.
@@ -153,8 +171,9 @@ Invalidates loopback VFS directory cache via `POST http://127.0.0.1:55729/vfs/re
 - **Response Verification:** Checks HTTP response and verifies `"OK"` status before reporting success.
 
 ### `zd symlinks [--json]`
-Audits active local shortcuts created by ZeroDrive moves.
-- **Verification:** Inspects filesystem to verify whether each recorded symlink is currently active (`os.path.islink()`).
+Audits local folder shortcuts created by ZeroDrive moves.
+- **Verification:** Inspects filesystem to verify whether each shortcut's local path is an active symlink (`os.path.islink()`).
+- **Options:** `--json` outputs array of entries including `"isLink": true/false`.
 
 ### `zd raw <command...>`
 Passes arguments directly through to the underlying rclone binary with pre-bound credentials.
