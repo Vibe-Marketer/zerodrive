@@ -12,20 +12,20 @@ Local agents already have direct access out of the box via two interfaces:
 Tell your agent:
 > "My cloud vault is mounted at `~/ZeroDrive/My Drive`. Read and write files directly there. See `ROUTER.md` in that directory for folder destinations."
 
-### Option B: The `zd` CLI (Fastest, Saves LLM Context Tokens)
+### Option B: The `zerodrive` CLI (Fastest, Saves LLM Context Tokens)
 Tell your agent:
-> "Use the `zd` CLI tool in your terminal for ZeroDrive operations. It queries Cloudflare R2 directly with sub-second response times and zero mount latency:
-> - `zd ls [folder]` — list contents
-> - `zd cat [file] --head 30` or `--lines 1-50` — read slices without blowing context
-> - `zd cp [local_file] [vault_path]` — write/upload files
-> - `zd find [pattern]` — search whole vault
-> - `zd size [folder]` — instant file count and total GB"
+> "Use the `zerodrive` CLI tool in your terminal for ZeroDrive operations. It queries Cloudflare R2 directly with sub-second response times and zero mount latency:
+> - `zerodrive ls [folder]` — list contents
+> - `zerodrive cat [file] --head 30` or `--lines 1-50` — read slices without blowing context
+> - `zerodrive cp [local_file] [vault_path]` — write/upload files
+> - `zerodrive find [pattern]` — search whole vault
+> - `zerodrive size [folder]` — instant file count and total GB"
 
 ---
 
 ## 2. AI Desktop Apps via Model Context Protocol (MCP)
 
-ZeroDrive includes a built-in MCP server (`zd-mcp`) that gives AI models native tools (`zd_read`, `zd_write`, `zd_list`, `zd_search`, `zd_size`, `zd_share`).
+ZeroDrive has a built-in MCP server that gives AI models native tools (`zd_read`, `zd_write`, `zd_list`, `zd_search`, `zd_size`, `zd_share`).
 
 ### Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`)
 Add to `mcpServers`:
@@ -34,7 +34,8 @@ Add to `mcpServers`:
 {
   "mcpServers": {
     "zerodrive": {
-      "command": "/Users/Naegele/.local/bin/zd-mcp"
+      "command": "zerodrive",
+      "args": ["mcp"]
     }
   }
 }
@@ -45,7 +46,8 @@ Add to `mcpServers`:
 {
   "mcpServers": {
     "zerodrive": {
-      "command": "zd-mcp"
+      "command": "zerodrive",
+      "args": ["mcp"]
     }
   }
 }

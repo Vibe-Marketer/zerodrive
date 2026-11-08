@@ -901,11 +901,21 @@ def cmd_version(args):
             "engineBin": RCLONE_BIN
         }, indent=2))
         return 0
-    print(f"ZeroDrive CLI (zd) v{VERSION}")
+    print(f"ZeroDrive CLI v{VERSION}")
     print(f"Storage Backend: Cloudflare R2 via {load_vault_prefix()}")
     print(f"Local Mount:     {MOUNT_DIR}")
     print(f"Engine Core:     {RCLONE_BIN}")
     return 0
+
+def cmd_mcp(args):
+    mcp_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zerodrive-mcp")
+    if not os.path.exists(mcp_script):
+        mcp_script = os.path.expanduser("~/.local/bin/zerodrive-mcp")
+    if os.path.exists(mcp_script):
+        os.execv(sys.executable, [sys.executable, mcp_script])
+    else:
+        print("Error: zerodrive-mcp script not found.", file=sys.stderr)
+        return 1
 
 # --- ARGUMENT PARSER SETUP ---
 
@@ -914,9 +924,9 @@ def build_parser():
     base_subparser.add_argument("--no-color", action="store_true", help="Disable ANSI color output")
 
     parser = argparse.ArgumentParser(
-        prog="zd",
+        prog="zerodrive",
         description="ZeroDrive CLI — Blazing-fast Cloud Drive & AI Agent File Engine",
-        epilog="Use 'zd <command> --help' for details on a specific command.",
+        epilog="Use 'zerodrive <command> --help' for details on a specific command.",
         parents=[base_subparser]
     )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
@@ -983,6 +993,9 @@ def build_parser():
     p_syms = subparsers.add_parser("symlinks", parents=[base_subparser], help="List active ZeroDrive local shortcuts")
     p_syms.add_argument("--json", action="store_true", help="Output as structured JSON")
 
+    # mcp
+    p_mcp = subparsers.add_parser("mcp", parents=[base_subparser], help="Start ZeroDrive Model Context Protocol (MCP) server for AI agents")
+
     # raw
     p_raw = subparsers.add_parser("raw", parents=[base_subparser], help="Direct pass-through to underlying rclone engine")
     p_raw.add_argument("rclone_args", nargs=argparse.REMAINDER, help="Arguments passed directly to rclone")
@@ -1028,6 +1041,7 @@ def main():
             "refresh": cmd_refresh,
             "sync": cmd_refresh,
             "symlinks": cmd_symlinks,
+            "mcp": cmd_mcp,
             "raw": cmd_raw,
             "version": cmd_version,
         }
