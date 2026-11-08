@@ -40,8 +40,15 @@ public actor RcloneRCClient {
         }
     }
 
-    public func refreshVFSTree() async -> Bool {
-        return await postRPC("vfs/refresh", ["_async": "true"]) != nil
+    public func refreshVFSTree(dir: String = "My Drive", recursive: Bool = false) async -> Bool {
+        var params: [String: Any] = [
+            "_async": "true",
+            "dir": dir
+        ]
+        if recursive {
+            params["recursive"] = "true"
+        }
+        return await postRPC("vfs/refresh", params) != nil
     }
 
     public func setBandwidthCap(rate: String) async -> Bool {

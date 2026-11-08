@@ -18,7 +18,7 @@ public final class RAMTreeIndexer: ObservableObject {
     /// Refreshes top-level VFS directory without locking subdirectories
     public func prewarmAll() async {
         isIndexing = true
-        _ = await RcloneRCClient.shared.refreshVFSTree()
+        _ = await RcloneRCClient.shared.refreshVFSTree(dir: "My Drive", recursive: false)
         self.isIndexing = false
     }
 

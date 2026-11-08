@@ -185,7 +185,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--vfs-read-chunk-size-limit=512M",
             "--buffer-size=64M",
             "--vfs-read-ahead=128M",
-            "--dir-cache-time=30s",
+            "--dir-cache-time=24h",
             "--vfs-fast-fingerprint",
             "--transfers=16",
             "--s3-upload-cutoff=32M",
@@ -194,6 +194,10 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--exclude=**/.DS_Store",
             "--exclude=**/.DS_Store.rclonelink",
             "--exclude=**/._*",
+            "--exclude=**/.Spotlight-V100/**",
+            "--exclude=**/.fseventsd/**",
+            "--exclude=**/.Trashes/**",
+            "--exclude=**/.TemporaryItems/**",
             "--vfs-links",
             "--rc",
             "--rc-addr=127.0.0.1:55729",
@@ -218,8 +222,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             }
 
             if nfsReady {
+                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=60,noatime,noacl,async"
                 await runCommand("/sbin/mount_nfs", [
-                    "-o", "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=1",
+                    "-o", nfsMountOptions,
                     "localhost:/",
                     nfsMountRoot.path
                 ])
@@ -232,6 +237,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
             // Ensure ~/ZeroDrive symlink & Desktop alias & non-ejectable Finder Sidebar folder entry
             ensureUserSymlink()
+            ensureMetadataNeverIndex()
             createDesktopVolumeAliasIfNeeded()
             if self.isMounted {
                 pinToFinderSidebarIfNeeded()
@@ -316,11 +322,13 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 mountRoot.removeAllCachedResourceValues()
                 let isVol = (try? mountRoot.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false
                 if !isVol {
+                    let watchdogMountOpts = "port=55730,mountport=55730,nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=60,noatime,noacl,async"
                     await self.runCommand("/sbin/mount_nfs", [
-                        "-o", "port=55730,mountport=55730,nolocks,nobrowse,vers=3,tcp",
+                        "-o", watchdogMountOpts,
                         "localhost:/",
                         self.nfsMountRoot.path
                     ])
+                    self.ensureMetadataNeverIndex()
                 }
             }
         }
@@ -433,6 +441,19 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
         if !fm.fileExists(atPath: userSymlinkURL.path) {
             try? fm.createSymbolicLink(at: userSymlinkURL, withDestinationURL: mountPoint)
+        }
+    }
+
+    public func ensureMetadataNeverIndex() {
+        let fm = FileManager.default
+        let targets = [
+            nfsMountRoot.appendingPathComponent(".metadata_never_index"),
+            nfsMountRoot.appendingPathComponent("My Drive/.metadata_never_index")
+        ]
+        for target in targets {
+            if !fm.fileExists(atPath: target.path) {
+                try? "".write(to: target, atomically: true, encoding: .utf8)
+            }
         }
     }
 
