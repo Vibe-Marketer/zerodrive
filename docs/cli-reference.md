@@ -1,20 +1,22 @@
-# ZeroDrive CLI (`zd`) — Complete Technical Reference & Developer Manual
+# ZeroDrive CLI (`zd`) — Technical Reference & Developer Manual
 
 **Binary Name:** `zerodrive`  
 **Terminal Symlink:** `zd -> zerodrive`  
 **Installed Locations:** `~/.local/bin/zerodrive`, `~/.local/bin/zd` (in `$PATH` on `naegele-pro` and `naegele-mm`)  
-**Storage Engine:** Cloudflare R2 (`https://zerodrive.aisimple.co/s3`) + multi-stream `rclone` engine + loopback NFS mount (`localhost:55730` $\rightarrow$ `~/ZeroDrive/My Drive`)
+**Storage Backend:** Cloudflare R2 (`https://zerodrive.aisimple.co/s3`) via `primary_vault`  
+**Local Mount:** Loopback NFS at `~/.zerodrive-mount` $\rightarrow$ `~/ZeroDrive/My Drive`  
+**Live Version:** `1.0.1`
 
 ---
 
-## 1. Architectural Overview & Philosophy
+## 1. Architecture: Mount vs. Direct CLI
 
-ZeroDrive separates **virtual filesystem browsing** from **high-throughput cloud offloading**:
+ZeroDrive separates **interactive virtual filesystem browsing** from **high-throughput cloud operations**:
 
 ```
                        ┌─────────────────────────┐
                        │  User Terminal / Agents │
-                       │    (Claude, zd, Finder)  │
+                       │    (Claude, zd, Finder) │
                        └────────────┬────────────┘
                                     │
              ┌──────────────────────┴──────────────────────┐
@@ -41,224 +43,147 @@ ZeroDrive separates **virtual filesystem browsing** from **high-throughput cloud
 
 1. **Virtual Filesystem (Finder & Terminal Navigation):**
    - Mounted at `~/.zerodrive-mount` (`nobrowse,vers=3,tcp`) and symlinked to `~/ZeroDrive/My Drive`.
-   - Reads files on demand and caches them in `~/.zerodrive-cache` with a guaranteed free-space floor.
+   - Reads files on demand and caches them in `~/.zerodrive-cache`.
 2. **ZeroDrive CLI (`zd`):**
-   - Interacts with Cloudflare R2 directly for instant metadata queries, bypassing the POSIX mount so commands like `zd size` and `zd ls` never stall Finder.
-   - Streams exact line and byte ranges directly from cloud storage, saving AI agents from burning hundreds of thousands of LLM tokens on bulky file reads.
-   - Controls the running daemon via loopback Remote Control (`127.0.0.1:55729`), triggering instant directory cache refreshes.
+   - Interacts with Cloudflare R2 directly for metadata queries and transfers, bypassing the POSIX mount to avoid mount stalls.
+   - Streams text lines or exact byte ranges without downloading entire large files to disk.
+   - Interacts with the daemon's Remote Control port (`127.0.0.1:55729`) to trigger directory cache invalidations.
 
 ---
 
-## 2. Path Resolution Engine
+## 2. Path Resolution & Endpoint Classification
 
-`zd` translates user inputs into appropriate cloud or local paths automatically:
+`zd` classifies endpoints into **LOCAL** or **REMOTE** based on explicit syntax and filesystem inspection:
 
-| Input Argument | Resolved Target | Behavior |
+| Syntax Pattern | Classified As | Target Resolution |
 | :--- | :--- | :--- |
-| `zd ls` or `zd ls /` | `primary_vault:zerodrive-vault-prod/<tenant>/` | Vault root |
-| `zd ls Course` or `zd ls /Course` | `primary_vault:zerodrive-vault-prod/<tenant>/Course` | Cloud collection |
-| `zd ls ~/ZeroDrive/"My Drive"/Course` | `primary_vault:zerodrive-vault-prod/<tenant>/Course` | Detects mount path, strips mount root |
-| `zd cp ~/Desktop/doc.pdf Course` | Src: `/Users/.../Desktop/doc.pdf`<br>Dst: `primary_vault:.../Course` | Uploads local file to cloud folder |
-| `zd cp Course/doc.pdf ~/Desktop/` | Src: `primary_vault:.../Course/doc.pdf`<br>Dst: `/Users/.../Desktop/` | Downloads cloud file to local path |
-| `zd mv ~/Desktop/Raw Course/Raw --symlink` | Moves `~/Desktop/Raw` to cloud | Leaves `lrwxr-xr-x` symlink at `~/Desktop/Raw` pointing to `~/ZeroDrive/My Drive/Course/Raw` |
+| `primary_vault:<path>` or `<remote>:<path>` | **REMOTE** | Used as an explicit rclone remote string. |
+| `vault:<path>` or `zd://<path>` | **REMOTE** | Resolved to `primary_vault:<tenant-prefix>/<clean-path>`. |
+| `~/...`, `./...`, `../...` | **LOCAL** | Resolved to absolute local filesystem path. |
+| `/Users/...`, `/tmp/...`, `/Volumes/...` | **LOCAL** | Known local system paths are resolved to local paths. |
+| Inside `~/ZeroDrive/My Drive/<subpath>` | **REMOTE** | Strips local mount prefix and maps directly to vault. |
+| Bare name (e.g. `Course`, `file.txt`) | **Contextual** | For query commands (`ls`, `size`, `cat`, `find`): defaults to **REMOTE** vault path.<br>For transfer commands (`cp`, `mv`): if it exists in the current local directory, it is **LOCAL**; otherwise, it is **REMOTE**. |
 
 ---
 
-## 3. Exhaustive Command Reference
+## 3. Copy & Move Semantics
 
-### `zd status`
-Displays live system health, loopback mount status, Mac SSD available storage, VFS cache metrics, active background streams, and tracked symlinks.
-
-- **Syntax:** `zd status [--json] [--no-color]`
-- **Speed:** ~15 ms
-- **Example Output (Human):**
-  ```text
-  ⚡ ZeroDrive System Status
-  ════════════════════════════════════════════════════
-    Finder Mount:    ✓ Connected & Mounted
-    Mount Path:      /Users/Naegele/ZeroDrive/My Drive
-    Mac SSD Free:    157.6 GiB available (926 GB total)
-    Local VFS Cache: 3.62 GB (8,166 files cached in RAM/SSD)
-    Active Symlinks: 1 local folder shortcut active
-    Vault Prefix:    zerodrive-vault-prod/usr_andrew_8bc7fb477f
-    Transfer Status: Idle (All files synced)
-  ════════════════════════════════════════════════════
-  ```
-- **Example Output (`--json` for AI Agents):**
-  ```json
-  {
-    "mounted": true,
-    "mountPath": "/Users/Naegele/ZeroDrive/My Drive",
-    "daemonOnline": true,
-    "macSsdFreeGB": 157.59,
-    "macSsdTotalGB": 926.35,
-    "vfsCacheBytes": 3890493820,
-    "vfsCacheFiles": 8166,
-    "activeSymlinks": 1,
-    "activeStream": null,
-    "vaultPrefix": "zerodrive-vault-prod/usr_andrew_8bc7fb477f"
-  }
-  ```
-
----
-
-### `zd ls [path]`
-High-speed directory listing with `--fast-list` and directory grouping.
-
-- **Syntax:** `zd ls [path] [--json] [-R | --recursive]`
-- **Speed:** 0.4s to 0.8s
-- **Flags:**
-  - `--json`: Outputs array of file objects (`Path`, `Name`, `Size`, `ModTime`, `IsDir`).
-  - `-R`, `--recursive`: Lists all nested subdirectories.
-- **Example:**
+### Copy (`zd cp <src> <dst>`)
+- **File to Directory:** When the destination ends with a slash (`/`) or is an existing local directory, `zd` uses `rclone copy` to place the file inside the target folder without altering its filename.
   ```bash
-  zd ls Course
+  # Upload single file into cloud folder
+  zd cp ~/Desktop/report.pdf Course/
+  # Download single file into local folder
+  zd cp Course/report.pdf ~/Downloads/
   ```
-
----
-
-### `zd size [path]`
-Queries Cloudflare R2 metadata in parallel using `--fast-list`. Calculates total object count and exact byte size without reading file contents or walking POSIX mount nodes.
-
-- **Syntax:** `zd size [path] [--json]`
-- **Speed:** ~8s for 10,000+ files (compared to 3+ minutes for Unix `du -sh`).
-- **Example:**
+- **File to File (Rename):** When the destination does not end with a slash and is not an existing directory, `zd` uses `rclone copyto` to copy to that exact target filename.
   ```bash
-  zd size Course
+  # Cloud-to-cloud file duplicate
+  zd cp Course/report.pdf Course/report-backup.pdf
   ```
-- **Example Output:**
-  ```text
-  📊 ZeroDrive Vault Size
-  ════════════════════════════════════════════════
-    Folder/Path: Course
-    File Count:  10,311 files
-    Total Size:  32.85 GB (32,850,043,196 bytes)
-    Query Time:  7.94s (Cloudflare R2 metadata API)
-  ════════════════════════════════════════════════
+- **Folder to Folder:** Transfers all contents using 16 concurrent workers and 32 checkers.
+  ```bash
+  zd cp ~/Desktop/Project/ Course/Project/
   ```
+
+### Move (`zd mv <src> <dst> [--symlink]`)
+- Moves files using 32 parallel streams.
+- **Empty-Directory Symlink Safety:**
+  When moving a local folder to the cloud with `--symlink`:
+  1. `zd` executes the transfer and verifies the process exit code.
+  2. It attempts a bottom-up empty directory prune (`os.rmdir()`).
+  3. **Data Protection Guard:** If any files remain in the source folder (such as untransferred files, excluded files, or permission errors), `zd` **aborts folder removal and refuses to create a symlink**, leaving remaining source files untouched.
+  4. Only when the directory is completely emptied does it remove the empty shell, create the symlink `ln -s ~/ZeroDrive/"My Drive"/<dst> <src>`, and log it to `~/.config/rclone/zerodrive-symlinks.json`.
 
 ---
 
-### `zd cat <path>`
-Streams file contents directly from Cloudflare R2 or local cache without downloading the whole file to disk. Includes line-slicing controls specifically built for AI agents to preserve context window limits.
+## 4. Command Reference
 
-- **Syntax:** `zd cat <path> [--lines N-M] [--head N] [--tail N]`
+### `zd status [--json]`
+Inspects local filesystem, loopback mount, daemon RC server, and migration telemetry.
+
+- **Options:** `--json`, `--no-color`
+- **Output Metrics:**
+  - `mounted`: Whether `~/.zerodrive-mount` is mounted.
+  - `macSsdFreeGB`: Local disk free space via APFS.
+  - `vfsCacheBytes` / `vfsCacheFiles`: Active VFS cache size.
+  - `vfsSyncState`:
+    - `Idle (0 pending VFS uploads)`: Cache is clear.
+    - `Uploading (X active, Y queued)`: Background VFS write-back in progress.
+    - `Errors (N files failed upload)`: Upload failures detected.
+    - `Unknown (Daemon offline)`: Mount daemon not reachable on loopback RC port.
+  - `activeMigration`: Active bulk migration stream metrics, or `None active`.
+
+### `zd ls [path] [-R] [--json]`
+Lists files and folders with `--fast-list`.
 - **Options:**
-  - `--lines N-M`: Streams only line numbers $N$ through $M$ (e.g. `--lines 1-50`).
-  - `--head N`: Streams only the first $N$ lines.
-  - `--tail N`: Streams only the last $N$ lines.
-- **Example:**
-  ```bash
-  zd cat ROUTER.md --head 15
-  zd cat MAIN/COPY-FRAMEWORKS.md --lines 1-100
-  ```
+  - `-R`, `--recursive`: Recursively lists all nested files and subdirectories.
+  - `--json`: Returns raw array of file objects (`Path`, `Name`, `Size`, `ModTime`, `IsDir`).
+- **Target:** Defaults to vault root (`/`). Can specify any vault subfolder (e.g. `zd ls Course`).
 
----
+### `zd size [path] [--json]`
+Queries Cloudflare R2 metadata directly via `--fast-list --json`.
+- **Target:** Vault root or subfolder (e.g. `zd size Course`).
+- **Performance:** Bypasses POSIX `stat()` calls, querying thousands of files in seconds without mount stalls.
 
-### `zd find <pattern> [path]`
-Fast wildcard file search using server-side glob matching.
+### `zd cat <path> [--lines N-M] [--head N] [--tail N] [--bytes OFFSET-END]`
+Reads file contents directly.
+- **Line Slicing:**
+  - `--lines N-M`: Streams lines sequentially and terminates child process immediately once line $M$ is reached.
+  - `--head N`: Streams first $N$ lines, closes pipe, and terminates child process without hanging.
+  - `--tail N`: Uses a bounded FIFO queue (`collections.deque(maxlen=N)`) so memory usage is strictly limited to $N$ lines, regardless of file size.
+- **Byte Ranges:**
+  - `--bytes OFFSET-END`: Passes `--offset` and `--count` directly to rclone for true S3 byte-range streaming.
+- **Failure Behavior:** If the file does not exist, outputs an error to `stderr` and exits with code 1.
 
-- **Syntax:** `zd find <pattern> [path] [--json]`
-- **Examples:**
-  ```bash
-  zd find "*.mov" Course
-  zd find "*invoice*" _BUSINESS --json
-  ```
+### `zd find <pattern> [path] [--json]`
+Performs server-side wildcard matching via rclone `--include` glob filter.
+- **Syntax:** `zd find "*.mov" Course`
+- **Options:** `--json` outputs array of matching relative paths.
 
----
+### `zd share <path> [--hours N] [--json]`
+Generates a public pre-signed Cloudflare R2 HTTPS URL.
+- **Default Expiry:** 24 hours (`--hours 24`). Configurable up to 168 hours (7 days).
+- **Options:** `--json` outputs `{"target": ..., "expiryHours": ..., "url": ...}`.
 
-### `zd cp <source> <destination>`
-Multi-stream parallel file or folder copy using 16 concurrent workers and 32 checkers.
+### `zd refresh [path] [-R] [--json]`
+Invalidates loopback VFS directory cache via `POST http://127.0.0.1:55729/vfs/refresh`.
+- **Target:** Defaults to `My Drive` (vault root). Can specify subfolders (e.g. `zd refresh Course`).
+- **Options:** `-R`, `--recursive` refreshes subdirectories.
+- **Response Verification:** Checks HTTP response and verifies `"OK"` status before reporting success.
 
-- **Syntax:** `zd cp <src> <dst>`
-- **Capabilities:**
-  - Local Mac to Cloud Vault
-  - Cloud Vault to Local Mac
-  - Cloud folder to Cloud folder (server-side copy)
-- **Example:**
-  ```bash
-  zd cp ~/Downloads/raw-asset.mov _CONTENT/creator-studio/
-  ```
-
----
-
-### `zd mv <source> <destination> [--symlink]`
-High-speed parallel move (32 streams). When `--symlink` is passed on a local folder move, `zd` removes the local directory once files are safely verified in R2 and replaces it with a POSIX symlink pointing to the live mount (`~/ZeroDrive/My Drive/<dest>`).
-
-- **Syntax:** `zd mv <src> <dst> [--symlink]`
-- **Example:**
-  ```bash
-  zd mv ~/Desktop/OldProject MAIN/OldProject --symlink
-  # -> Files moved to Cloud Vault
-  # -> ~/Desktop/OldProject is now a symlink pointing to ~/ZeroDrive/My Drive/MAIN/OldProject
-  # -> Logged to ~/.config/rclone/zerodrive-symlinks.json
-  ```
-
----
-
-### `zd share <path> [--hours 24]`
-Generates an instant public pre-signed Cloudflare R2 HTTPS link.
-
-- **Syntax:** `zd share <path> [--hours N]`
-- **Default Expiry:** 24 hours (configurable up to 168 hours / 7 days).
-- **Example:**
-  ```bash
-  zd share ROUTER.md --hours 12
-  # -> Returns: https://zerodrive.aisimple.co/s3/zerodrive-vault-prod/...
-  ```
-
----
-
-### `zd refresh` (or `zd sync`)
-Sends an immediate invalidation command to the live loopback NFS daemon (`POST http://127.0.0.1:55729/vfs/refresh`).
-
-- **Speed:** < 20 ms
-- **Purpose:** When an external script, AI agent, or second Mac (`naegele-mm`) uploads files to your vault, running `zd refresh` forces macOS Finder and Terminal to see the new files instantly without unmounting.
-
----
-
-### `zd symlinks`
-Inspects and verifies all local folder shortcuts created by ZeroDrive.
-
-- **Syntax:** `zd symlinks`
-- **Output:** Lists local shortcut paths, cloud targets, and whether the symlink is active on the filesystem.
-
----
+### `zd symlinks [--json]`
+Audits active local shortcuts created by ZeroDrive moves.
+- **Verification:** Inspects filesystem to verify whether each recorded symlink is currently active (`os.path.islink()`).
 
 ### `zd raw <command...>`
-Direct pass-through to the underlying rclone engine with your credentials, config file, and S3 parameters pre-bound.
+Passes arguments directly through to the underlying rclone binary with pre-bound credentials.
+- **Return Code:** Strictly propagates the underlying engine's exit code to the caller.
 
-- **Syntax:** `zd raw <rclone_command> [args...]`
-- **Examples:**
-  ```bash
-  zd raw check ~/Desktop/Test primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f/Test
-  zd raw md5sum primary_vault:zerodrive-vault-prod/usr_andrew_8bc7fb477f/ROUTER.md
-  ```
+### `zd version [--json]`
+Displays CLI version, storage backend, tenant prefix, and rclone engine path.
 
 ---
 
-### `zd version`
-Prints CLI version, storage backend URL, tenant prefix, and underlying binary path.
+## 5. Exit Codes & Error Propagation
+
+The CLI follows standard POSIX exit code conventions:
+
+| Exit Code | Meaning |
+| :--- | :--- |
+| `0` | Success. |
+| `1` | Operational or transfer error (source not found, transfer failure, network error). |
+| `2` | Command-line argument syntax error (unknown subcommand, invalid option). |
+| `N > 2` | Direct engine exit code passed through from `zd raw`. |
 
 ---
 
-## 4. Background Jobs & Stream Architecture
-
-| Job Name | Script / Module | Triggers & Behavior |
-| :--- | :--- | :--- |
-| **Local Parallel Batch Offload** | `turbo-migrate-dashboard.py` | Moves local directories in 32-stream batches; hydrates dataless stubs (`SF_DATALESS`) strictly 1-by-1 to prevent `bird` bufferbloat. |
-| **Direct RAM Stream** | `stream-icloud-to-vault.py` | Authenticates `[icloud_direct]` via Apple SRP protocol and streams files directly from Apple servers to Cloudflare R2 in RAM on `naegele-mm` (zero SSD bytes used). |
-| **Daemon VFS Write-Back Spool** | `RcloneDaemonSupervisor.swift` | Runs in background with `--vfs-cache-mode=full`, `--vfs-write-back=15s`, `--vfs-cache-max-size=50G`, and `--vfs-cache-min-free-space=10G`. |
-| **Remote Node Telemetry Poller** | `TurboMigrationManager.swift` | Polls `naegele-mm` over private SSH every 400ms when a remote stream is active to update the Mac menu bar and UI. |
-
----
-
-## 5. Telemetry Schema & State Files
+## 6. Runtime Configuration & State Files
 
 All runtime telemetry files live in `~/.config/rclone/`:
 
 1. **`zerodrive-vault.json`:** Active tenant prefix, quota, and storage preset.
-2. **`migration-telemetry.json`:** Live local transfer metrics (bytes moved, percent, speed in MB/s, ETA, active workers).
-3. **`remote-migration-telemetry.json`:** Live metrics streamed from `naegele-mm`.
-4. **`zerodrive-symlinks.json`:** Array of active local symlink mappings (`localPath`, `targetMountPath`, `createdTimestamp`).
-5. **`migration-ledger.json`:** Permanent historical log of every completed space migration.
+2. **`migration-telemetry.json`:** Local bulk migration metrics.
+3. **`remote-migration-telemetry.json`:** Remote migration metrics streamed from `naegele-mm`.
+4. **`zerodrive-symlinks.json`:** Array of active local symlink mappings (`localPath`, `targetMountPath`, `folderName`, `createdTimestamp`).
+5. **`migration-ledger.json`:** Permanent historical log of completed folder migrations.
