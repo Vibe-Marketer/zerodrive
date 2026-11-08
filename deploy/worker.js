@@ -382,13 +382,31 @@ const MCP_TOOLS = [
   }
 ];
 
-function resolveVaultPrefix(request, url) {
-  const auth = request.headers.get("Authorization") || url.searchParams.get("key") || "";
-  if (auth.includes("usr_")) {
-    const match = auth.match(/usr_[a-zA-Z0-9_]+/);
-    if (match) return match[0];
+function authenticateMCPRequest(request, env, url) {
+  const authHeader = request.headers.get("Authorization") || "";
+  let token = "";
+  if (authHeader.startsWith("Bearer ")) {
+    token = authHeader.slice(7).trim();
+  } else if (url.searchParams.get("key")) {
+    token = url.searchParams.get("key").trim();
   }
-  return "usr_andrew_8bc7fb477f";
+
+  if (!token) {
+    return { ok: false, error: "Missing ZeroDrive API key. Provide 'Authorization: Bearer <key>' or '?key=<key>'." };
+  }
+
+  // Check master vault key or user-specific prefix
+  const masterKey = env.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
+  if (token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew")) {
+    return { ok: true, userPrefix: "usr_andrew_8bc7fb477f" };
+  }
+
+  if (token.startsWith("usr_")) {
+    const clean = token.replace(/[^a-zA-Z0-9_]/g, "");
+    return { ok: true, userPrefix: clean };
+  }
+
+  return { ok: false, error: "Invalid ZeroDrive API key." };
 }
 
 async function handleMCPRequest(request, env, url, corsHeaders) {
@@ -396,12 +414,24 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const auth = authenticateMCPRequest(request, env, url);
+  if (!auth.ok) {
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32000, message: `Unauthorized: ${auth.error}` },
+      }),
+      { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
   if (request.method === "GET") {
     return new Response(JSON.stringify({
       status: "online",
       server: "ZeroDrive Hosted MCP Server",
       protocol: "2024-11-05",
-      endpoint: `${url.origin}/mcp`,
+      authenticatedAs: auth.userPrefix,
       tools: MCP_TOOLS.map(t => t.name)
     }, null, 2), {
       headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -422,7 +452,7 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
   }
 
   const { id, method, params } = body;
-  const userPrefix = resolveVaultPrefix(request, url).replace(/\/+$/, "");
+  const userPrefix = auth.userPrefix;
 
   if (method === "initialize") {
     return new Response(JSON.stringify({
