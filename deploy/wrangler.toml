@@ -4,6 +4,8 @@ compatibility_date = "2024-01-01"
 account_id = "e9319ad5ca87e4768e7a79f1339ec8c8"
 
 routes = [
+  { pattern = "api.zerodrive.dev", custom_domain = true },
+  { pattern = "drive.zerodrive.dev", custom_domain = true },
   { pattern = "zerodrive.aisimple.co", custom_domain = true }
 ]
 
@@ -13,6 +15,6 @@ bucket_name = "zerodrive-vault-prod"
 
 [vars]
 R2_BUCKET = "zerodrive-vault-prod"
-R2_ENDPOINT = "https://zerodrive.aisimple.co/s3"
+R2_ENDPOINT = "https://drive.zerodrive.dev/s3"
 DEFAULT_QUOTA_TB = "5.0"
 ISOLATION_MODE = "worker_s3_proxy"

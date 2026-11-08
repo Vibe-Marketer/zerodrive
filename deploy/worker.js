@@ -320,6 +320,287 @@ async function handleS3Proxy(request, env, url) {
   return new Response("Method Not Allowed", { status: 405 });
 }
 
+const MCP_TOOLS = [
+  {
+    name: "zd_list",
+    description: "List files and subfolders in a ZeroDrive vault directory with sizes and dates.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault directory path (e.g. '', 'MAIN', 'Course').", default: "" },
+        recursive: { type: "boolean", description: "List subdirectories recursively.", default: false }
+      }
+    }
+  },
+  {
+    name: "zd_read",
+    description: "Read text contents of a file in the ZeroDrive vault with optional line slicing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault file path (e.g. 'ROUTER.md', 'MAIN/AGENTS.md')." },
+        head: { type: "integer", description: "Read only the first N lines." },
+        tail: { type: "integer", description: "Read only the last N lines." },
+        lines: { type: "string", description: "Read specific line range (e.g. '1-50')." }
+      },
+      required: ["path"]
+    }
+  },
+  {
+    name: "zd_write",
+    description: "Write or overwrite a text file directly into the ZeroDrive cloud vault 24/7.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Target vault path (e.g. 'MAIN/notes.md', 'Course/summary.txt')." },
+        content: { type: "string", description: "Text content to write." }
+      },
+      required: ["path", "content"]
+    }
+  },
+  {
+    name: "zd_search",
+    description: "Fast keyword & pattern search across the ZeroDrive vault.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keyword or pattern to search (e.g. '*.md', 'Dan Kennedy')." },
+        path: { type: "string", description: "Directory to search within (optional).", default: "" }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "zd_size",
+    description: "Get instant file count and total size for any folder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault folder path (e.g. 'Course', 'MAIN/LEGENDS').", default: "" }
+      }
+    }
+  }
+];
+
+function resolveVaultPrefix(request, url) {
+  const auth = request.headers.get("Authorization") || url.searchParams.get("key") || "";
+  if (auth.includes("usr_")) {
+    const match = auth.match(/usr_[a-zA-Z0-9_]+/);
+    if (match) return match[0];
+  }
+  return "usr_andrew_8bc7fb477f";
+}
+
+async function handleMCPRequest(request, env, url, corsHeaders) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  if (request.method === "GET") {
+    return new Response(JSON.stringify({
+      status: "online",
+      server: "ZeroDrive Hosted MCP Server",
+      protocol: "2024-11-05",
+      endpoint: `${url.origin}/mcp`,
+      tools: MCP_TOOLS.map(t => t.name)
+    }, null, 2), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
+  }
+
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
+  }
+
+  const { id, method, params } = body;
+  const userPrefix = resolveVaultPrefix(request, url).replace(/\/+$/, "");
+
+  if (method === "initialize") {
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "zerodrive-hosted-mcp", version: "1.0.0" }
+      }
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
+  if (method === "notifications/initialized") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  if (method === "tools/list") {
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      result: { tools: MCP_TOOLS }
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
+  if (method === "tools/call") {
+    const toolName = params?.name;
+    const args = params?.arguments || {};
+
+    try {
+      if (toolName === "zd_list") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+        const recursive = !!args.recursive;
+
+        const listed = await env.VAULT_BUCKET.list({
+          prefix,
+          delimiter: recursive ? undefined : "/",
+          limit: 1000
+        });
+
+        const items = [];
+        for (const p of listed.delimitedPrefixes || []) {
+          const folderName = p.slice(prefix.length).replace(/\/$/, "");
+          items.push({ name: folderName, type: "dir", path: p.slice(userPrefix.length + 1) });
+        }
+        for (const o of listed.objects || []) {
+          const fileName = o.key.slice(prefix.length);
+          if (fileName && (!fileName.includes("/") || recursive)) {
+            items.push({ name: fileName, type: "file", size: o.size, modified: o.uploaded.toISOString(), path: o.key.slice(userPrefix.length + 1) });
+          }
+        }
+
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(items, null, 2) }] }
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (toolName === "zd_read") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const fullKey = `${userPrefix}/${subpath}`;
+        const obj = await env.VAULT_BUCKET.get(fullKey);
+        if (!obj) {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: `File not found: ${args.path}` }] }
+          }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+
+        let text = await obj.text();
+        const lines = text.split("\n");
+        if (args.head && args.head > 0) {
+          text = lines.slice(0, args.head).join("\n");
+        } else if (args.tail && args.tail > 0) {
+          text = lines.slice(-args.tail).join("\n");
+        } else if (args.lines) {
+          const parts = args.lines.split("-").map(n => parseInt(n.trim(), 10));
+          if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            text = lines.slice(Math.max(0, parts[0] - 1), parts[1]).join("\n");
+          }
+        }
+
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text }] }
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (toolName === "zd_write") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const fullKey = `${userPrefix}/${subpath}`;
+        const content = args.content || "";
+        await env.VAULT_BUCKET.put(fullKey, content, {
+          httpMetadata: { contentType: "text/plain; charset=utf-8" }
+        });
+
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Successfully wrote ${content.length} characters to ${args.path} in ZeroDrive cloud vault.` }] }
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (toolName === "zd_search") {
+        const query = (args.query || "").toLowerCase().replace(/\*/g, "");
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+
+        const listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000 });
+        const matches = [];
+        for (const obj of listed.objects || []) {
+          const relPath = obj.key.slice(userPrefix.length + 1);
+          if (relPath.toLowerCase().includes(query)) {
+            matches.push({ path: relPath, size: obj.size, modified: obj.uploaded.toISOString() });
+          }
+        }
+
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(matches, null, 2) }] }
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      if (toolName === "zd_size") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+
+        let count = 0;
+        let totalBytes = 0;
+        let cursor;
+        do {
+          const listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000, cursor });
+          for (const obj of listed.objects || []) {
+            count++;
+            totalBytes += obj.size;
+          }
+          cursor = listed.truncated ? listed.cursor : undefined;
+        } while (cursor && count < 50000);
+
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify({ path: args.path || "/", fileCount: count, totalBytes, sizeFormatted: `${(totalBytes / (1024*1024*1024)).toFixed(2)} GB` }, null, 2) }] }
+        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        result: { isError: true, content: [{ type: "text", text: `Unknown tool: ${toolName}` }] }
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    } catch (err) {
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        result: { isError: true, content: [{ type: "text", text: `Error: ${err.message || String(err)}` }] }
+      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+  }
+
+  if (method === "ping") {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: {} }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
+  }
+
+  return new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    error: { code: -32601, message: `Method not found: ${method}` }
+  }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -337,6 +618,11 @@ export default {
     // 1. S3-Compatible Multi-Tenant R2 Proxy
     if (url.pathname === "/s3" || url.pathname.startsWith("/s3/")) {
       return handleS3Proxy(request, env, url);
+    }
+
+    // 1b. Hosted 24/7 AI Agent MCP Server Endpoint (/mcp or /v1/mcp)
+    if (url.pathname === "/mcp" || url.pathname === "/v1/mcp") {
+      return handleMCPRequest(request, env, url, corsHeaders);
     }
 
     // 2. Direct DMG Installer Download from R2
