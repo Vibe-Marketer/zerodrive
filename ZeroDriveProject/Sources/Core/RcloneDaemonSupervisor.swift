@@ -168,6 +168,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         let nfsPort = 55730
         let defaultTimeStr = ISO8601DateFormatter().string(from: Date())
         let minFreeGB = max(5, meta.minFreeSpaceGB)
+        let nfsHandleCacheDir = cacheDir.appendingPathComponent("nfs-handles")
+        try? FileManager.default.createDirectory(at: nfsHandleCacheDir, withIntermediateDirectories: true)
+
         process.arguments = [
             "serve",
             "nfs",
@@ -175,6 +178,8 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--config=\(MultiCloudCombineBuilder.shared.configPath.path)",
             "--addr=127.0.0.1:\(nfsPort)",
             "--default-time=\(defaultTimeStr)",
+            "--nfs-cache-type=disk",
+            "--nfs-cache-dir=\(nfsHandleCacheDir.path)",
             "--vfs-cache-mode=full",
             "--cache-dir=\(cacheDir.path)",
             "--vfs-cache-max-size=\(meta.spoolCapGB)G",
@@ -183,9 +188,10 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--vfs-cache-max-age=24h",
             "--vfs-read-chunk-size=16M",
             "--vfs-read-chunk-size-limit=512M",
+            "--vfs-read-chunk-streams=4",
             "--buffer-size=64M",
             "--vfs-read-ahead=128M",
-            "--dir-cache-time=24h",
+            "--dir-cache-time=72h",
             "--vfs-fast-fingerprint",
             "--transfers=16",
             "--s3-upload-cutoff=32M",
@@ -222,7 +228,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             }
 
             if nfsReady {
-                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=60,noatime,noacl,async"
+                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async"
                 await runCommand("/sbin/mount_nfs", [
                     "-o", nfsMountOptions,
                     "localhost:/",
@@ -322,7 +328,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 mountRoot.removeAllCachedResourceValues()
                 let isVol = (try? mountRoot.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false
                 if !isVol {
-                    let watchdogMountOpts = "port=55730,mountport=55730,nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=60,noatime,noacl,async"
+                    let watchdogMountOpts = "port=55730,mountport=55730,nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async"
                     await self.runCommand("/sbin/mount_nfs", [
                         "-o", watchdogMountOpts,
                         "localhost:/",
