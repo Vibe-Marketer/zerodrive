@@ -2,19 +2,21 @@
 """
 ZeroDrive MCP Server (Model Context Protocol)
 Standard JSON-RPC 2.0 STDIO server providing instant ZeroDrive cloud vault
-access (read, write, list, search, size, share) to AI agents (Claude Desktop,
-Cursor, Codex, Antigravity, OpenDevin, LibreChat).
+access (text, binary, screenshots, PDFs, videos, ZIPs, and skills) to AI agents.
 """
 
 import sys
 import os
 import json
+import base64
+import tempfile
 import subprocess
 import shutil
+import urllib.request
 
 ZD_BIN = os.path.expanduser("~/.local/bin/zd")
 if not os.path.exists(ZD_BIN):
-    ZD_BIN = shutil.which("zd") or shutil.which("zerodrive") or "/usr/local/bin/zd"
+    ZD_BIN = shutil.which("zd") or shutil.which("zerodrive") or "/Users/Naegele/_LAB/zerodrive/bin/zerodrive"
 
 def run_zd(*args):
     cmd = [ZD_BIN, "--no-color"] + list(args)
@@ -23,124 +25,137 @@ def run_zd(*args):
 
 TOOLS = [
     {
-        "name": "zd_list",
+        "name": "get_file_tree",
+        "description": "Get a visual directory tree of the ZeroDrive vault or any subfolder.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Vault folder path (default: root).", "default": ""},
+                "depth": {"type": "integer", "description": "Depth limit (1 to 4, default 2).", "default": 2}
+            }
+        }
+    },
+    {
+        "name": "list_files",
         "description": "List files and subfolders in a ZeroDrive vault directory with sizes and dates.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Vault directory path (e.g. '', 'MAIN', 'Course', '_BUSINESS').",
-                    "default": ""
-                },
-                "recursive": {
-                    "type": "boolean",
-                    "description": "List subdirectories recursively.",
-                    "default": False
-                }
+                "path": {"type": "string", "description": "Vault directory path (e.g. '', 'MAIN', 'Course', '_SKILLS').", "default": ""},
+                "recursive": {"type": "boolean", "description": "List subdirectories recursively.", "default": False}
             }
         }
     },
     {
-        "name": "zd_read",
-        "description": "Read the text contents of a file in the ZeroDrive vault. Supports line slicing to save context tokens.",
+        "name": "search_filenames",
+        "description": "Find files and folders across the ZeroDrive vault by filename, keyword, or extension.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Vault file path (e.g. 'ROUTER.md', 'MAIN/AGENTS.md')."
-                },
-                "head": {
-                    "type": "integer",
-                    "description": "Read only the first N lines."
-                },
-                "tail": {
-                    "type": "integer",
-                    "description": "Read only the last N lines."
-                },
-                "lines": {
-                    "type": "string",
-                    "description": "Read specific line range (e.g. '1-50', '100-150')."
-                }
+                "query": {"type": "string", "description": "Filename keyword or pattern (e.g. 'ROUTER', '*.mp4', '*.zip')."},
+                "path": {"type": "string", "description": "Directory to search within (defaults to whole vault).", "default": ""}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "read_file",
+        "description": "Read a text file from the ZeroDrive vault with optional line slicing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Vault file path (e.g. 'ROUTER.md', 'MAIN/AGENTS.md')."},
+                "head": {"type": "integer", "description": "Read only the first N lines."},
+                "tail": {"type": "integer", "description": "Read only the last N lines."},
+                "lines": {"type": "string", "description": "Read specific line range (e.g. '1-50', '100-150')."}
             },
             "required": ["path"]
         }
     },
     {
-        "name": "zd_write",
-        "description": "Write or overwrite a text file directly into the ZeroDrive cloud vault.",
+        "name": "write_file",
+        "description": "Create or overwrite any text or binary file in the ZeroDrive vault (via text content, content_base64, local_path, or source_url).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Target vault path (e.g. 'MAIN/notes.md', 'Course/summary.txt')."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Text content to write."
-                }
+                "path": {"type": "string", "description": "Target vault path (e.g. 'MAIN/notes.md', 'MAIN/video.mp4', 'MAIN/archive.zip')."},
+                "content": {"type": "string", "description": "UTF-8 text content to write."},
+                "content_base64": {"type": "string", "description": "Base64-encoded binary content."},
+                "local_path": {"type": "string", "description": "Local file or folder path to copy directly into the vault (ideal for large videos, ZIPs, and screenshots)."},
+                "source_url": {"type": "string", "description": "HTTP/HTTPS URL to fetch and save directly to the vault."}
             },
-            "required": ["path", "content"]
+            "required": ["path"]
         }
     },
     {
-        "name": "zd_search",
-        "description": "Search for files and directories across the ZeroDrive vault by pattern/glob.",
+        "name": "upload_binary_file",
+        "description": "Upload any binary file (PNG/JPG/WebP, PDF, MP4/MOV video, ZIP archive) via local_path, source_url, or content_base64.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Search pattern (e.g. '*.md', '*Dan Kennedy*', '*.mp4')."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Directory to search within (defaults to whole vault).",
-                    "default": ""
-                }
+                "path": {"type": "string", "description": "Destination vault path."},
+                "local_path": {"type": "string", "description": "Local file path on disk to upload."},
+                "source_url": {"type": "string", "description": "Remote URL to fetch and upload."},
+                "content_base64": {"type": "string", "description": "Base64-encoded binary payload."}
             },
-            "required": ["pattern"]
+            "required": ["path"]
         }
     },
     {
-        "name": "zd_size",
-        "description": "Get sub-second file count and total size for any folder using Cloudflare R2 metadata.",
+        "name": "save_skill",
+        "description": "Save a reusable Agent Skill into _SKILLS/<verb-noun-name>/SKILL.md in the ZeroDrive vault.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Vault folder path (e.g. 'Course', 'MAIN/LEGENDS').",
-                    "default": ""
-                }
+                "name": {"type": "string", "description": "Lowercase hyphenated verb-noun skill name (e.g. 'create-substack-articles')."},
+                "description": {"type": "string", "description": "Short description of what the skill does."},
+                "instructions": {"type": "string", "description": "Full markdown instructions for SKILL.md."}
+            },
+            "required": ["name", "description", "instructions"]
+        }
+    },
+    {
+        "name": "get_folder_size",
+        "description": "Get file count and total size for any folder in the ZeroDrive vault.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Vault folder path.", "default": ""}
             }
         }
     },
     {
-        "name": "zd_share",
-        "description": "Generate a secure pre-signed HTTPS download link for any file in the vault.",
+        "name": "get_download_url",
+        "description": "Generate a pre-signed HTTPS download link for any file (video, ZIP, PDF, image) in the vault.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Vault file path (e.g. 'Course/video.mp4')."
-                },
-                "hours": {
-                    "type": "integer",
-                    "description": "Link expiration in hours (default 24).",
-                    "default": 24
-                }
+                "path": {"type": "string", "description": "Vault file path."},
+                "hours": {"type": "integer", "description": "Link expiration in hours (default 24).", "default": 24}
             },
             "required": ["path"]
+        }
+    },
+    {
+        "name": "run_vault_doctor",
+        "description": "Run a full health check on the ZeroDrive vault, local engine, and hosted MCP server.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     }
 ]
 
 def handle_call_tool(name, args):
-    if name == "zd_list":
+    if name == "get_file_tree":
+        path = args.get("path", "")
+        depth = str(args.get("depth", 2))
+        code, out, err = run_zd("tree", path, "-d", depth)
+        if code != 0:
+            return {"isError": True, "content": [{"type": "text", "text": f"Error: {err or out}"}]}
+        return {"content": [{"type": "text", "text": out}]}
+
+    elif name in ("list_files", "zd_list"):
         path = args.get("path", "")
         cmd = ["ls", path, "--json"]
         if args.get("recursive"):
@@ -150,7 +165,7 @@ def handle_call_tool(name, args):
             return {"isError": True, "content": [{"type": "text", "text": f"Error: {err or out}"}]}
         return {"content": [{"type": "text", "text": out}]}
 
-    elif name == "zd_read":
+    elif name in ("read_file", "zd_read"):
         path = args.get("path", "")
         cmd = ["cat", path]
         if "head" in args:
@@ -164,10 +179,47 @@ def handle_call_tool(name, args):
             return {"isError": True, "content": [{"type": "text", "text": f"Error: {err or out}"}]}
         return {"content": [{"type": "text", "text": out}]}
 
-    elif name == "zd_write":
+    elif name in ("write_file", "upload_binary_file", "zd_write"):
         path = args.get("path", "")
+        local_path = args.get("local_path")
+        source_url = args.get("source_url")
+        content_b64 = args.get("content_base64")
         content = args.get("content", "")
-        import tempfile
+
+        if local_path and os.path.exists(os.path.expanduser(local_path)):
+            code, out, err = run_zd("cp", os.path.expanduser(local_path), path)
+            if code != 0:
+                return {"isError": True, "content": [{"type": "text", "text": f"Error uploading local file: {err or out}"}]}
+            return {"content": [{"type": "text", "text": f"Uploaded {local_path} to {path} in ZeroDrive vault."}]}
+
+        if source_url:
+            with tempfile.NamedTemporaryFile("wb", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                urllib.request.urlretrieve(source_url, tmp_path)
+                code, out, err = run_zd("cp", tmp_path, path)
+                if code != 0:
+                    return {"isError": True, "content": [{"type": "text", "text": f"Error uploading URL: {err or out}"}]}
+                return {"content": [{"type": "text", "text": f"Uploaded {source_url} to {path} in ZeroDrive vault."}]}
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+        if content_b64:
+            raw_b64 = content_b64.split(",", 1)[1] if content_b64.startswith("data:") and "," in content_b64 else content_b64
+            data = base64.b64decode(raw_b64)
+            with tempfile.NamedTemporaryFile("wb", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            try:
+                code, out, err = run_zd("cp", tmp_path, path)
+                if code != 0:
+                    return {"isError": True, "content": [{"type": "text", "text": f"Error uploading binary: {err or out}"}]}
+                return {"content": [{"type": "text", "text": f"Uploaded {len(data)} binary bytes to {path} in ZeroDrive vault."}]}
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
         with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
@@ -175,36 +227,51 @@ def handle_call_tool(name, args):
             code, out, err = run_zd("cp", tmp_path, path)
             if code != 0:
                 return {"isError": True, "content": [{"type": "text", "text": f"Error writing file: {err or out}"}]}
-            return {"content": [{"type": "text", "text": f"Successfully wrote {len(content)} bytes to {path} in ZeroDrive vault."}]}
+            return {"content": [{"type": "text", "text": f"Saved {len(content)} bytes to {path} in ZeroDrive vault."}]}
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    elif name == "zd_search":
-        pattern = args.get("pattern", "")
+    elif name == "save_skill":
+        skill_name = args.get("name", "").strip().lower().replace(" ", "-")
+        desc = args.get("description", "").strip()
+        instr = args.get("instructions", "").strip()
+        if not instr.startswith("---"):
+            instr = f"---\nname: {skill_name}\ndescription: {desc}\n---\n\n{instr}\n"
+        target_path = f"_SKILLS/{skill_name}/SKILL.md"
+        return handle_call_tool("write_file", {"path": target_path, "content": instr})
+
+    elif name in ("search_filenames", "zd_search"):
+        pattern = args.get("query") or args.get("pattern") or ""
+        if "*" not in pattern:
+            pattern = f"*{pattern}*"
         path = args.get("path", "")
         cmd = ["find", pattern]
         if path:
-            cmd.extend(["--path", path])
+            cmd.append(path)
         code, out, err = run_zd(*cmd)
         if code != 0:
             return {"isError": True, "content": [{"type": "text", "text": f"Error: {err or out}"}]}
         return {"content": [{"type": "text", "text": out}]}
 
-    elif name == "zd_size":
+    elif name in ("get_folder_size", "zd_size"):
         path = args.get("path", "")
         code, out, err = run_zd("size", path, "--json")
         if code != 0:
             return {"isError": True, "content": [{"type": "text", "text": f"Error: {err or out}"}]}
         return {"content": [{"type": "text", "text": out}]}
 
-    elif name == "zd_share":
+    elif name in ("get_download_url", "zd_share"):
         path = args.get("path", "")
         hours = args.get("hours", 24)
         code, out, err = run_zd("share", path, "--hours", str(hours))
         if code != 0:
             return {"isError": True, "content": [{"type": "text", "text": f"Error: {err or out}"}]}
         return {"content": [{"type": "text", "text": out}]}
+
+    elif name in ("run_vault_doctor", "get_vault_help"):
+        code, out, err = run_zd("doctor")
+        return {"content": [{"type": "text", "text": out or err}]}
 
     else:
         return {"isError": True, "content": [{"type": "text", "text": f"Unknown tool: {name}"}]}
@@ -219,7 +286,7 @@ def main():
             if not line:
                 continue
             req = json.loads(line)
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             continue
 
         req_id = req.get("id")
@@ -232,12 +299,11 @@ def main():
                 "id": req_id,
                 "result": {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "tools": {}
-                    },
+                    "capabilities": {"tools": {}},
                     "serverInfo": {
-                        "name": "zerodrive-mcp",
-                        "version": "1.0.0"
+                        "name": "ZeroDrive",
+                        "version": "1.1.0",
+                        "icon": "https://api.zerodrive.dev/app-icon.png"
                     }
                 }
             }
@@ -248,13 +314,7 @@ def main():
             pass
 
         elif method == "tools/list":
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "tools": TOOLS
-                }
-            }
+            resp = {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
             sys.stdout.write(json.dumps(resp) + "\n")
             sys.stdout.flush()
 
@@ -262,20 +322,12 @@ def main():
             name = params.get("name")
             args = params.get("arguments", {})
             res = handle_call_tool(name, args)
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": res
-            }
+            resp = {"jsonrpc": "2.0", "id": req_id, "result": res}
             sys.stdout.write(json.dumps(resp) + "\n")
             sys.stdout.flush()
 
         elif method == "ping":
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {}
-            }
+            resp = {"jsonrpc": "2.0", "id": req_id, "result": {}}
             sys.stdout.write(json.dumps(resp) + "\n")
             sys.stdout.flush()
 
@@ -284,10 +336,7 @@ def main():
                 resp = {
                     "jsonrpc": "2.0",
                     "id": req_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}"
-                    }
+                    "error": {"code": -32601, "message": f"Method not found: {method}"}
                 }
                 sys.stdout.write(json.dumps(resp) + "\n")
                 sys.stdout.flush()

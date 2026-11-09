@@ -115,19 +115,42 @@ function guessMimeType(filePath) {
     gif: "image/gif",
     svg: "image/svg+xml",
     ico: "image/x-icon",
+    avif: "image/avif",
+    heic: "image/heic",
     pdf: "application/pdf",
     zip: "application/zip",
+    tar: "application/x-tar",
+    gz: "application/gzip",
+    tgz: "application/gzip",
+    "7z": "application/x-7z-compressed",
+    rar: "application/vnd.rar",
+    dmg: "application/x-apple-diskimage",
+    pkg: "application/x-newton-compatible-pkg",
+    skill: "application/zip",
     mp4: "video/mp4",
+    m4v: "video/x-m4v",
     mov: "video/quicktime",
     webm: "video/webm",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
     mp3: "audio/mpeg",
     wav: "audio/wav",
     m4a: "audio/mp4",
+    aac: "audio/aac",
+    ogg: "audio/ogg",
+    flac: "audio/flac",
     json: "application/json",
+    jsonl: "application/x-ndjson",
     csv: "text/csv; charset=utf-8",
+    tsv: "text/tab-separated-values; charset=utf-8",
     html: "text/html; charset=utf-8",
     css: "text/css; charset=utf-8",
     js: "application/javascript; charset=utf-8",
+    ts: "application/typescript; charset=utf-8",
+    py: "text/x-python; charset=utf-8",
+    sh: "text/x-shellscript; charset=utf-8",
+    yaml: "text/yaml; charset=utf-8",
+    yml: "text/yaml; charset=utf-8",
     md: "text/markdown; charset=utf-8",
     txt: "text/plain; charset=utf-8",
     docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -618,8 +641,88 @@ const MCP_TOOLS = [
         path: { type: "string", description: "Vault folder path (e.g. '', 'MAIN', 'Course').", default: "" }
       }
     }
+  },
+  {
+    name: "save_skill",
+    description: "Create or update a reusable Agent Skill inside '_SKILLS/<skill-name>/' in the ZeroDrive vault. Saves SKILL.md with YAML frontmatter plus any optional helper scripts, templates, references, or .zip bundles.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Skill folder name using lowercase hyphenated verb-noun format (e.g. 'create-substack-articles', 'research-youtube-topics', 'extract-call-insights')." },
+        description: { type: "string", description: "1-2 sentence description of what the skill does and when an agent should trigger it." },
+        instructions: { type: "string", description: "Full markdown instructions for SKILL.md (frontmatter is added automatically if omitted)." },
+        files: {
+          type: "array",
+          description: "Optional additional files to bundle inside the skill folder (e.g. scripts/run.py, references/guide.md, bundle.zip).",
+          items: {
+            type: "object",
+            properties: {
+              relative_path: { type: "string", description: "Path inside _SKILLS/<name>/ (e.g. 'scripts/extract.py', 'assets/template.zip')." },
+              content: { type: "string", description: "UTF-8 text content for text/script files." },
+              content_base64: { type: "string", description: "Base64-encoded binary content (for .zip, images, PDFs, etc.)." },
+              source_url: { type: "string", description: "Optional HTTP/HTTPS URL to fetch the file from." }
+            },
+            required: ["relative_path"]
+          }
+        }
+      },
+      required: ["name", "description", "instructions"]
+    }
+  },
+  {
+    name: "run_vault_doctor",
+    description: "Run a live health check on the ZeroDrive vault connection AND return the complete built-in ZeroDrive Skill & Help Guide (showing exactly how to save text, screenshots, PDFs, videos, .zip archives, and reusable skills).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "Optional help topic: 'all' (default), 'binary', 'videos', 'zips', 'skills', or 'naming'.", default: "all" }
+      }
+    }
   }
 ];
+
+const BUILTIN_SKILL_MD = `---
+name: use-zerodrive-vault
+description: Built-in ZeroDrive Cloud Vault skill and operational manual. Explains how to browse, search, read, and save ALL file types (Markdown, code, PNG/JPG/WebP screenshots & crops, PDFs, MP4/MOV/WebM videos, ZIP/TAR archives, and reusable Agent Skills in _SKILLS/).
+---
+
+# ZeroDrive Cloud Vault — Built-In Agent Skill & Help Guide
+
+ZeroDrive is a 24/7 Cloud Vault backed by Cloudflare R2. It handles **both text and binary files of any size** (images, screenshots, PDFs, videos, audio, ZIP archives, and multi-file Agent Skills).
+
+## 1. Navigating & Searching the Vault
+- **\`get_file_tree\`**: Inspect the folder hierarchy (start at \`path: ""\` with \`depth: 2\` or read \`ROUTER.md\`).
+- **\`list_files\`**: List files and subfolders with exact byte sizes and timestamps.
+- **\`search_filenames\`**: Find any file by name or extension (e.g. \`query: ".mp4"\`, \`query: ".zip"\`, \`query: "ROUTER"\`).
+- **\`grep_vault\`**: Search inside text/markdown/code files across the vault.
+
+## 2. Saving Images, PDFs, Videos (.mp4, .mov, .webm), and Archives (.zip, .tar.gz)
+ZeroDrive is **NOT** limited to text. You have 3 ways to save binary files, videos, screenshots, PDFs, and ZIPs:
+
+1. **Best for Local/Sandbox Files, Videos, ZIPs, or Batch Uploads (36+ screenshots, 35MB–5GB+):**
+   Call **\`create_upload_urls\`** with \`paths: ["MAIN/videos/demo.mp4", "MAIN/exports/bundle.zip", "MAIN/crops/crop-01.png"]\`.
+   ZeroDrive returns a 1-hour pre-signed HTTP \`PUT\` URL for each file. Upload directly from your shell/sandbox with zero LLM token overhead:
+   \`\`\`bash
+   curl -sS -X PUT --upload-file "./local-video.mp4" "<upload_url>"
+   \`\`\`
+2. **Best for Files Hosted at a URL (Web Images, Videos, PDFs, ZIPs):**
+   Call **\`upload_binary_file\`** (or \`write_file\`) with \`path\` and \`source_url: "https://..."\`. ZeroDrive downloads and stores the binary file directly in the cloud.
+3. **Best for Small In-Memory Binary Files:**
+   Call **\`upload_binary_file\`** (or \`write_file\`) with \`path\` and \`content_base64\`.
+
+## 3. Downloading & Streaming Videos, ZIPs, and PDFs
+- Call **\`get_download_url\`** with \`path\` to get a 24-hour direct HTTPS URL (\`https://api.zerodrive.dev/vault/download?token=...\`) with HTTP Range support for video streaming and fast ZIP/PDF downloads.
+- Call **\`read_file\`** on any image (\`.png\`, \`.jpg\`, \`.webp\`) to view the image directly in context.
+
+## 4. Creating & Saving Reusable Agent Skills (\`_SKILLS/\`)
+- Call **\`save_skill\`** to package and save a skill directly into \`_SKILLS/<skill-name>/SKILL.md\` (along with optional \`scripts/\`, \`references/\`, or \`.zip\` bundles).
+- Skill names **must** be lowercase, hyphenated, and use **verb-noun** format:
+  - Good: \`create-substack-articles\`, \`research-youtube-topics\`, \`extract-call-insights\`
+  - Banned words (never use in file or skill names): \`forge\`, \`engine\`, \`system\`, \`suite\`, \`hub\`, \`nexus\`, \`matrix\`, \`factory\`, \`mastery\`, \`ultimate\`, \`pro\`, \`2.0\`.
+
+## 5. Diagnostics & Help
+- Run **\`run_vault_doctor\`** anytime to verify vault connectivity, check root collections, and review this guide.
+`;
 
 function authenticateMCPRequest(request, env, url) {
   const authHeader = request.headers.get("Authorization") || "";
@@ -762,7 +865,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
             }
           ]
         },
-        instructions: "ZeroDrive Cloud Vault. Supports BOTH text and binary files (PNG, JPG, WebP, PDF, ZIP, MP4, Office docs). Start by calling get_file_tree or reading ROUTER.md to see the vault structure. Use search_filenames to locate files by name, grep_vault to search inside text contents, read_file to inspect text or images, write_file / edit_file / move_file for text and code, and upload_binary_file (via base64 or source_url) or create_upload_urls (pre-signed HTTP PUT URLs for batch/large binary files like screenshots, crops, and PDFs) to save any binary file."
+        instructions: "ZeroDrive Cloud Vault. Supports BOTH text and ALL binary files (PNG, JPG, WebP, PDF, MP4/MOV/WebM videos, MP3/WAV audio, ZIP/TAR.GZ archives, Office docs, and multi-file Agent Skills in _SKILLS/). Start by calling get_file_tree, reading ROUTER.md, or calling run_vault_doctor for the full built-in Skill & Help guide. Use search_filenames to find files by name/extension, grep_vault to search inside text contents, read_file to inspect text or images, write_file / edit_file / move_file for text and code, upload_binary_file (via base64 or source_url) or create_upload_urls (1-hour pre-signed HTTP PUT URLs for streaming local screenshots, crops, PDFs, large videos, and ZIPs with zero LLM token overhead), and save_skill to package reusable skills into _SKILLS/<verb-noun-name>/SKILL.md."
       }
     };
   }
@@ -781,6 +884,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
       id,
       result: {
         resources: [
+          { uri: "zerodrive://vault/SKILL.md", name: "ZeroDrive Built-In Skill & Help (SKILL.md)", description: "Built-in operational skill showing how to save text, screenshots, PDFs, videos, ZIPs, and skills in ZeroDrive", mimeType: "text/markdown" },
           { uri: "zerodrive://vault/ROUTER.md", name: "ROUTER.md", description: "Master index and directory map of the ZeroDrive vault", mimeType: "text/markdown" },
           { uri: "zerodrive://vault/AGENTS.md", name: "AGENTS.md", description: "Agent operating rules and workspace instructions", mimeType: "text/markdown" },
           { uri: "zerodrive://vault/CONTEXT.md", name: "CONTEXT.md", description: "Current system context and active architecture", mimeType: "text/markdown" }
@@ -792,6 +896,15 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
   if (method === "resources/read") {
     const uri = params?.uri || "";
     const filePath = uri.replace(/^zerodrive:\/\/vault\/?/, "").replace(/^\/+/, "");
+    if (filePath === "SKILL.md" || filePath === "HELP.md") {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          contents: [{ uri: uri || "zerodrive://vault/SKILL.md", mimeType: "text/markdown", text: BUILTIN_SKILL_MD }]
+        }
+      };
+    }
     const obj = await env.VAULT_BUCKET.get(`${userPrefix}/${filePath}`);
     const text = obj ? await obj.text() : `Resource not found: ${uri}`;
     return {
@@ -808,7 +921,86 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
   }
 
   if (method === "prompts/list") {
-    return { jsonrpc: "2.0", id, result: { prompts: [] } };
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        prompts: [
+          {
+            name: "zerodrive-help",
+            description: "Load the built-in ZeroDrive Vault Skill & Help guide (how to save text, images, PDFs, videos, ZIPs, and reusable skills)."
+          },
+          {
+            name: "zerodrive-doctor",
+            description: "Run a health check and diagnostic on the ZeroDrive vault connection and capabilities."
+          },
+          {
+            name: "save-skill",
+            description: "Package and save a reusable Agent Skill to _SKILLS/<verb-noun-name>/SKILL.md in the ZeroDrive vault.",
+            arguments: [
+              { name: "name", description: "Skill name in verb-noun format (e.g. create-substack-articles)", required: true }
+            ]
+          }
+        ]
+      }
+    };
+  }
+
+  if (method === "prompts/get") {
+    const promptName = params?.name || "zerodrive-help";
+    if (promptName === "zerodrive-doctor") {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          description: "ZeroDrive Vault Doctor & Diagnostics",
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: "Call the `run_vault_doctor` tool now to verify our ZeroDrive vault connection, inspect the root folders and _SKILLS directory, and confirm binary/video/zip upload readiness."
+              }
+            }
+          ]
+        }
+      };
+    }
+    if (promptName === "save-skill") {
+      const sName = params?.arguments?.name || "create-example-workflow";
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          description: `Save skill ${sName} to ZeroDrive _SKILLS/`,
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: `Use the \`save_skill\` tool to save the skill "${sName}" into \`_SKILLS/${sName}/SKILL.md\`. Follow the ZeroDrive naming rule: lowercase hyphenated verb-noun, no grand nouns (forge, engine, system, suite, hub, nexus, matrix, factory, mastery, ultimate, pro, 2.0).\n\n${BUILTIN_SKILL_MD}`
+              }
+            }
+          ]
+        }
+      };
+    }
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        description: "ZeroDrive Built-In Skill & Help Guide",
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: BUILTIN_SKILL_MD
+            }
+          }
+        ]
+      }
+    };
   }
 
   if (method === "logging/setLevel") {
@@ -1261,6 +1453,129 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: JSON.stringify({ path: args.path || "/", fileCount: count, totalBytes, sizeFormatted: `${(totalBytes / (1024*1024*1024)).toFixed(2)} GB` }, null, 2) }] }
+        };
+      }
+
+      if (toolName === "save_skill") {
+        let skillName = String(args.name || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9-]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+        if (!skillName) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: "Provide a valid skill name (e.g. 'create-substack-articles')." }] }
+          };
+        }
+        const bannedWords = ["forge", "engine", "system", "suite", "hub", "nexus", "matrix", "factory", "mastery", "ultimate", "pro", "2-0"];
+        const usedBanned = bannedWords.filter(w => skillName.split("-").includes(w));
+        if (usedBanned.length > 0) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              isError: true,
+              content: [{
+                type: "text",
+                text: `Skill name '${skillName}' contains banned buzzword(s): ${usedBanned.join(", ")}. Rename using plain verb-noun format (e.g. 'create-substack-articles', 'research-youtube-topics').`
+              }]
+            }
+          };
+        }
+
+        const desc = String(args.description || "Reusable ZeroDrive agent skill.").trim();
+        let bodyMd = String(args.instructions || "").trim();
+        if (!bodyMd.startsWith("---")) {
+          bodyMd = `---\nname: ${skillName}\ndescription: ${desc.replace(/\n+/g, " ")}\n---\n\n${bodyMd}\n`;
+        }
+
+        const skillFolder = `_SKILLS/${skillName}`;
+        const skillMdKey = `${userPrefix}/${skillFolder}/SKILL.md`;
+        await env.VAULT_BUCKET.put(skillMdKey, bodyMd, {
+          httpMetadata: { contentType: "text/markdown; charset=utf-8" }
+        });
+
+        const savedFiles = [`${skillFolder}/SKILL.md`];
+        if (Array.isArray(args.files)) {
+          for (const f of args.files) {
+            const rel = String(f?.relative_path || "").replace(/^\/+/, "");
+            if (!rel) continue;
+            const fileSubpath = `${skillFolder}/${rel}`;
+            const fileKey = `${userPrefix}/${fileSubpath}`;
+            const fileMime = guessMimeType(fileSubpath);
+
+            if (f.source_url) {
+              const resp = await fetch(String(f.source_url));
+              if (resp.ok) {
+                const buf = await resp.arrayBuffer();
+                await env.VAULT_BUCKET.put(fileKey, buf, {
+                  httpMetadata: { contentType: resp.headers.get("content-type") || fileMime }
+                });
+                savedFiles.push(fileSubpath);
+              }
+            } else if (f.content_base64) {
+              const bytes = base64ToBytes(f.content_base64);
+              await env.VAULT_BUCKET.put(fileKey, bytes, {
+                httpMetadata: { contentType: fileMime }
+              });
+              savedFiles.push(fileSubpath);
+            } else if (f.content !== undefined) {
+              await env.VAULT_BUCKET.put(fileKey, String(f.content), {
+                httpMetadata: { contentType: fileMime }
+              });
+              savedFiles.push(fileSubpath);
+            }
+          }
+        }
+
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                ok: true,
+                skill: skillName,
+                folder: skillFolder,
+                saved_files: savedFiles
+              }, null, 2)
+            }]
+          }
+        };
+      }
+
+      if (toolName === "run_vault_doctor" || toolName === "get_vault_help" || toolName === "vault_doctor") {
+        const rootListing = await listDirectoryComplete(env, `${userPrefix}/`, 5);
+        const skillsListing = await listDirectoryComplete(env, `${userPrefix}/_SKILLS/`, 5);
+        const report = {
+          status: "healthy",
+          domain: "api.zerodrive.dev",
+          canonical_mcp_url: `${CANONICAL_ORIGIN}/mcp`,
+          tenant_vault_prefix: userPrefix,
+          root_folders: rootListing.dirs,
+          root_files: rootListing.files.map(f => f.name),
+          installed_skills_count: skillsListing.dirs.length + skillsListing.files.length,
+          installed_skills_sample: skillsListing.dirs.slice(0, 20),
+          capabilities: {
+            text_and_code: "write_file, read_file, edit_file, grep_vault",
+            images_and_pdfs: "upload_binary_file (base64 or source_url), create_upload_urls, read_file",
+            videos_and_audio: "create_upload_urls (streams MP4/MOV/WebM/MP3/WAV up to 5GB directly via HTTP PUT) or upload_binary_file (source_url)",
+            zip_and_archives: "create_upload_urls or upload_binary_file (.zip, .tar.gz, .7z, .dmg)",
+            agent_skills: "save_skill (saves directly to _SKILLS/<verb-noun-name>/SKILL.md + bundled scripts/zips)"
+          }
+        };
+
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [
+              { type: "text", text: `## ZeroDrive Vault Doctor Report\n\`\`\`json\n${JSON.stringify(report, null, 2)}\n\`\`\`\n\n${BUILTIN_SKILL_MD}` }
+            ]
+          }
         };
       }
 
@@ -2296,6 +2611,36 @@ export default {
           return new Response("Missing ?path= parameter", { status: 400, headers: corsHeaders });
         }
         targetKey = `${auth.userPrefix}/${targetPath}`;
+      }
+
+      const rangeHeader = request.headers.get("Range");
+      if (request.method === "GET" && rangeHeader) {
+        const headObj = await env.VAULT_BUCKET.head(targetKey);
+        if (!headObj) {
+          return new Response("File not found", { status: 404, headers: corsHeaders });
+        }
+        const parsedRange = parseRangeHeader(rangeHeader, headObj.size);
+        if (parsedRange) {
+          const obj = await env.VAULT_BUCKET.get(targetKey, {
+            range: { offset: parsedRange.offset, length: parsedRange.length }
+          });
+          if (!obj) {
+            return new Response("File not found", { status: 404, headers: corsHeaders });
+          }
+          const mimeType = obj.httpMetadata?.contentType || guessMimeType(targetPath);
+          const fileName = targetPath.split("/").pop() || "download";
+          return new Response(obj.body, {
+            status: 206,
+            headers: {
+              ...corsHeaders,
+              "Content-Type": mimeType,
+              "Content-Length": String(parsedRange.length),
+              "Content-Range": `bytes ${parsedRange.start}-${parsedRange.end}/${headObj.size}`,
+              "Accept-Ranges": "bytes",
+              "Content-Disposition": `inline; filename="${fileName.replace(/"/g, "")}"`
+            }
+          });
+        }
       }
 
       const obj = request.method === "HEAD"
