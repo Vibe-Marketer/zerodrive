@@ -862,6 +862,57 @@ function handleOpenIDConfiguration(url, corsHeaders) {
   });
 }
 
+async function handleOAuthRegister(request, env, url, corsHeaders) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  let body = {};
+  if (request.method === "POST") {
+    try {
+      body = await request.json();
+    } catch {
+      try {
+        const text = await request.text();
+        body = JSON.parse(text);
+      } catch {}
+    }
+  }
+
+  const clientName = body.client_name || "Agent Connector";
+  const redirectUris = Array.isArray(body.redirect_uris) && body.redirect_uris.length > 0
+    ? body.redirect_uris
+    : [`${url.origin}/auth/callback`];
+
+  const now = Math.floor(Date.now() / 1000);
+  const clientSeed = `${clientName}:${redirectUris.join(",")}:${env.GOOGLE_CLIENT_SECRET || "zd_secret"}`;
+  const clientId = `zd_client_${(await sha256Hex(clientSeed)).slice(0, 24)}`;
+  const clientSecret = `zd_secret_${(await sha256Hex(clientSeed + ":sec")).slice(0, 32)}`;
+
+  const responsePayload = {
+    client_id: clientId,
+    client_secret: clientSecret,
+    client_id_issued_at: now,
+    client_secret_expires_at: 0,
+    client_name: clientName,
+    redirect_uris: redirectUris,
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: body.token_endpoint_auth_method || "client_secret_post",
+    scope: "mcp vault:read vault:write",
+  };
+
+  return new Response(JSON.stringify(responsePayload, null, 2), {
+    status: 201,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+    },
+  });
+}
+
 async function handleOAuthToken(request, env, url, corsHeaders) {
   if (request.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -1343,7 +1394,12 @@ export default {
       return handleOpenIDConfiguration(url, corsHeaders);
     }
 
-    // 0b. OAuth 2.0 Authorization Endpoint
+    // 0b. OAuth 2.0 Dynamic Client Registration (RFC 7591)
+    if (url.pathname === "/oauth/register" || url.pathname === "/register") {
+      return handleOAuthRegister(request, env, url, corsHeaders);
+    }
+
+    // 0c. OAuth 2.0 Authorization Endpoint
     if (
       url.pathname === "/oauth/authorize" ||
       url.pathname === "/authorize" ||
