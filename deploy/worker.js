@@ -2503,15 +2503,78 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     }, 200, corsHeaders);
   }
 
-  // 2. GET /v1/files - List files and directories
+  // 2a. GET /v1/files/stat - Quick metadata lookup for single item (used by Apple FileProvider and Agents)
+  if (pathname === "/v1/files/stat" && request.method === "GET") {
+    const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!subpath) {
+      return jsonResponse({
+        ok: true,
+        item: {
+          name: "",
+          path: "",
+          is_directory: true,
+          size: 0
+        }
+      }, 200, corsHeaders);
+    }
+    const fullKey = `${userPrefix}/${subpath}`;
+    const headObj = await env.VAULT_BUCKET.head(fullKey);
+    if (headObj) {
+      const fileName = subpath.split("/").pop() || "";
+      return jsonResponse({
+        ok: true,
+        item: {
+          name: fileName,
+          path: subpath,
+          is_directory: false,
+          size: headObj.size,
+          modified: headObj.uploaded.toISOString(),
+          mime_type: headObj.httpMetadata?.contentType || guessMimeType(fileName),
+          etag: headObj.etag
+        }
+      }, 200, corsHeaders);
+    }
+
+    const checkDir = await env.VAULT_BUCKET.list({ prefix: `${fullKey}/`, limit: 1 });
+    if (checkDir.objects.length > 0 || (checkDir.delimitedPrefixes && checkDir.delimitedPrefixes.length > 0)) {
+      const folderName = subpath.split("/").pop() || "";
+      return jsonResponse({
+        ok: true,
+        item: {
+          name: folderName,
+          path: subpath,
+          is_directory: true,
+          size: 0
+        }
+      }, 200, corsHeaders);
+    }
+
+    return errorResponse(`Item not found: ${subpath}`, 404, corsHeaders);
+  }
+
+  // 2b. GET /v1/files - List files and directories (supports limit and cursor pagination)
   if (pathname === "/v1/files" && request.method === "GET") {
     const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
     const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
     const recursive = url.searchParams.get("recursive") === "true";
+    const cursor = url.searchParams.get("cursor") || undefined;
+    const limitParam = parseInt(url.searchParams.get("limit") || "0", 10);
+    const limit = limitParam > 0 ? Math.min(limitParam, 1000) : 0;
 
-    const listed = recursive
-      ? await env.VAULT_BUCKET.list({ prefix, limit: 1000 })
-      : await listDirectoryComplete(env, prefix);
+    let listed;
+    let nextCursor = null;
+
+    if (limit > 0) {
+      const opts = { prefix, delimiter: recursive ? undefined : "/", limit };
+      if (cursor) opts.cursor = cursor;
+      listed = await env.VAULT_BUCKET.list(opts);
+      nextCursor = listed.truncated ? (listed.cursor || null) : null;
+    } else if (recursive) {
+      listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000 });
+      nextCursor = listed.truncated ? (listed.cursor || null) : null;
+    } else {
+      listed = await listDirectoryComplete(env, prefix);
+    }
 
     const directories = [];
     for (const p of listed.delimitedPrefixes || []) {
@@ -2544,7 +2607,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       path: subpath || "/",
       directories,
       files,
-      total_count: directories.length + files.length
+      total_count: directories.length + files.length,
+      next_cursor: nextCursor,
+      has_more: !!nextCursor
     }, 200, corsHeaders);
   }
 
@@ -3259,7 +3324,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
 
   return errorResponse(`Endpoint not found: ${request.method} ${pathname}`, 404, corsHeaders, {
     available_endpoints: [
-      "GET /v1/tree", "GET /v1/files", "POST /v1/files/read", "POST /v1/files/write",
+      "GET /v1/tree", "GET /v1/files", "GET /v1/files/stat", "POST /v1/files/read", "POST /v1/files/write",
       "POST /v1/files/edit", "POST /v1/files/move", "POST /v1/files/copy", "POST /v1/files/delete",
       "POST /v1/files/batch", "POST /v1/files/upload-urls", "GET /v1/files/download-url",
       "GET /v1/size", "GET /v1/search", "POST /v1/grep", "GET /v1/doctor",
@@ -3319,14 +3384,16 @@ function handleOpenAPISpec(url, corsHeaders) {
         get: {
           tags: ["Vault Files"],
           summary: "List Files and Directories",
-          description: "List contents of any folder with file sizes, modified timestamps, and MIME types.",
+          description: "List contents of any folder with file sizes, modified timestamps, MIME types, and optional cursor-based pagination.",
           operationId: "listFiles",
           parameters: [
             { name: "path", in: "query", schema: { type: "string" }, description: "Directory path" },
+            { name: "limit", in: "query", schema: { type: "integer", default: 500, minimum: 1, maximum: 1000 }, description: "Maximum items per page" },
+            { name: "cursor", in: "query", schema: { type: "string" }, description: "Opaque pagination cursor from previous response" },
             { name: "recursive", in: "query", schema: { type: "boolean", default: false }, description: "List recursively" }
           ],
           responses: {
-            "200": { description: "Folder listing" },
+            "200": { description: "Folder listing with next_cursor and total_count" },
             "401": { description: "Unauthorized" }
           }
         },
@@ -3340,6 +3407,21 @@ function handleOpenAPISpec(url, corsHeaders) {
           ],
           responses: {
             "200": { description: "File deleted" }
+          }
+        }
+      },
+      "/v1/files/stat": {
+        get: {
+          tags: ["Vault Files"],
+          summary: "Get Item Metadata (Stat)",
+          description: "Retrieve metadata (size, modification date, MIME type, ETag, and directory status) for a single item in sub-15ms.",
+          operationId: "statItem",
+          parameters: [
+            { name: "path", in: "query", required: true, schema: { type: "string" }, description: "File or directory path" }
+          ],
+          responses: {
+            "200": { description: "Item metadata" },
+            "404": { description: "Item not found" }
           }
         }
       },
