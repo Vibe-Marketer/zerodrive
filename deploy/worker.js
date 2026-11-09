@@ -468,9 +468,9 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
 
   const acceptHeader = request.headers.get("Accept") || "";
 
-  // If opened directly in browser or as a GET request without token, redirect straight to OAuth login
+  // If opened directly in browser or as a GET/HEAD request without token, redirect straight to OAuth login
   const hasToken = request.headers.get("Authorization") || url.searchParams.get("key") || url.searchParams.get("token");
-  if (!hasToken && (request.method === "GET" || acceptHeader.includes("text/html"))) {
+  if (!hasToken && (request.method === "GET" || request.method === "HEAD" || acceptHeader.includes("text/html"))) {
     return Response.redirect(`${url.origin}/login`, 302);
   }
 
