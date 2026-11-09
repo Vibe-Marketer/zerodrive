@@ -398,12 +398,12 @@ function authenticateMCPRequest(request, env, url) {
   // Check master vault key or user-specific prefix
   const masterKey = env.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
   if (token.startsWith("zd_oauth_") || token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew")) {
-    return { ok: true, userPrefix: "usr_andrew_8bc7fb477f" };
+    return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
   }
 
   if (token.startsWith("usr_")) {
     const clean = token.replace(/[^a-zA-Z0-9_]/g, "");
-    return { ok: true, userPrefix: clean };
+    return { ok: true, userPrefix: `tenants/${clean}/${clean}` };
   }
 
   return { ok: false, error: "Invalid ZeroDrive API key." };
