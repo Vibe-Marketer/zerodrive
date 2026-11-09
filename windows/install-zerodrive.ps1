@@ -57,14 +57,14 @@ Write-Host "[Auth] API Token stored in User Environment." -ForegroundColor Green
 # 2. Setup Sync Root Directory
 $SyncRoot = [System.IO.Path]::GetFullPath($SyncRoot)
 if (-not (Test-Path -LiteralPath $SyncRoot)) {
-    New-Item -ItemType Directory -LiteralPath $SyncRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $SyncRoot -Force | Out-Null
 }
 Write-Host "[Folder] ZeroDrive sync folder ready: $SyncRoot" -ForegroundColor Green
 
 # 3. Setup Script Installation Directory
 $AppDir = "$env:LOCALAPPDATA\ZeroDrive"
 if (-not (Test-Path -LiteralPath $AppDir)) {
-    New-Item -ItemType Directory -LiteralPath $AppDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 }
 
 $CurrentScriptDir = $PSScriptRoot
