@@ -747,6 +747,100 @@ function handleOAuthProtectedResource(url, corsHeaders) {
   });
 }
 
+function handleOpenAPISpec(url, corsHeaders) {
+  const origin = url.origin;
+  const spec = {
+    openapi: "3.1.0",
+    info: {
+      title: "ZeroDrive Vault MCP API",
+      description: "Hosted 24/7 ZeroDrive Cloud Vault MCP Server with native OAuth 2.0 authentication.",
+      version: "1.0.0"
+    },
+    servers: [{ url: origin }],
+    paths: {
+      "/mcp": {
+        post: {
+          summary: "ZeroDrive MCP JSON-RPC 2.0 Endpoint",
+          operationId: "executeMCP",
+          security: [{ OAuth2: ["mcp", "vault:read", "vault:write"] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    jsonrpc: { type: "string", example: "2.0" },
+                    id: { type: "string", example: "1" },
+                    method: { type: "string", example: "tools/list" },
+                    params: { type: "object" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "MCP response" },
+            "401": { description: "OAuth 2.0 token required" }
+          }
+        }
+      }
+    },
+    components: {
+      securitySchemes: {
+        OAuth2: {
+          type: "oauth2",
+          description: "ZeroDrive OAuth 2.0 flow",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: `${origin}/oauth/authorize`,
+              tokenUrl: `${origin}/oauth/token`,
+              scopes: {
+                mcp: "Full MCP agent vault access",
+                "vault:read": "Read files in vault",
+                "vault:write": "Write files in vault"
+              }
+            }
+          }
+        }
+      }
+    },
+    security: [{ OAuth2: ["mcp", "vault:read", "vault:write"] }]
+  };
+  return new Response(JSON.stringify(spec, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" }
+  });
+}
+
+function handleAIPluginManifest(url, corsHeaders) {
+  const origin = url.origin;
+  const manifest = {
+    schema_version: "v1",
+    name_for_model: "zerodrive",
+    name_for_human: "ZeroDrive",
+    description_for_model: "Access, read, write, and search files inside the ZeroDrive cloud vault 24/7.",
+    description_for_human: "Connect directly to your ZeroDrive Cloud Vault.",
+    auth: {
+      type: "oauth",
+      client_url: `${origin}/oauth/authorize`,
+      scope: "mcp vault:read vault:write",
+      authorization_url: `${origin}/oauth/token`,
+      authorization_content_type: "application/x-www-form-urlencoded",
+      verification_tokens: {}
+    },
+    api: {
+      type: "openapi",
+      url: `${origin}/openapi.json`
+    },
+    logo_url: `${origin}/app-icon.png`,
+    contact_email: "naegele412@gmail.com",
+    legal_info_url: "https://zerodrive.dev"
+  };
+  return new Response(JSON.stringify(manifest, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" }
+  });
+}
+
 function handleOpenIDConfiguration(url, corsHeaders) {
   const origin = url.origin;
   const config = {
@@ -1229,7 +1323,13 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & RFC 9728 & OIDC)
+    // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & RFC 9728 & OIDC & OpenAPI)
+    if (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json") {
+      return handleOpenAPISpec(url, corsHeaders);
+    }
+    if (url.pathname === "/.well-known/ai-plugin.json") {
+      return handleAIPluginManifest(url, corsHeaders);
+    }
     if (
       url.pathname === "/.well-known/oauth-protected-resource" ||
       url.pathname === "/.well-known/oauth-protected-resource/mcp"
