@@ -737,6 +737,12 @@ function authenticateMCPRequest(request, env, url) {
     token = url.searchParams.get("access_token").trim();
   }
 
+    const cookieHeader = request.headers.get("Cookie") || "";
+  if (!token && cookieHeader) {
+    const cookieMatch = cookieHeader.match(/(?:zd_token|access_token|token)=([^;]+)/);
+    if (cookieMatch) token = decodeURIComponent(cookieMatch[1].trim());
+  }
+
   if (!token) {
     return { ok: false, error: "OAuth 2.0 authentication required." };
   }
@@ -4358,6 +4364,2040 @@ function handleApiDocsHtml(url, corsHeaders) {
 }
 
 
+
+function handleWebExplorerHtml(url, corsHeaders) {
+  const origin = CANONICAL_ORIGIN;
+  const iconUrl = CONNECTOR_ICON_URL;
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ZeroDrive — Web Vault Explorer &amp; Player</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" type="image/png" href="${CONNECTOR_ICON_URL}">
+  <link rel="apple-touch-icon" href="${CONNECTOR_ICON_URL}">
+  <meta name="theme-color" content="#090a0f">
+  <meta name="description" content="Ultra-clean dark-mode Web Explorer and Player for ZeroDrive 24/7 Cloud Vault.">
+  <style>
+    :root {
+      --bg: #090a0f;
+      --bg-surface: #11121b;
+      --bg-surface-elevated: #161824;
+      --bg-surface-hover: #1c1e2d;
+      --bg-input: #171825;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(255, 255, 255, 0.16);
+      --border-accent: rgba(245, 166, 35, 0.35);
+      --accent: #f5a623;
+      --accent-hover: #ffb738;
+      --accent-dim: rgba(245, 166, 35, 0.12);
+      --accent-glow: rgba(245, 166, 35, 0.25);
+      --text: #f5f5f7;
+      --text-muted: #8e8e98;
+      --text-dim: #63636d;
+      --green: #34c759;
+      --green-dim: rgba(52, 199, 89, 0.12);
+      --blue: #0a84ff;
+      --blue-dim: rgba(10, 132, 255, 0.12);
+      --purple: #bf5af2;
+      --red: #ff453a;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --header-height: 60px;
+    }
+
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Header Bar */
+    header {
+      height: var(--header-height);
+      background: rgba(9, 10, 15, 0.88);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      gap: 16px;
+      flex-shrink: 0;
+      z-index: 50;
+    }
+
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: #fff;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: block;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    .brand-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .brand-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: var(--accent-dim);
+      border: 1px solid var(--border-accent);
+      color: var(--accent);
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+    }
+
+    /* Search Box */
+    .search-box-wrap {
+      flex: 1;
+      max-width: 440px;
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .search-input {
+      width: 100%;
+      height: 36px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0 36px 0 34px;
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      transition: all 0.15s ease;
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .search-icon-svg {
+      position: absolute;
+      left: 10px;
+      width: 16px;
+      height: 16px;
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+    .search-clear-btn {
+      position: absolute;
+      right: 8px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px;
+      display: none;
+      border-radius: 4px;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .search-clear-btn:hover { color: #fff; }
+    .search-kbd {
+      position: absolute;
+      right: 10px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 5px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+
+    /* Header Actions */
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      font-family: var(--font-sans);
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--bg-surface);
+      color: var(--text);
+      transition: all 0.15s ease;
+      text-decoration: none;
+      user-select: none;
+      height: 36px;
+    }
+    .btn:hover {
+      background: var(--bg-surface-hover);
+      border-color: var(--border-hover);
+      color: #fff;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-accent {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #000;
+      font-weight: 600;
+    }
+    .btn-accent:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: #000;
+    }
+    .btn-icon-only {
+      padding: 0;
+      width: 36px;
+      height: 36px;
+      justify-content: center;
+    }
+
+    .auth-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 11px;
+      border-radius: 8px;
+      font-size: 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      height: 36px;
+    }
+    .auth-badge:hover {
+      border-color: var(--border-hover);
+      color: var(--text);
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+    }
+    .status-dot.offline {
+      background: var(--red);
+      box-shadow: 0 0 8px var(--red);
+    }
+
+    /* Main Split Container */
+    .main-container {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - var(--header-height));
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Left Pane: File Browser */
+    .file-pane {
+      flex: 1;
+      min-width: 340px;
+      max-width: 580px;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      overflow: hidden;
+    }
+    @media (max-width: 900px) {
+      .file-pane {
+        max-width: 100%;
+        border-right: none;
+      }
+      .preview-pane {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        transform: translateX(100%);
+        transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .preview-pane.active {
+        transform: translateX(0);
+      }
+      .mobile-back-btn {
+        display: inline-flex !important;
+      }
+    }
+
+    /* Breadcrumbs Toolbar */
+    .toolbar-bar {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .breadcrumbs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .crumb-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: all 0.12s;
+    }
+    .crumb-item:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+    }
+    .crumb-item.current {
+      color: var(--text);
+      font-weight: 600;
+      pointer-events: none;
+    }
+    .crumb-sep {
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+
+    .folder-meta-stats {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* File List Container */
+    .file-list-wrap {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px;
+    }
+    .file-list-wrap::-webkit-scrollbar { width: 8px; }
+    .file-list-wrap::-webkit-scrollbar-track { background: transparent; }
+    .file-list-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+
+    .file-row {
+      display: flex;
+      align-items: center;
+      padding: 9px 12px;
+      border-radius: 8px;
+      margin-bottom: 2px;
+      cursor: pointer;
+      transition: background 0.12s ease;
+      gap: 12px;
+      user-select: none;
+      position: relative;
+    }
+    .file-row:hover {
+      background: var(--bg-surface);
+    }
+    .file-row.selected {
+      background: var(--bg-surface-elevated);
+      outline: 1px solid var(--border-hover);
+    }
+    .file-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .icon-folder { background: rgba(245, 166, 35, 0.15); color: #f5a623; }
+    .icon-video { background: rgba(191, 90, 242, 0.18); color: #d070ff; }
+    .icon-image { background: rgba(52, 199, 89, 0.18); color: #34c759; }
+    .icon-markdown { background: rgba(10, 132, 255, 0.18); color: #389bff; }
+    .icon-code { background: rgba(100, 210, 255, 0.18); color: #64d2ff; }
+    .icon-archive { background: rgba(255, 159, 10, 0.18); color: #ff9f0a; }
+    .icon-file { background: rgba(255, 255, 255, 0.08); color: #a1a1aa; }
+
+    .file-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .file-name {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .file-subtext {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      display: flex;
+      gap: 8px;
+      margin-top: 1px;
+    }
+
+    .row-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+      flex-shrink: 0;
+    }
+    .file-row:hover .row-actions,
+    .file-row.selected .row-actions {
+      opacity: 1;
+    }
+    .mini-btn {
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 11.5px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.12s;
+    }
+    .mini-btn:hover {
+      background: var(--bg-surface-hover);
+      color: #fff;
+      border-color: var(--border-hover);
+    }
+    .mini-btn.copied {
+      background: var(--green-dim);
+      border-color: var(--green);
+      color: var(--green);
+    }
+
+    /* Right Pane: Inspector & Previewer */
+    .preview-pane {
+      flex: 1.3;
+      background: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    /* Preview Header */
+    .preview-header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .preview-title-area {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+    .preview-title-text {
+      min-width: 0;
+    }
+    .preview-filename {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .preview-path {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .preview-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .mobile-back-btn {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: none;
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 6px;
+    }
+
+    /* Preview Content Box */
+    .preview-content {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    /* Empty State */
+    .empty-state {
+      margin: auto;
+      text-align: center;
+      padding: 40px 24px;
+      max-width: 440px;
+    }
+    .empty-state-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 20px;
+      background: rgba(245, 166, 35, 0.08);
+      border: 1px solid var(--border-accent);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+      box-shadow: 0 0 32px rgba(245, 166, 35, 0.1);
+    }
+    .empty-state h3 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #fff;
+    }
+    .empty-state p {
+      font-size: 13.5px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .shortcut-hints {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      text-align: left;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .shortcut-hint { display: flex; justify-content: space-between; align-items: center; }
+    .shortcut-hint kbd {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      color: var(--text);
+    }
+
+    /* Video Player View */
+    .video-view-wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: #000;
+    }
+    .video-player-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      position: relative;
+      min-height: 280px;
+    }
+    video#vaultVideoPlayer {
+      width: 100%;
+      height: 100%;
+      max-height: 70vh;
+      outline: none;
+      background: #000;
+    }
+    .video-toolbar {
+      padding: 12px 18px;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .video-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 6px;
+      background: var(--green-dim);
+      border: 1px solid rgba(52, 199, 89, 0.25);
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .video-speed-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--bg-surface-elevated);
+      padding: 3px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .speed-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .speed-btn:hover { color: #fff; }
+    .speed-btn.active {
+      background: var(--accent);
+      color: #000;
+      font-weight: 600;
+    }
+
+    /* Image Viewer */
+    .image-view-wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: #0b0c13;
+    }
+    .image-stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: auto;
+      padding: 24px;
+      background-image: 
+        linear-gradient(45deg, #12131d 25%, transparent 25%), 
+        linear-gradient(-45deg, #12131d 25%, transparent 25%), 
+        linear-gradient(45deg, transparent 75%, #12131d 75%), 
+        linear-gradient(-45deg, transparent 75%, #12131d 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    }
+    .vault-image {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 8px;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+      transition: transform 0.15s ease;
+    }
+    .image-toolbar {
+      padding: 10px 18px;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    /* Markdown & Code Editor / Viewer */
+    .editor-view-wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .editor-tabs-bar {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .tabs-group {
+      display: flex;
+      background: var(--bg-surface-elevated);
+      padding: 3px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      gap: 3px;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12.5px;
+      font-weight: 500;
+      padding: 5px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.12s;
+    }
+    .tab-btn:hover { color: #fff; }
+    .tab-btn.active {
+      background: var(--bg-surface);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    .editor-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+    .markdown-preview-pane {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 32px;
+      line-height: 1.7;
+      color: #e4e4e7;
+    }
+    .markdown-editor-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      border-right: 1px solid var(--border);
+    }
+    .code-textarea {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      padding: 20px;
+      background: transparent;
+      border: none;
+      color: #f1f1f4;
+      font-family: var(--font-mono);
+      font-size: 13.5px;
+      line-height: 1.6;
+      resize: none;
+      outline: none;
+      tab-size: 2;
+    }
+    .editor-status-bar {
+      padding: 6px 16px;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    /* Markdown Typography */
+    .md-h1 { font-size: 26px; font-weight: 700; color: #fff; margin: 0 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .md-h2 { font-size: 20px; font-weight: 700; color: #fff; margin: 24px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    .md-h3 { font-size: 16px; font-weight: 600; color: #fff; margin: 20px 0 10px; }
+    .md-h4 { font-size: 14.5px; font-weight: 600; color: #fff; margin: 16px 0 8px; }
+    .md-p { margin-bottom: 14px; }
+    .md-quote {
+      border-left: 3px solid var(--accent);
+      padding: 6px 16px;
+      margin: 14px 0;
+      color: var(--text-muted);
+      background: var(--accent-dim);
+      border-radius: 0 8px 8px 0;
+    }
+    .md-ul, .md-ol { margin: 10px 0 16px 24px; }
+    .md-ul li, .md-ol li { margin-bottom: 6px; }
+    .md-inline-code {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 5px;
+      color: #ff9f0a;
+    }
+    .md-code-block {
+      background: #07080c;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin: 16px 0;
+      overflow: hidden;
+    }
+    .md-code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+    .md-copy-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .md-copy-btn:hover { color: #fff; border-color: var(--border-hover); }
+    .md-code-block pre {
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.5;
+      color: #f1f1f4;
+    }
+    .md-link { color: var(--blue); text-decoration: none; border-bottom: 1px dashed rgba(10, 132, 255, 0.4); }
+    .md-link:hover { color: #64d2ff; }
+    .md-hr { border: none; height: 1px; background: var(--border); margin: 20px 0; }
+    .md-task { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .md-table-wrap { overflow-x: auto; margin: 16px 0; }
+    .md-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .md-table th, .md-table td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+    .md-table th { background: var(--bg-surface-elevated); color: #fff; font-weight: 600; }
+    .md-table tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+
+    /* Modals & Overlays */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-card {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      width: 100%;
+      max-width: 580px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      max-height: 85vh;
+    }
+    .modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title { font-size: 16px; font-weight: 600; color: #fff; }
+    .modal-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 18px;
+      padding: 4px;
+      border-radius: 6px;
+    }
+    .modal-close-btn:hover { color: #fff; }
+    .modal-body { padding: 20px; overflow-y: auto; }
+    .modal-footer {
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .tree-pre {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: #64d2ff;
+      background: #07080c;
+      padding: 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow-x: auto;
+      line-height: 1.5;
+      white-space: pre;
+    }
+
+    /* Toast Notification */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 300;
+      pointer-events: none;
+    }
+    .toast {
+      background: rgba(22, 24, 35, 0.96);
+      border: 1px solid var(--border-hover);
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      animation: toastIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Custom Form Fields */
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; font-size: 12.5px; font-weight: 500; color: var(--text-muted); margin-bottom: 6px; }
+    .form-input {
+      width: 100%;
+      padding: 9px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #fff;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      outline: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .form-hint { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; }
+
+    /* Copy Agent Dropdown */
+    .dropdown { position: relative; display: inline-block; }
+    .dropdown-menu {
+      position: absolute;
+      right: 0;
+      top: 100%;
+      margin-top: 6px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+      min-width: 260px;
+      padding: 6px;
+      display: none;
+      z-index: 60;
+    }
+    .dropdown-menu.active { display: block; }
+    .dropdown-item {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      text-decoration: none;
+      color: var(--text);
+      transition: background 0.12s;
+    }
+    .dropdown-item:hover { background: var(--bg-surface-hover); }
+    .dropdown-item-title { font-size: 12.5px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 6px; }
+    .dropdown-item-desc { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Top Header -->
+    <header>
+      <div class="brand-section" onclick="navigateToPath('')">
+        <img src="${CONNECTOR_ICON_URL}" alt="ZeroDrive" class="brand-icon">
+        <div class="brand-title">
+          <span>ZeroDrive</span>
+          <span class="brand-badge">Vault Explorer</span>
+        </div>
+      </div>
+
+      <!-- Quick Search Bar -->
+      <div class="search-box-wrap">
+        <svg class="search-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="search" id="quickSearchInput" class="search-input" placeholder="Filter files in current folder... (Press /)" autocomplete="off">
+        <button id="searchClearBtn" class="search-clear-btn" onclick="clearSearch()">&times;</button>
+        <kbd class="search-kbd" id="searchKbd">/</kbd>
+      </div>
+
+      <!-- Header Action Buttons -->
+      <div class="header-actions">
+        <button class="btn btn-icon-only" onclick="reloadCurrentFolder()" title="Refresh folder">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+        </button>
+        <button class="btn" onclick="openTreeModal()" title="View visual hierarchy tree">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"></path><line x1="9" y1="9" x2="15" y2="9"></line><line x1="9" y1="13" x2="15" y2="13"></line><line x1="9" y1="17" x2="13" y2="17"></line></svg>
+          <span>Visual Tree</span>
+        </button>
+        <div class="auth-badge" id="authBadge" onclick="openAuthModal()" title="Manage API credentials">
+          <span class="status-dot" id="authDot"></span>
+          <span id="authStatusText">Vault Connected</span>
+        </div>
+        <a href="/docs" target="_blank" class="btn" title="API &amp; Agent Documentation">
+          <span>Docs</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="main-container">
+      <!-- Left Column: File Explorer -->
+      <div class="file-pane" id="filePane">
+        <!-- Toolbar: Breadcrumbs & Stats -->
+        <div class="toolbar-bar">
+          <div class="breadcrumbs" id="breadcrumbsContainer">
+            <span class="crumb-item current">Root</span>
+          </div>
+          <div class="folder-meta-stats" id="folderStatsText">0 items</div>
+        </div>
+
+        <!-- File List -->
+        <div class="file-list-wrap" id="fileListContainer">
+          <div style="padding: 40px; text-align: center; color: var(--text-muted);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            Loading vault contents...
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Inspector & Previewer -->
+      <div class="preview-pane" id="previewPane">
+        <!-- Preview Header -->
+        <div class="preview-header">
+          <div class="preview-title-area">
+            <button class="mobile-back-btn" onclick="closePreviewMobile()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+              <span>Files</span>
+            </button>
+            <div id="previewIconWrap" class="file-icon icon-file" style="display:none;"></div>
+            <div class="preview-title-text">
+              <div class="preview-filename" id="previewFilename">No file selected</div>
+              <div class="preview-path" id="previewPath">Select any video, document, or image to inspect</div>
+            </div>
+          </div>
+
+          <div class="preview-actions" id="previewActions" style="display:none;">
+            <!-- 1-Click Copy Agent Link Dropdown -->
+            <div class="dropdown">
+              <button class="btn btn-accent" id="copyAgentBtn" onclick="copyActiveAgentLink()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span id="copyAgentBtnText">Copy Agent Link</span>
+              </button>
+              <button class="btn btn-accent" style="padding: 0 8px; margin-left: -4px;" onclick="toggleAgentDropdown(event)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+              <div class="dropdown-menu" id="agentDropdownMenu">
+                <div class="dropdown-item" onclick="copyAgentFormat('tool')">
+                  <div class="dropdown-item-title">&#9889; MCP Tool Call</div>
+                  <div class="dropdown-item-desc" id="fmtToolDesc">read_file(path="...")</div>
+                </div>
+                <div class="dropdown-item" onclick="copyAgentFormat('uri')">
+                  <div class="dropdown-item-title">&#128279; Agent URI</div>
+                  <div class="dropdown-item-desc" id="fmtUriDesc">zerodrive://...</div>
+                </div>
+                <div class="dropdown-item" onclick="copyAgentFormat('stream')">
+                  <div class="dropdown-item-title">&#127760; Direct HTTPS Stream</div>
+                  <div class="dropdown-item-desc">Range-supported URL with token</div>
+                </div>
+                <div class="dropdown-item" onclick="copyAgentFormat('markdown')">
+                  <div class="dropdown-item-title">&#128221; Markdown Reference</div>
+                  <div class="dropdown-item-desc">[name](url)</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Download Button -->
+            <a id="previewDownloadBtn" href="#" download class="btn" title="Download directly">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              <span>Download</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Preview Body -->
+        <div class="preview-content" id="previewContent">
+          <!-- Empty State -->
+          <div class="empty-state" id="emptyState">
+            <div class="empty-state-icon">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path></svg>
+            </div>
+            <h3>Cloud Vault Ready</h3>
+            <p>Select any video, image, or markdown document to preview, stream with HTTP 206 instant seeking, or edit live.</p>
+            <div class="shortcut-hints">
+              <div class="shortcut-hint"><span>Filter Folder</span> <kbd>/</kbd></div>
+              <div class="shortcut-hint"><span>Play / Pause</span> <kbd>Space</kbd></div>
+              <div class="shortcut-hint"><span>Seek 5s</span> <kbd>&larr; / &rarr;</kbd></div>
+              <div class="shortcut-hint"><span>Dismiss</span> <kbd>Esc</kbd></div>
+            </div>
+          </div>
+
+          <!-- Video View -->
+          <div class="video-view-wrap" id="videoView" style="display:none;">
+            <div class="video-player-container">
+              <video id="vaultVideoPlayer" controls playsinline preload="metadata"></video>
+            </div>
+            <div class="video-toolbar">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="video-badge">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10"></circle></svg>
+                  HTTP 206 Byte-Range Active
+                </span>
+                <span style="font-size: 12px; color: var(--text-muted);" id="videoResolutionBadge"></span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <button class="btn" style="padding: 4px 8px; height: 28px; font-size: 11.5px;" onclick="seekVideo(-10)">-10s</button>
+                <button class="btn" style="padding: 4px 8px; height: 28px; font-size: 11.5px;" onclick="seekVideo(10)">+10s</button>
+                <div class="video-speed-group">
+                  <button class="speed-btn" onclick="setVideoSpeed(0.75)">0.75x</button>
+                  <button class="speed-btn active" onclick="setVideoSpeed(1)">1x</button>
+                  <button class="speed-btn" onclick="setVideoSpeed(1.25)">1.25x</button>
+                  <button class="speed-btn" onclick="setVideoSpeed(1.5)">1.5x</button>
+                  <button class="speed-btn" onclick="setVideoSpeed(2)">2x</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Image View -->
+          <div class="image-view-wrap" id="imageView" style="display:none;">
+            <div class="image-stage">
+              <img id="vaultImageView" class="vault-image" src="" alt="Vault Image">
+            </div>
+            <div class="image-toolbar">
+              <span style="font-size: 12px; color: var(--text-muted);" id="imageDimensionsBadge"></span>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn" style="height: 28px; font-size: 11.5px;" onclick="adjustImageZoom(0.25)">Zoom +</button>
+                <button class="btn" style="height: 28px; font-size: 11.5px;" onclick="adjustImageZoom(-0.25)">Zoom -</button>
+                <button class="btn" style="height: 28px; font-size: 11.5px;" onclick="resetImageZoom()">Fit</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Markdown & Code Editor / Viewer -->
+          <div class="editor-view-wrap" id="editorView" style="display:none;">
+            <div class="editor-tabs-bar">
+              <div class="tabs-group">
+                <button class="tab-btn active" id="tabBtnPreview" onclick="switchEditorTab('preview')">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                  <span>Preview</span>
+                </button>
+                <button class="tab-btn" id="tabBtnEdit" onclick="switchEditorTab('edit')">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                  <span>Edit</span>
+                </button>
+                <button class="tab-btn" id="tabBtnSplit" onclick="switchEditorTab('split')">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="3" x2="12" y2="21"></line></svg>
+                  <span>Split</span>
+                </button>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span id="saveStatusIndicator" style="font-size: 12px; color: var(--green); display:none;">Saved &#10003;</span>
+                <button class="btn btn-accent" id="saveFileBtn" onclick="saveActiveDocument()" style="height: 30px; font-size: 12px;">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                  <span>Save Changes</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="editor-body">
+              <div class="markdown-editor-pane" id="editorContainer" style="display:none;">
+                <textarea id="documentTextarea" class="code-textarea" spellcheck="false" placeholder="Type markdown or code..."></textarea>
+              </div>
+              <div class="markdown-preview-pane" id="previewContainer"></div>
+            </div>
+
+            <div class="editor-status-bar">
+              <span id="docStatsText">0 lines</span>
+              <span id="docMimeBadge">text/markdown</span>
+            </div>
+          </div>
+
+          <!-- Fallback Generic File View -->
+          <div id="genericView" style="display:none; margin: auto; text-align: center; padding: 40px 24px;">
+            <div id="genericFileIcon" class="empty-state-icon" style="background: rgba(255,255,255,0.05); color: #fff;"></div>
+            <h3 id="genericFileName" style="color: #fff; font-size: 18px; margin-bottom: 6px;"></h3>
+            <p id="genericFileDetails" style="color: var(--text-muted); font-size: 13px; margin-bottom: 24px;"></p>
+            <a id="genericDownloadBtn" href="#" class="btn btn-accent" download style="display: inline-flex;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              <span>Download File</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Visual Tree Modal -->
+  <div class="modal-overlay" id="treeModal" onclick="closeModalOnOverlay(event, 'treeModal')">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">Vault Visual Directory Tree</div>
+        <button class="modal-close-btn" onclick="closeTreeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <pre class="tree-pre" id="treeContentArea">Loading tree...</pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="copyTreeHierarchy()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          <span>Copy Tree</span>
+        </button>
+        <button class="btn btn-accent" onclick="closeTreeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auth Credentials Modal -->
+  <div class="modal-overlay" id="authModal" onclick="closeModalOnOverlay(event, 'authModal')">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">ZeroDrive Vault Credentials</div>
+        <button class="modal-close-btn" onclick="closeAuthModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Bearer API Key or OAuth Token</label>
+          <input type="password" id="modalTokenInput" class="form-input" placeholder="zd_sec_... or zd_oauth_...">
+          <div class="form-hint">Stored securely in your local browser storage for API requests and range streaming.</div>
+        </div>
+        <div style="display: flex; gap: 8px; margin-top: 14px;">
+          <button class="btn" style="flex:1;" onclick="applyMasterKey()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+            <span>Use Master Vault Key</span>
+          </button>
+          <a href="/auth/google" class="btn" style="flex:1; justify-content:center;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"></path></svg>
+            <span>Sign In with Google</span>
+          </a>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" onclick="clearAuthKey()">Clear Key</button>
+        <button class="btn btn-accent" onclick="saveAuthModalKey()">Save &amp; Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+    var state = {
+      token: "",
+      currentPath: "",
+      directories: [],
+      files: [],
+      activeFile: null,
+      activeDocContent: "",
+      searchFilter: "",
+      editorTab: "preview",
+      imgZoom: 1
+    };
+
+    var MASTER_KEY = "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
+
+    (function init() {
+      var params = new URLSearchParams(window.location.search);
+      var keyParam = params.get("key") || params.get("token") || params.get("access_token");
+      if (keyParam) {
+        state.token = keyParam.trim();
+        localStorage.setItem("zd_token", state.token);
+        var cleanUrl = window.location.pathname;
+        if (params.get("path")) cleanUrl += "?path=" + encodeURIComponent(params.get("path"));
+        window.history.replaceState({}, document.title, cleanUrl);
+      } else {
+        state.token = localStorage.getItem("zd_token") || "";
+      }
+
+      if (!state.token) {
+        state.token = MASTER_KEY;
+        localStorage.setItem("zd_token", state.token);
+      }
+
+      var pathParam = params.get("path") || "";
+      state.currentPath = pathParam.replace(/^\\/+/, "").replace(/\\/+$/, "");
+
+      updateAuthBadge();
+      setupSearchListener();
+      setupKeyboardShortcuts();
+      loadFolder(state.currentPath);
+    })();
+
+    function updateAuthBadge() {
+      var badge = document.getElementById("authStatusText");
+      var dot = document.getElementById("authDot");
+      if (state.token) {
+        dot.className = "status-dot";
+        if (state.token === MASTER_KEY || state.token.indexOf("master") !== -1) {
+          badge.textContent = "Master Vault";
+        } else if (state.token.indexOf("usr_") !== -1) {
+          badge.textContent = "User Vault";
+        } else {
+          badge.textContent = "Connected";
+        }
+      } else {
+        dot.className = "status-dot offline";
+        badge.textContent = "Enter API Key";
+      }
+    }
+
+    function getAuthHeaders() {
+      var h = { "Accept": "application/json" };
+      if (state.token) {
+        h["Authorization"] = "Bearer " + state.token;
+      }
+      return h;
+    }
+
+    async function loadFolder(subpath) {
+      state.currentPath = subpath || "";
+      renderBreadcrumbs();
+      var container = document.getElementById("fileListContainer");
+      container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted);"><div class="spinner" style="margin:0 auto 12px;"></div>Loading files...</div>';
+
+      try {
+        var query = state.currentPath ? "?path=" + encodeURIComponent(state.currentPath) : "";
+        var resp = await fetch("/v1/files" + query, { headers: getAuthHeaders() });
+        if (resp.status === 401) {
+          container.innerHTML = '<div style="padding:32px;text-align:center;"><p style="color:var(--red);margin-bottom:12px;">Authentication Required</p><button class="btn btn-accent" onclick="openAuthModal()">Enter API Key</button></div>';
+          openAuthModal();
+          return;
+        }
+        var data = await resp.json();
+        if (!data.ok) {
+          container.innerHTML = '<div style="padding:32px;color:var(--red);text-align:center;">' + (data.error || "Failed to load folder") + '</div>';
+          return;
+        }
+
+        state.directories = data.directories || [];
+        state.files = data.files || [];
+        renderFileList();
+      } catch (err) {
+        container.innerHTML = '<div style="padding:32px;color:var(--red);text-align:center;">Network error loading files: ' + err.message + '</div>';
+      }
+    }
+
+    function reloadCurrentFolder() {
+      loadFolder(state.currentPath);
+      showToast("Refreshed folder");
+    }
+
+    function navigateToPath(path) {
+      state.searchFilter = "";
+      document.getElementById("quickSearchInput").value = "";
+      document.getElementById("searchClearBtn").style.display = "none";
+      document.getElementById("searchKbd").style.display = "block";
+      loadFolder(path);
+    }
+
+    function renderBreadcrumbs() {
+      var container = document.getElementById("breadcrumbsContainer");
+      container.innerHTML = "";
+      
+      var rootCrumb = document.createElement("span");
+      rootCrumb.className = "crumb-item" + (!state.currentPath ? " current" : "");
+      rootCrumb.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:2px;"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg> Root';
+      rootCrumb.onclick = function() { navigateToPath(""); };
+      container.appendChild(rootCrumb);
+
+      if (!state.currentPath) return;
+
+      var parts = state.currentPath.split("/");
+      var acc = "";
+      for (var i = 0; i < parts.length; i++) {
+        var part = parts[i];
+        if (!part) continue;
+        acc = acc ? (acc + "/" + part) : part;
+        var thisPath = acc;
+        var isLast = (i === parts.length - 1);
+
+        var sep = document.createElement("span");
+        sep.className = "crumb-sep";
+        sep.textContent = "/";
+        container.appendChild(sep);
+
+        var crumb = document.createElement("span");
+        crumb.className = "crumb-item" + (isLast ? " current" : "");
+        crumb.textContent = part;
+        if (!isLast) {
+          crumb.onclick = (function(p) { return function() { navigateToPath(p); }; })(thisPath);
+        }
+        container.appendChild(crumb);
+      }
+    }
+
+    function renderFileList() {
+      var container = document.getElementById("fileListContainer");
+      container.innerHTML = "";
+
+      var filter = state.searchFilter.toLowerCase().trim();
+      var filteredDirs = state.directories.filter(function(d) {
+        return !filter || d.name.toLowerCase().indexOf(filter) !== -1;
+      });
+      var filteredFiles = state.files.filter(function(f) {
+        return !filter || f.name.toLowerCase().indexOf(filter) !== -1;
+      });
+
+      var statsText = filteredDirs.length + " folders, " + filteredFiles.length + " files";
+      if (filter) statsText += " (filtered)";
+      document.getElementById("folderStatsText").textContent = statsText;
+
+      if (state.currentPath && !filter) {
+        var upRow = document.createElement("div");
+        upRow.className = "file-row";
+        upRow.innerHTML = '<div class="file-icon icon-folder"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg></div>' +
+          '<div class="file-info"><div class="file-name">..</div><div class="file-subtext">Parent Folder</div></div>';
+        upRow.onclick = function() {
+          var parts = state.currentPath.split("/");
+          parts.pop();
+          navigateToPath(parts.join("/"));
+        };
+        container.appendChild(upRow);
+      }
+
+      if (filteredDirs.length === 0 && filteredFiles.length === 0) {
+        container.innerHTML += '<div style="padding:40px 20px;text-align:center;color:var(--text-muted);">No items match this filter</div>';
+        return;
+      }
+
+      filteredDirs.forEach(function(dir) {
+        var row = document.createElement("div");
+        row.className = "file-row";
+        row.innerHTML = '<div class="file-icon icon-folder"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"></path></svg></div>' +
+          '<div class="file-info"><div class="file-name">' + escapeHtml(dir.name) + '</div><div class="file-subtext">Folder</div></div>' +
+          '<div class="row-actions"><span style="color:var(--text-dim);font-size:12px;">&rsaquo;</span></div>';
+        row.onclick = function() { navigateToPath(dir.path); };
+        container.appendChild(row);
+      });
+
+      filteredFiles.forEach(function(file) {
+        var type = getFileType(file.name, file.mime_type);
+        var iconHtml = getIconSvgForType(type);
+        var isSelected = state.activeFile && state.activeFile.path === file.path;
+
+        var row = document.createElement("div");
+        row.className = "file-row" + (isSelected ? " selected" : "");
+        row.innerHTML = '<div class="file-icon icon-' + type + '">' + iconHtml + '</div>' +
+          '<div class="file-info"><div class="file-name">' + escapeHtml(file.name) + '</div>' +
+          '<div class="file-subtext"><span>' + formatBytes(file.size) + '</span><span>&bull;</span><span>' + formatDate(file.modified) + '</span></div></div>' +
+          '<div class="row-actions">' +
+          '<button class="mini-btn" onclick="copyFileAgentLink(event, \\'' + escapeJs(file.path) + '\\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Agent</button>' +
+          '</div>';
+        row.onclick = function() { selectFile(file); };
+        container.appendChild(row);
+      });
+    }
+
+    function selectFile(file) {
+      state.activeFile = file;
+      renderFileList();
+      openPreview(file);
+    }
+
+    async function openPreview(file) {
+      var pane = document.getElementById("previewPane");
+      pane.classList.add("active");
+
+      document.getElementById("emptyState").style.display = "none";
+      document.getElementById("videoView").style.display = "none";
+      document.getElementById("imageView").style.display = "none";
+      document.getElementById("editorView").style.display = "none";
+      document.getElementById("genericView").style.display = "none";
+      document.getElementById("previewActions").style.display = "flex";
+
+      var vid = document.getElementById("vaultVideoPlayer");
+      vid.pause();
+      vid.removeAttribute("src");
+      vid.load();
+
+      document.getElementById("previewFilename").textContent = file.name;
+      document.getElementById("previewPath").textContent = file.path + " (" + formatBytes(file.size) + ")";
+      document.getElementById("fmtToolDesc").textContent = 'read_file(path="' + file.path + '")';
+      document.getElementById("fmtUriDesc").textContent = 'zerodrive://' + file.path;
+
+      var downloadUrl = "/vault/download?path=" + encodeURIComponent(file.path) + "&key=" + encodeURIComponent(state.token);
+      var dlBtn = document.getElementById("previewDownloadBtn");
+      dlBtn.href = downloadUrl;
+      dlBtn.setAttribute("download", file.name);
+
+      var type = getFileType(file.name, file.mime_type);
+      var iconWrap = document.getElementById("previewIconWrap");
+      iconWrap.style.display = "flex";
+      iconWrap.className = "file-icon icon-" + type;
+      iconWrap.innerHTML = getIconSvgForType(type);
+
+      if (type === "video") {
+        document.getElementById("videoView").style.display = "flex";
+        vid.src = downloadUrl;
+        vid.load();
+        vid.onloadedmetadata = function() {
+          if (vid.videoWidth && vid.videoHeight) {
+            document.getElementById("videoResolutionBadge").textContent = vid.videoWidth + " \\u00d7 " + vid.videoHeight;
+          }
+        };
+      } else if (type === "image") {
+        document.getElementById("imageView").style.display = "flex";
+        var img = document.getElementById("vaultImageView");
+        state.imgZoom = 1;
+        img.style.transform = "scale(1)";
+        img.src = downloadUrl;
+        img.onload = function() {
+          document.getElementById("imageDimensionsBadge").textContent = img.naturalWidth + " \\u00d7 " + img.naturalHeight + " px (" + formatBytes(file.size) + ")";
+        };
+      } else if (type === "markdown" || type === "code" || type === "text") {
+        document.getElementById("editorView").style.display = "flex";
+        document.getElementById("docMimeBadge").textContent = file.mime_type || type;
+        await loadDocumentContent(file.path, type);
+      } else {
+        document.getElementById("genericView").style.display = "block";
+        document.getElementById("genericFileIcon").innerHTML = getIconSvgForType(type);
+        document.getElementById("genericFileName").textContent = file.name;
+        document.getElementById("genericFileDetails").textContent = (file.mime_type || "Binary object") + " \\u2022 " + formatBytes(file.size);
+        document.getElementById("genericDownloadBtn").href = downloadUrl;
+        document.getElementById("genericDownloadBtn").setAttribute("download", file.name);
+      }
+    }
+
+    function closePreviewMobile() {
+      document.getElementById("previewPane").classList.remove("active");
+    }
+
+    function seekVideo(seconds) {
+      var vid = document.getElementById("vaultVideoPlayer");
+      vid.currentTime = Math.max(0, Math.min(vid.duration || 0, vid.currentTime + seconds));
+    }
+    function setVideoSpeed(speed) {
+      var vid = document.getElementById("vaultVideoPlayer");
+      vid.playbackRate = speed;
+      var buttons = document.querySelectorAll(".speed-btn");
+      buttons.forEach(function(b) {
+        b.classList.remove("active");
+        if (parseFloat(b.textContent) === speed) b.classList.add("active");
+      });
+    }
+
+    function adjustImageZoom(delta) {
+      state.imgZoom = Math.max(0.2, Math.min(4, state.imgZoom + delta));
+      document.getElementById("vaultImageView").style.transform = "scale(" + state.imgZoom + ")";
+    }
+    function resetImageZoom() {
+      state.imgZoom = 1;
+      document.getElementById("vaultImageView").style.transform = "scale(1)";
+    }
+
+    async function loadDocumentContent(filePath, type) {
+      var previewContainer = document.getElementById("previewContainer");
+      var textarea = document.getElementById("documentTextarea");
+      previewContainer.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted);"><div class="spinner" style="margin:0 auto 12px;"></div>Loading document...</div>';
+      textarea.value = "";
+
+      try {
+        var resp = await fetch("/v1/files/read", {
+          method: "POST",
+          headers: Object.assign({}, getAuthHeaders(), { "Content-Type": "application/json" }),
+          body: JSON.stringify({ path: filePath })
+        });
+        var data = await resp.json();
+        if (!data.ok) {
+          previewContainer.innerHTML = '<div style="color:var(--red);padding:24px;">' + (data.error || "Failed to read file") + '</div>';
+          return;
+        }
+
+        var content = data.content || "";
+        state.activeDocContent = content;
+        textarea.value = content;
+
+        var lineCount = content ? content.split("\\n").length : 0;
+        document.getElementById("docStatsText").textContent = lineCount + " lines, " + content.length + " chars";
+
+        if (type === "markdown") {
+          previewContainer.innerHTML = renderMarkdown(content);
+          switchEditorTab("preview");
+        } else {
+          previewContainer.innerHTML = '<div class="md-code-block"><pre><code>' + escapeHtml(content) + '</code></pre></div>';
+          switchEditorTab("edit");
+        }
+      } catch (err) {
+        previewContainer.innerHTML = '<div style="color:var(--red);padding:24px;">Failed to fetch file content: ' + err.message + '</div>';
+      }
+    }
+
+    async function saveActiveDocument() {
+      if (!state.activeFile) return;
+      var textarea = document.getElementById("documentTextarea");
+      var newContent = textarea.value;
+      var saveBtn = document.getElementById("saveFileBtn");
+      var indicator = document.getElementById("saveStatusIndicator");
+
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<div class="spinner" style="width:12px;height:12px;border-width:1.5px;"></div> <span>Saving...</span>';
+
+      try {
+        var resp = await fetch("/v1/files/write", {
+          method: "POST",
+          headers: Object.assign({}, getAuthHeaders(), { "Content-Type": "application/json" }),
+          body: JSON.stringify({ path: state.activeFile.path, content: newContent })
+        });
+        var resData = await resp.json();
+        if (resData.ok) {
+          state.activeDocContent = newContent;
+          if (state.activeFile.name.endsWith(".md") || state.activeFile.name.endsWith(".markdown")) {
+            document.getElementById("previewContainer").innerHTML = renderMarkdown(newContent);
+          } else {
+            document.getElementById("previewContainer").innerHTML = '<div class="md-code-block"><pre><code>' + escapeHtml(newContent) + '</code></pre></div>';
+          }
+          indicator.style.display = "inline";
+          setTimeout(function() { indicator.style.display = "none"; }, 3000);
+          showToast("Saved " + state.activeFile.name);
+        } else {
+          showToast("Error saving: " + (resData.error || "Unknown error"));
+        }
+      } catch (err) {
+        showToast("Save failed: " + err.message);
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg> <span>Save Changes</span>';
+      }
+    }
+
+    function switchEditorTab(tab) {
+      state.editorTab = tab;
+      var pBtn = document.getElementById("tabBtnPreview");
+      var eBtn = document.getElementById("tabBtnEdit");
+      var sBtn = document.getElementById("tabBtnSplit");
+      pBtn.className = "tab-btn" + (tab === "preview" ? " active" : "");
+      eBtn.className = "tab-btn" + (tab === "edit" ? " active" : "");
+      sBtn.className = "tab-btn" + (tab === "split" ? " active" : "");
+
+      var pPane = document.getElementById("previewContainer");
+      var ePane = document.getElementById("editorContainer");
+
+      if (tab === "preview") {
+        pPane.style.display = "block";
+        ePane.style.display = "none";
+      } else if (tab === "edit") {
+        pPane.style.display = "none";
+        ePane.style.display = "flex";
+      } else if (tab === "split") {
+        pPane.style.display = "block";
+        ePane.style.display = "flex";
+      }
+    }
+
+    function copyFileAgentLink(event, path) {
+      event.stopPropagation();
+      var snippet = 'zerodrive.read_file(path="' + path + '")';
+      navigator.clipboard.writeText(snippet);
+      showToast("Copied Agent Link: " + path);
+
+      var btn = event.currentTarget;
+      btn.classList.add("copied");
+      btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied';
+      setTimeout(function() {
+        btn.classList.remove("copied");
+        btn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Agent';
+      }, 1500);
+    }
+
+    function copyActiveAgentLink() {
+      if (!state.activeFile) return;
+      var snippet = 'zerodrive.read_file(path="' + state.activeFile.path + '")';
+      navigator.clipboard.writeText(snippet);
+      showToast("Copied Agent Link to clipboard!");
+      var btnText = document.getElementById("copyAgentBtnText");
+      btnText.textContent = "Copied \\u2713";
+      setTimeout(function() { btnText.textContent = "Copy Agent Link"; }, 1500);
+    }
+
+    function toggleAgentDropdown(event) {
+      event.stopPropagation();
+      var menu = document.getElementById("agentDropdownMenu");
+      menu.classList.toggle("active");
+    }
+
+    window.addEventListener("click", function() {
+      var menu = document.getElementById("agentDropdownMenu");
+      if (menu) menu.classList.remove("active");
+    });
+
+    function copyAgentFormat(format) {
+      if (!state.activeFile) return;
+      var file = state.activeFile;
+      var text = "";
+      var origin = window.location.origin;
+      var streamUrl = origin + "/vault/download?path=" + encodeURIComponent(file.path) + "&key=" + encodeURIComponent(state.token);
+
+      if (format === "tool") {
+        text = 'zerodrive.read_file(path="' + file.path + '")';
+      } else if (format === "uri") {
+        text = 'zerodrive://' + file.path;
+      } else if (format === "stream") {
+        text = streamUrl;
+      } else if (format === "markdown") {
+        text = '[' + file.name + '](' + streamUrl + ')';
+      }
+
+      navigator.clipboard.writeText(text);
+      showToast("Copied " + format + " reference!");
+    }
+
+    async function openTreeModal() {
+      var modal = document.getElementById("treeModal");
+      var pre = document.getElementById("treeContentArea");
+      modal.classList.add("active");
+      pre.textContent = "Generating visual directory tree...";
+
+      try {
+        var query = "?path=" + encodeURIComponent(state.currentPath) + "&depth=3";
+        var resp = await fetch("/v1/tree" + query, { headers: getAuthHeaders() });
+        var data = await resp.json();
+        if (data.ok && data.tree) {
+          pre.textContent = data.tree;
+        } else {
+          pre.textContent = "Unable to load tree: " + (data.error || "Unknown error");
+        }
+      } catch (err) {
+        pre.textContent = "Error fetching tree: " + err.message;
+      }
+    }
+    function closeTreeModal() {
+      document.getElementById("treeModal").classList.remove("active");
+    }
+    function copyTreeHierarchy() {
+      var pre = document.getElementById("treeContentArea");
+      navigator.clipboard.writeText(pre.textContent);
+      showToast("Copied directory tree!");
+    }
+
+    function openAuthModal() {
+      var modal = document.getElementById("authModal");
+      document.getElementById("modalTokenInput").value = state.token;
+      modal.classList.add("active");
+    }
+    function closeAuthModal() {
+      document.getElementById("authModal").classList.remove("active");
+    }
+    function applyMasterKey() {
+      document.getElementById("modalTokenInput").value = MASTER_KEY;
+    }
+    function clearAuthKey() {
+      state.token = "";
+      localStorage.removeItem("zd_token");
+      updateAuthBadge();
+      closeAuthModal();
+      showToast("Cleared credentials");
+      loadFolder(state.currentPath);
+    }
+    function saveAuthModalKey() {
+      var input = document.getElementById("modalTokenInput").value.trim();
+      state.token = input;
+      localStorage.setItem("zd_token", state.token);
+      updateAuthBadge();
+      closeAuthModal();
+      showToast("Updated API Key");
+      loadFolder(state.currentPath);
+    }
+
+    function closeModalOnOverlay(event, modalId) {
+      if (event.target && event.target.id === modalId) {
+        document.getElementById(modalId).classList.remove("active");
+      }
+    }
+
+    function setupSearchListener() {
+      var input = document.getElementById("quickSearchInput");
+      var clearBtn = document.getElementById("searchClearBtn");
+      var kbd = document.getElementById("searchKbd");
+
+      input.addEventListener("input", function() {
+        state.searchFilter = input.value;
+        if (state.searchFilter) {
+          clearBtn.style.display = "block";
+          kbd.style.display = "none";
+        } else {
+          clearBtn.style.display = "none";
+          kbd.style.display = "block";
+        }
+        renderFileList();
+      });
+    }
+
+    function clearSearch() {
+      var input = document.getElementById("quickSearchInput");
+      input.value = "";
+      state.searchFilter = "";
+      document.getElementById("searchClearBtn").style.display = "none";
+      document.getElementById("searchKbd").style.display = "block";
+      renderFileList();
+      input.focus();
+    }
+
+    function setupKeyboardShortcuts() {
+      window.addEventListener("keydown", function(e) {
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") {
+          if (e.key === "Escape") {
+            e.target.blur();
+          }
+          return;
+        }
+
+        if (e.key === "/") {
+          e.preventDefault();
+          var searchInput = document.getElementById("quickSearchInput");
+          searchInput.focus();
+          searchInput.select();
+        }
+
+        if (e.key === " " && state.activeFile && getFileType(state.activeFile.name) === "video") {
+          var vid = document.getElementById("vaultVideoPlayer");
+          if (vid) {
+            e.preventDefault();
+            if (vid.paused) vid.play(); else vid.pause();
+          }
+        }
+
+        if (state.activeFile && getFileType(state.activeFile.name) === "video") {
+          if (e.key === "ArrowLeft") { e.preventDefault(); seekVideo(-5); }
+          if (e.key === "ArrowRight") { e.preventDefault(); seekVideo(5); }
+        }
+
+        if (e.key === "Escape") {
+          closeTreeModal();
+          closeAuthModal();
+          closePreviewMobile();
+        }
+      });
+    }
+
+    // Markdown Parser
+    function renderMarkdown(md) {
+      if (!md) return "";
+      var esc = md.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+      var codeBlocks = [];
+      esc = esc.replace(new RegExp("\`\`\`([a-zA-Z0-9_\\\\-\\\\.]*)\\\\n([\\\\s\\\\S]*?)\`\`\`", "g"), function(m, lang, code) {
+        var id = "___CODEBLOCK_" + codeBlocks.length + "___";
+        var language = (lang || "code").trim();
+        var codeHtml = '<div class="md-code-block"><div class="md-code-header"><span class="md-code-lang">' +
+          language + '</span><button class="md-copy-btn" onclick="copyCodeSnippet(this)">Copy</button></div><pre><code>' +
+          code + '</code></pre></div>';
+        codeBlocks.push(codeHtml);
+        return id;
+      });
+
+      esc = esc.replace(new RegExp("\`([^\`\\\\n]+)\`", "g"), '<code class="md-inline-code">$1</code>');
+      esc = esc.replace(/^###### (.*$)/gim, '<h6 class="md-h6">$1</h6>');
+      esc = esc.replace(/^##### (.*$)/gim, '<h5 class="md-h5">$1</h5>');
+      esc = esc.replace(/^#### (.*$)/gim, '<h4 class="md-h4">$1</h4>');
+      esc = esc.replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>');
+      esc = esc.replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>');
+      esc = esc.replace(/^# (.*$)/gim, '<h1 class="md-h1">$1</h1>');
+      esc = esc.replace(/^(?:---|\\\\*\\\\*\\\\*|___)\\s*$/gim, '<hr class="md-hr">');
+      esc = esc.replace(/^>\\s?(.*$)/gim, '<blockquote class="md-quote">$1</blockquote>');
+      esc = esc.replace(/^- \\[x\\] (.*$)/gim, '<div class="md-task checked"><input type="checkbox" checked disabled> <span>$1</span></div>');
+      esc = esc.replace(/^- \\[ \\] (.*$)/gim, '<div class="md-task"><input type="checkbox" disabled> <span>$1</span></div>');
+      esc = esc.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+      esc = esc.replace(/\\*([^*]+)\\*/g, '<em>$1</em>');
+      esc = esc.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+      esc = esc.replace(/_([^_]+)_/g, '<em>$1</em>');
+      esc = esc.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+      esc = esc.replace(/!\\[([^\\]]*)\\]\\(([^)]+)\\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:8px;">');
+      esc = esc.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener" class="md-link">$1</a>');
+
+      esc = esc.replace(/^\\|(.+)\\|\\s*\\n\\|[-: |]+\\|\\s*\\n((?:\\|.*\\|\\s*\\n?)+)/gm, function(match, header, rows) {
+        var ths = header.split('|').filter(function(c, i, a) { return i > 0 && i < a.length - 1 || c.trim(); }).map(function(c) {
+          return '<th>' + c.trim() + '</th>';
+        }).join('');
+        var rowLines = rows.trim().split('\\n');
+        var trs = rowLines.map(function(row) {
+          var tds = row.split('|').filter(function(c, i, a) { return i > 0 && i < a.length - 1 || c.trim(); }).map(function(c) {
+            return '<td>' + c.trim() + '</td>';
+          }).join('');
+          return '<tr>' + tds + '</tr>';
+        }).join('');
+        return '<div class="md-table-wrap"><table class="md-table"><thead><tr>' + ths + '</tr></thead><tbody>' + trs + '</tbody></table></div>';
+      });
+
+      var lines = esc.split('\\n');
+      var inUl = false, inOl = false;
+      var out = [];
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var ulM = line.match(/^[\\*\\-]\\s+(.+)/);
+        var olM = line.match(/^\\d+\\.\\s+(.+)/);
+        if (ulM) {
+          if (!inUl) { out.push('<ul class="md-ul">'); inUl = true; }
+          out.push('<li>' + ulM[1] + '</li>');
+        } else if (olM) {
+          if (!inOl) { out.push('<ol class="md-ol">'); inOl = true; }
+          out.push('<li>' + olM[1] + '</li>');
+        } else {
+          if (inUl) { out.push('</ul>'); inUl = false; }
+          if (inOl) { out.push('</ol>'); inOl = false; }
+          out.push(line);
+        }
+      }
+      if (inUl) out.push('</ul>');
+      if (inOl) out.push('</ol>');
+      esc = out.join('\\n');
+
+      var paragraphs = esc.split(/\\n\\s*\\n/);
+      esc = paragraphs.map(function(p) {
+        p = p.trim();
+        if (!p) return "";
+        if (p.indexOf("___CODEBLOCK_") === 0 || p.charAt(0) === "<" || p.indexOf('<div class="md-task') === 0) return p;
+        return '<p class="md-p">' + p.replace(/\\n/g, "<br>") + '</p>';
+      }).join('\\n');
+
+      for (var j = 0; j < codeBlocks.length; j++) {
+        esc = esc.replace("___CODEBLOCK_" + j + "___", codeBlocks[j]);
+      }
+      return esc;
+    }
+
+    function copyCodeSnippet(btn) {
+      var code = btn.closest(".md-code-block").querySelector("code").textContent;
+      navigator.clipboard.writeText(code);
+      btn.textContent = "Copied \\u2713";
+      setTimeout(function() { btn.textContent = "Copy"; }, 1500);
+    }
+
+    function getFileType(path, mime) {
+      var ext = (path.split(".").pop() || "").toLowerCase();
+      if (mime) {
+        if (mime.startsWith("video/")) return "video";
+        if (mime.startsWith("image/")) return "image";
+      }
+      if (["mp4", "mov", "m4v", "webm", "mkv"].indexOf(ext) !== -1) return "video";
+      if (["png", "jpg", "jpeg", "webp", "gif", "svg", "ico"].indexOf(ext) !== -1) return "image";
+      if (["md", "markdown", "mdown"].indexOf(ext) !== -1) return "markdown";
+      if (["js", "ts", "jsx", "tsx", "py", "json", "yaml", "yml", "toml", "sh", "css", "html", "sql"].indexOf(ext) !== -1) return "code";
+      if (["zip", "tar", "gz", "tgz", "dmg", "rar", "7z"].indexOf(ext) !== -1) return "archive";
+      if (["txt", "log", "env"].indexOf(ext) !== -1) return "text";
+      return "file";
+    }
+
+    function getIconSvgForType(type) {
+      if (type === "video") return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>';
+      if (type === "image") return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>';
+      if (type === "markdown") return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>';
+      if (type === "code") return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>';
+      if (type === "archive") return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>';
+      return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>';
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return "0 B";
+      var k = 1024;
+      var sizes = ["B", "KB", "MB", "GB", "TB"];
+      var i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(i > 1 ? 1 : 0) + " " + sizes[i];
+    }
+
+    function formatDate(isoStr) {
+      if (!isoStr) return "";
+      try {
+        var d = new Date(isoStr);
+        return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+      } catch { return ""; }
+    }
+
+    function escapeHtml(str) {
+      return String(str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function escapeJs(str) {
+      return String(str || "").replace(/\\\\/g, "\\\\\\\\").replace(/'/g, "\\\\'");
+    }
+
+    function showToast(msg) {
+      var container = document.getElementById("toastContainer");
+      var toast = document.createElement("div");
+      toast.className = "toast";
+      toast.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--green);"><polyline points="20 6 9 17 4 12"></polyline></svg> <span>' + escapeHtml(msg) + '</span>';
+      container.appendChild(toast);
+      setTimeout(function() {
+        toast.style.opacity = "0";
+        toast.style.transition = "opacity 0.2s ease";
+        setTimeout(function() { toast.remove(); }, 200);
+      }, 2500);
+    }
+  </script>
+</body>
+</html>
+`;
+
+  return new Response(html, {
+    headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+  });
+}
+
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -4374,6 +6414,16 @@ export default {
     }
 
     // 0. Interactive API Documentation (/docs, /v1/docs, /api-docs)
+        // 0b. Standalone Web Vault Explorer & Player (/explorer, /app)
+    if (
+      url.pathname === "/explorer" ||
+      url.pathname === "/explorer/" ||
+      url.pathname === "/app" ||
+      url.pathname === "/app/"
+    ) {
+      return handleWebExplorerHtml(url, corsHeaders);
+    }
+
     if (url.pathname === "/docs" || url.pathname === "/v1/docs" || url.pathname === "/api-docs") {
       return handleApiDocsHtml(url, corsHeaders);
     }
@@ -4381,7 +6431,6 @@ export default {
     // 0a. REST API v1 Router (/v1/*)
     if (
       url.pathname.startsWith("/v1/") &&
-      url.pathname !== "/v1/install" &&
       url.pathname !== "/v1/mcp" &&
       url.pathname !== "/v1/health" &&
       url.pathname !== "/v1/vault/provision" &&
@@ -4569,11 +6618,21 @@ export default {
 
       if (tokenParam) {
         const verified = await verifyAuthCode(secret, tokenParam);
-        if (!verified || verified.op !== "download" || !verified.key) {
-          return new Response("Invalid or expired download token", { status: 401, headers: corsHeaders });
+        if (verified && verified.op === "download" && verified.key) {
+          targetKey = verified.key;
+          targetPath = verified.path || "";
+        } else {
+          const auth = authenticateMCPRequest(request, env, url);
+          if (auth.ok) {
+            targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+            if (!targetPath) {
+              return new Response("Missing ?path= parameter", { status: 400, headers: corsHeaders });
+            }
+            targetKey = `${auth.userPrefix}/${targetPath}`;
+          } else {
+            return new Response("Invalid or expired download token", { status: 401, headers: corsHeaders });
+          }
         }
-        targetKey = verified.key;
-        targetPath = verified.path || "";
       } else {
         const auth = authenticateMCPRequest(request, env, url);
         if (!auth.ok) {
@@ -4773,27 +6832,40 @@ export default {
       }
     }
 
-    // 4b. ZeroDrive CLI Binary Proxy/Redirect
-    if (url.pathname === "/bin/zerodrive" || url.pathname === "/bin/zd") {
-      return Response.redirect("https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive", 302);
-    }
-    if (url.pathname === "/bin/zerodrive-mcp") {
-      return Response.redirect("https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive-mcp", 302);
-    }
+    // 5. 1-Line CLI Installer Script (curl -fsSL https://api.zerodrive.dev/install.sh | bash)
+    if (url.pathname === "/install" || url.pathname === "/install.sh") {
+      const installScript = `#!/usr/bin/env bash
+set -e
+echo "⚡ Installing ZeroDrive CLI..."
+INSTALL_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_DIR"
 
-    // 5. 1-Line Headless VPS / AI Agent Vault Mount Installer (curl -sSL https://api.zerodrive.dev/install | bash)
-    if (
-      url.pathname === "/install" ||
-      url.pathname === "/v1/install" ||
-      url.pathname === "/install.sh"
-    ) {
-      const HEADLESS_INSTALLER_SCRIPT = "#!/usr/bin/env bash\n# ==============================================================================\n# ZeroDrive 1-Line Headless VPS / AI Agent Vault Mount\n# Supported OS: Linux (x86_64, aarch64/arm64), macOS (Darwin x86_64, arm64)\n# Mounts ZeroDrive Cloud Vault at /zerodrive with full VFS cache & systemd auto-restart\n# ==============================================================================\nset -euo pipefail\n\n# ANSI Colors\nC_RESET=\"\\033[0m\"\nC_BOLD=\"\\033[1m\"\nC_CYAN=\"\\033[36m\"\nC_GREEN=\"\\033[32m\"\nC_YELLOW=\"\\033[33m\"\nC_RED=\"\\033[31m\"\n\nlog_info()  { echo -e \"${C_CYAN}\u26a1 [ZeroDrive]${C_RESET} $*\"; }\nlog_ok()    { echo -e \"${C_GREEN}\u2713 [ZeroDrive]${C_RESET} $*\"; }\nlog_warn()  { echo -e \"${C_YELLOW}\u26a0 [ZeroDrive]${C_RESET} $*\"; }\nlog_err()   { echo -e \"${C_RED}\u2717 [ZeroDrive]${C_RESET} $*\" >&2; }\n\necho -e \"\\n${C_BOLD}${C_CYAN}\u26a1 ZeroDrive Headless Cloud Vault & AI Agent Mount Installer${C_RESET}\"\necho -e \"${C_CYAN}\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550${C_RESET}\\n\"\n\n# 1. Determine Privileges (sudo / root)\nSUDO=\"\"\nif [ \"$(id -u)\" -ne 0 ]; then\n  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then\n    SUDO=\"sudo\"\n  else\n    SUDO=\"\"\n  fi\nfi\n\n# 2. Detect OS and Architecture\nOS=\"$(uname -s)\"\nRAW_ARCH=\"$(uname -m)\"\n\ncase \"$RAW_ARCH\" in\n  x86_64|amd64)\n    ARCH=\"amd64\"\n    ARCH_NAME=\"x86_64\"\n    ;;\n  aarch64|arm64)\n    ARCH=\"arm64\"\n    ARCH_NAME=\"aarch64 / arm64\"\n    ;;\n  armv7l|armhf)\n    ARCH=\"arm\"\n    ARCH_NAME=\"armv7l\"\n    ;;\n  *)\n    log_err \"Unsupported CPU architecture: $RAW_ARCH\"\n    exit 1\n    ;;\nesac\n\nlog_info \"Detected OS: ${C_BOLD}$OS${C_RESET} ($ARCH_NAME)\"\n\n# 3. Verify or Install rclone & FUSE\nif command -v rclone >/dev/null 2>&1; then\n  RCLONE_BIN=\"$(command -v rclone)\"\n  log_ok \"rclone is already installed at $RCLONE_BIN ($(rclone version 2>/dev/null | head -n 1))\"\nelse\n  log_info \"Installing rclone for $OS ($ARCH)...\"\n  if [ \"$OS\" = \"Linux\" ]; then\n    if curl -fsSL https://rclone.org/install.sh | $SUDO bash; then\n      log_ok \"rclone installed successfully via official script.\"\n    else\n      log_warn \"Standard rclone script failed. Attempting direct binary download...\"\n      TEMP_DIR=\"$(mktemp -d)\"\n      curl -fsSL \"https://downloads.rclone.org/rclone-current-linux-${ARCH}.zip\" -o \"$TEMP_DIR/rclone.zip\"\n      if command -v unzip >/dev/null 2>&1; then\n        unzip -q \"$TEMP_DIR/rclone.zip\" -d \"$TEMP_DIR\"\n      else\n        python3 -c \"import zipfile; zipfile.ZipFile('$TEMP_DIR/rclone.zip').extractall('$TEMP_DIR')\"\n      fi\n      $SUDO cp \"$TEMP_DIR\"/rclone-*-linux-${ARCH}/rclone /usr/local/bin/rclone\n      $SUDO chmod +x /usr/local/bin/rclone\n      rm -rf \"$TEMP_DIR\"\n      log_ok \"rclone installed manually to /usr/local/bin/rclone.\"\n    fi\n  elif [ \"$OS\" = \"Darwin\" ]; then\n    if command -v brew >/dev/null 2>&1; then\n      brew install rclone\n    else\n      TEMP_DIR=\"$(mktemp -d)\"\n      curl -fsSL \"https://downloads.rclone.org/rclone-current-osx-${ARCH}.zip\" -o \"$TEMP_DIR/rclone.zip\"\n      unzip -q \"$TEMP_DIR/rclone.zip\" -d \"$TEMP_DIR\"\n      $SUDO cp \"$TEMP_DIR\"/rclone-*-osx-${ARCH}/rclone /usr/local/bin/rclone\n      $SUDO chmod +x /usr/local/bin/rclone\n      rm -rf \"$TEMP_DIR\"\n      log_ok \"rclone installed to /usr/local/bin/rclone.\"\n    fi\n  fi\n  RCLONE_BIN=\"$(command -v rclone || echo \"/usr/local/bin/rclone\")\"\nfi\n\n# Ensure FUSE is available on Linux for mounting\nif [ \"$OS\" = \"Linux\" ]; then\n  if ! command -v fusermount >/dev/null 2>&1 && ! command -v fusermount3 >/dev/null 2>&1; then\n    log_info \"FUSE not detected. Installing fuse3...\"\n    if command -v apt-get >/dev/null 2>&1; then\n      $SUDO apt-get update -qq && ($SUDO apt-get install -y -qq fuse3 || $SUDO apt-get install -y -qq fuse || true)\n    elif command -v dnf >/dev/null 2>&1; then\n      $SUDO dnf install -y fuse3 || $SUDO dnf install -y fuse || true\n    elif command -v yum >/dev/null 2>&1; then\n      $SUDO yum install -y fuse || true\n    elif command -v apk >/dev/null 2>&1; then\n      $SUDO apk add fuse3 || true\n    fi\n  fi\n\n  # Enable user_allow_other in /etc/fuse.conf if present\n  if [ -f /etc/fuse.conf ]; then\n    if grep -q \"^#user_allow_other\" /etc/fuse.conf; then\n      $SUDO sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null || true\n    elif ! grep -q \"^user_allow_other\" /etc/fuse.conf; then\n      echo \"user_allow_other\" | $SUDO tee -a /etc/fuse.conf >/dev/null 2>&1 || true\n    fi\n  fi\nfi\n\n# 4. Resolve Credentials & Vault Configuration\nZD_ENDPOINT=\"${ZERODRIVE_ENDPOINT:-https://api.zerodrive.dev/s3}\"\nZD_BUCKET=\"${ZERODRIVE_BUCKET:-zerodrive-vault-prod}\"\nif [ \"$OS\" = \"Darwin\" ]; then\n  ZD_MOUNT_PATH=\"${ZERODRIVE_MOUNT_PATH:-$HOME/ZeroDrive/My Drive}\"\nelse\n  ZD_MOUNT_PATH=\"${ZERODRIVE_MOUNT_PATH:-/zerodrive}\"\nfi\n\n# Check if valid existing configuration already exists\nEXISTING_CONFIG=\"\"\nfor conf_path in /etc/zerodrive/vault.conf \"$HOME/.config/zerodrive/vault.conf\" \"$HOME/.config/rclone/rclone.conf\"; do\n  if [ -f \"$conf_path\" ] && grep -q \"\\[primary_vault\\]\" \"$conf_path\" 2>/dev/null; then\n    EXISTING_CONFIG=\"$conf_path\"\n    break\n  fi\ndone\n\nif [ -n \"$EXISTING_CONFIG\" ] && [ -z \"${ZERODRIVE_TOKEN:-}\" ] && [ -z \"${ZERODRIVE_ACCESS_KEY_ID:-}\" ]; then\n  log_ok \"Using existing vault configuration from $EXISTING_CONFIG\"\nelse\n  # Interactive prompt if token is not passed via environment\n  if [ -z \"${ZERODRIVE_TOKEN:-}\" ] && [ -z \"${ZERODRIVE_ACCESS_KEY_ID:-}\" ]; then\n    if [ -t 0 ]; then\n      printf \"Enter your ZeroDrive API Token (or press Enter to auto-provision): \"\n      read -r -t 15 USER_INPUT || USER_INPUT=\"\"\n      ZERODRIVE_TOKEN=\"${USER_INPUT:-}\"\n    elif [ -r /dev/tty ] && [ -c /dev/tty ] && [ -t 1 ]; then\n      printf \"Enter your ZeroDrive API Token (or press Enter to auto-provision): \" > /dev/tty 2>/dev/null || true\n      read -r -t 15 USER_INPUT < /dev/tty 2>/dev/null || USER_INPUT=\"\"\n      ZERODRIVE_TOKEN=\"${USER_INPUT:-}\"\n    fi\n  fi\n  if [ -n \"${ZERODRIVE_ACCESS_KEY_ID:-}\" ]; then\n    ZD_KEY=\"$ZERODRIVE_ACCESS_KEY_ID\"\n    ZD_SECRET=\"${ZERODRIVE_SECRET_ACCESS_KEY:-$ZERODRIVE_ACCESS_KEY_ID}\"\n  elif [[ \"${ZERODRIVE_TOKEN:-}\" == *\":\"* ]]; then\n    ZD_KEY=\"${ZERODRIVE_TOKEN%%:*}\"\n    ZD_SECRET=\"${ZERODRIVE_TOKEN#*:}\"\n  elif [ -n \"${ZERODRIVE_TOKEN:-}\" ]; then\n    ZD_KEY=\"$ZERODRIVE_TOKEN\"\n    ZD_SECRET=\"${ZERODRIVE_SECRET_ACCESS_KEY:-$ZERODRIVE_TOKEN}\"\n  else\n    AGENT_HOST=\"$(hostname -s 2>/dev/null || echo agent)\"\n    AGENT_RAND=\"$(date +%s | tail -c 6)\"\n    ZD_KEY=\"zd_agent_${AGENT_HOST}_${AGENT_RAND}\"\n    ZD_SECRET=\"zd_sec_${ZD_KEY}\"\n    log_info \"No token supplied. Auto-provisioning isolated Agent Vault ID: ${C_BOLD}$ZD_KEY${C_RESET}\"\n    log_info \"(Export ZERODRIVE_TOKEN=<token> anytime to switch vault identities)\"\n  fi\n\n  # Write configuration files\n  CONF_CONTENT=\"[primary_vault]\ntype = s3\nprovider = Cloudflare\naccess_key_id = $ZD_KEY\nsecret_access_key = $ZD_SECRET\nendpoint = $ZD_ENDPOINT\nacl = private\nforce_path_style = true\nno_check_bucket = true\n\"\n\n  # System config directory (/etc/zerodrive and /etc/rclone)\n  $SUDO mkdir -p /etc/zerodrive /etc/rclone 2>/dev/null || true\n  if [ -d /etc/zerodrive ] && [ -w /etc/zerodrive ] || [ -n \"$SUDO\" ]; then\n    echo \"$CONF_CONTENT\" | $SUDO tee /etc/zerodrive/vault.conf >/dev/null\n    echo \"$CONF_CONTENT\" | $SUDO tee /etc/rclone/rclone.conf >/dev/null\n    $SUDO chmod 600 /etc/zerodrive/vault.conf /etc/rclone/rclone.conf 2>/dev/null || true\n\n    SETTINGS_JSON=\"{\\\"endpoint\\\":\\\"$ZD_ENDPOINT\\\",\\\"bucketAndPrefix\\\":\\\"$ZD_BUCKET\\\",\\\"accessKeyId\\\":\\\"$ZD_KEY\\\",\\\"updatedAt\\\":\\\"$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\\\"}\"\n    echo \"$SETTINGS_JSON\" | $SUDO tee /etc/zerodrive/zerodrive-vault.json >/dev/null\n  fi\n\n  # User config directory\n  mkdir -p \"$HOME/.config/zerodrive\" \"$HOME/.config/rclone\"\n  echo \"$CONF_CONTENT\" > \"$HOME/.config/zerodrive/vault.conf\"\n  echo \"$CONF_CONTENT\" > \"$HOME/.config/rclone/rclone.conf\"\n  SETTINGS_JSON=\"{\\\"endpoint\\\":\\\"$ZD_ENDPOINT\\\",\\\"bucketAndPrefix\\\":\\\"$ZD_BUCKET\\\",\\\"accessKeyId\\\":\\\"$ZD_KEY\\\",\\\"updatedAt\\\":\\\"$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\\\"}\"\n  echo \"$SETTINGS_JSON\" > \"$HOME/.config/zerodrive/zerodrive-vault.json\"\n  chmod 600 \"$HOME/.config/zerodrive/vault.conf\" \"$HOME/.config/rclone/rclone.conf\" 2>/dev/null || true\n\n  log_ok \"ZeroDrive cloud vault configured for $ZD_ENDPOINT ($ZD_BUCKET)\"\nfi\n\n# 5. Install ZeroDrive CLI (`zerodrive` & `zd`)\nINSTALL_BIN_DIR=\"/usr/local/bin\"\nif [ ! -w \"$INSTALL_BIN_DIR\" ] && { [ -z \"$SUDO\" ] || ! sudo -n true 2>/dev/null; }; then\n  INSTALL_BIN_DIR=\"$HOME/.local/bin\"\n  mkdir -p \"$INSTALL_BIN_DIR\"\nfi\n\nBIN_SUDO=\"\"\nif [ ! -w \"$INSTALL_BIN_DIR\" ] && [ -n \"$SUDO\" ]; then\n  BIN_SUDO=\"$SUDO\"\nfi\n\nlog_info \"Installing ZeroDrive CLI to $INSTALL_BIN_DIR/zerodrive...\"\nRAW_CLI_URL=\"https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive\"\nAPI_CLI_URL=\"https://api.zerodrive.dev/bin/zerodrive\"\n\n# Install from local bin if running from repo, otherwise download\nif [ -f \"./bin/zerodrive\" ]; then\n  $BIN_SUDO cp \"./bin/zerodrive\" \"$INSTALL_BIN_DIR/zerodrive\"\n  $BIN_SUDO chmod +x \"$INSTALL_BIN_DIR/zerodrive\"\n  $BIN_SUDO ln -sf \"$INSTALL_BIN_DIR/zerodrive\" \"$INSTALL_BIN_DIR/zd\"\nelse\n  $BIN_SUDO curl -fsSL \"$RAW_CLI_URL\" -o \"$INSTALL_BIN_DIR/zerodrive\" 2>/dev/null || \\\n  $BIN_SUDO curl -fsSL \"$API_CLI_URL\" -o \"$INSTALL_BIN_DIR/zerodrive\" || true\n  $BIN_SUDO chmod +x \"$INSTALL_BIN_DIR/zerodrive\" 2>/dev/null || true\n  $BIN_SUDO ln -sf \"$INSTALL_BIN_DIR/zerodrive\" \"$INSTALL_BIN_DIR/zd\" 2>/dev/null || true\nfi\n\n# Ensure Python 3 is present for CLI\nif ! command -v python3 >/dev/null 2>&1; then\n  log_warn \"Python 3 not found. Installing python3 for 'zd' / 'zerodrive' commands...\"\n  if command -v apt-get >/dev/null 2>&1; then\n    $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3 || true\n  elif command -v dnf >/dev/null 2>&1; then\n    $SUDO dnf install -y python3 || true\n  elif command -v yum >/dev/null 2>&1; then\n    $SUDO yum install -y python3 || true\n  elif command -v apk >/dev/null 2>&1; then\n    $SUDO apk add python3 || true\n  fi\nfi\n\n# Ensure INSTALL_BIN_DIR in PATH\nif [[ \":$PATH:\" != *\":$INSTALL_BIN_DIR:\"* ]]; then\n  export PATH=\"$INSTALL_BIN_DIR:$PATH\"\n  for rc in \"$HOME/.bashrc\" \"$HOME/.zshrc\" \"$HOME/.profile\"; do\n    if [ -f \"$rc\" ]; then\n      if ! grep -q \"$INSTALL_BIN_DIR\" \"$rc\" 2>/dev/null; then\n        echo \"export PATH=\\\"$INSTALL_BIN_DIR:\\$PATH\\\"\" >> \"$rc\"\n      fi\n    fi\n  done\nfi\n\nif command -v zd >/dev/null 2>&1 || [ -x \"$INSTALL_BIN_DIR/zd\" ]; then\n  log_ok \"ZeroDrive CLI successfully installed ('zd' & 'zerodrive').\"\nfi\n\n# 6. Setup Mount & Systemd Service (Linux) or Mount Instructions (macOS)\n$SUDO mkdir -p \"$ZD_MOUNT_PATH\" /var/cache/zerodrive 2>/dev/null || mkdir -p \"$ZD_MOUNT_PATH\" 2>/dev/null || true\n\nHAS_SYSTEMD=false\nif [ \"$OS\" = \"Linux\" ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then\n  HAS_SYSTEMD=true\nfi\n\nif [ \"$HAS_SYSTEMD\" = true ]; then\n  log_info \"Configuring systemd service /etc/systemd/system/zerodrive.service...\"\n\n  RCLONE_BIN_PATH=\"$(command -v rclone || echo \"/usr/bin/rclone\")\"\n\n  # Unmount any stale instance first\n  $SUDO systemctl stop zerodrive.service 2>/dev/null || true\n  fusermount3 -u -z \"$ZD_MOUNT_PATH\" 2>/dev/null || fusermount -u -z \"$ZD_MOUNT_PATH\" 2>/dev/null || umount -l \"$ZD_MOUNT_PATH\" 2>/dev/null || true\n\n  # Write systemd service file\n  $SUDO tee /etc/systemd/system/zerodrive.service >/dev/null <<EOF\n[Unit]\nDescription=ZeroDrive 24/7 Cloud Vault Mount ($ZD_MOUNT_PATH)\nDocumentation=https://api.zerodrive.dev/docs\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStartPre=/usr/bin/env mkdir -p $ZD_MOUNT_PATH /var/cache/zerodrive\nExecStart=$RCLONE_BIN_PATH mount primary_vault:$ZD_BUCKET $ZD_MOUNT_PATH \\\\\n    --config /etc/zerodrive/vault.conf \\\\\n    --cache-dir /var/cache/zerodrive \\\\\n    --allow-other \\\\\n    --vfs-cache-mode full \\\\\n    --vfs-cache-max-size 20G \\\\\n    --vfs-cache-max-age 72h \\\\\n    --vfs-read-chunk-size 64M \\\\\n    --vfs-read-chunk-size-limit 512M \\\\\n    --buffer-size 64M \\\\\n    --dir-cache-time 72h \\\\\n    --poll-interval 15s \\\\\n    --attr-timeout 10s \\\\\n    --umask 0022 \\\\\n    --rc \\\\\n    --rc-addr 127.0.0.1:55729 \\\\\n    --rc-no-auth \\\\\n    --log-level INFO\nExecStop=/bin/sh -c 'fusermount3 -u -z $ZD_MOUNT_PATH 2>/dev/null || fusermount -u -z $ZD_MOUNT_PATH 2>/dev/null || umount -l $ZD_MOUNT_PATH 2>/dev/null || true'\nRestart=always\nRestartSec=5s\nTimeoutStopSec=20s\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n  $SUDO systemctl daemon-reload\n  $SUDO systemctl enable zerodrive.service\n  $SUDO systemctl restart zerodrive.service\n\n  # Wait up to 5 seconds for mount to appear\n  log_info \"Starting ZeroDrive service and waiting for mount at $ZD_MOUNT_PATH...\"\n  for i in 1 2 3 4 5; do\n    if mount | grep -q \"$ZD_MOUNT_PATH\"; then\n      break\n    fi\n    sleep 1\n  done\n\n  if mount | grep -q \"$ZD_MOUNT_PATH\"; then\n    log_ok \"ZeroDrive vault successfully mounted at $ZD_MOUNT_PATH (systemd service active)\"\n  else\n    log_warn \"Mount not immediately detected via 'mount'. Checking systemctl status...\"\n    $SUDO systemctl status zerodrive.service --no-pager || true\n  fi\nelif [ \"$OS\" = \"Linux\" ]; then\n  log_warn \"systemd not detected (container or minimal environment).\"\n  log_info \"Starting ZeroDrive mount in background...\"\n  RCLONE_BIN_PATH=\"$(command -v rclone || echo \"/usr/local/bin/rclone\")\"\n  nohup \"$RCLONE_BIN_PATH\" mount primary_vault:$ZD_BUCKET \"$ZD_MOUNT_PATH\" \\\n    --config /etc/zerodrive/vault.conf \\\n    --cache-dir /var/cache/zerodrive \\\n    --allow-other \\\n    --vfs-cache-mode full \\\n    --vfs-cache-max-size 20G \\\n    --vfs-cache-max-age 72h \\\n    --dir-cache-time 72h \\\n    --poll-interval 15s \\\n    --rc --rc-addr 127.0.0.1:55729 --rc-no-auth \\\n    >/tmp/zerodrive-mount.log 2>&1 &\n  sleep 2\n  log_ok \"Started background rclone mount at $ZD_MOUNT_PATH\"\nelse\n  # macOS\n  log_ok \"ZeroDrive configured for macOS.\"\n  log_info \"To mount locally in Finder / Terminal, launch ZeroDrive.app or run:\"\n  log_info \"  rclone mount primary_vault:$ZD_BUCKET ~/ZeroDrive/My\\\\ Drive --daemon --vfs-cache-mode full\"\nfi\n\n# 7. Health Check\necho \"\"\nlog_info \"Running health check ('zd status')...\"\nif command -v zd >/dev/null 2>&1; then\n  zd status || true\nelif [ -x \"$INSTALL_BIN_DIR/zd\" ]; then\n  \"$INSTALL_BIN_DIR/zd\" status || true\nelse\n  log_info \"Mount check: $(mount | grep \"$ZD_MOUNT_PATH\" || echo 'Mount verified')\"\nfi\n\necho -e \"\\n${C_BOLD}${C_GREEN}\u2713 ZeroDrive 1-Line Setup Complete!${C_RESET}\"\necho -e \"  \u2022 Mount Location:  ${C_BOLD}$ZD_MOUNT_PATH${C_RESET}\"\necho -e \"  \u2022 CLI Commands:    ${C_BOLD}zd status${C_RESET}, ${C_BOLD}zd ls${C_RESET}, ${C_BOLD}zd doctor${C_RESET}\"\necho -e \"  \u2022 Service Control: ${C_BOLD}sudo systemctl status zerodrive${C_RESET}\\n\"\n";
-      return new Response(HEADLESS_INSTALLER_SCRIPT, {
+curl -fsSL "https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive" -o "$INSTALL_DIR/zerodrive"
+chmod +x "$INSTALL_DIR/zerodrive"
+ln -sf "$INSTALL_DIR/zerodrive" "$INSTALL_DIR/zd"
+
+curl -fsSL "https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive-mcp" -o "$INSTALL_DIR/zerodrive-mcp"
+chmod +x "$INSTALL_DIR/zerodrive-mcp"
+
+# Ensure ~/.local/bin in PATH
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  SHELL_PROFILE="$HOME/.zshrc"
+  if [[ -f "$HOME/.bashrc" && ! -f "$HOME/.zshrc" ]]; then
+    SHELL_PROFILE="$HOME/.bashrc"
+  fi
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_PROFILE"
+  echo "✓ Added $INSTALL_DIR to PATH in $SHELL_PROFILE"
+fi
+
+echo "✓ ZeroDrive CLI successfully installed to $INSTALL_DIR/zerodrive (and 'zd')!"
+echo "  Run 'zd doctor' or 'zerodrive --help' to get started."
+`;
+      return new Response(installScript, {
         headers: {
           ...corsHeaders,
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cache-Control": "public, max-age=300",
-        },
+          "Content-Type": "text/x-shellscript; charset=utf-8",
+          "Cache-Control": "public, max-age=300"
+        }
       });
     }
 
@@ -4995,7 +7067,7 @@ export default {
         <h3 style="margin-bottom: 6px;">⚡ ZeroDrive Developer CLI</h3>
         <p style="margin-bottom: 10px;">Sub-second queries, file slicing, and high-speed transfers without mount stalls on Mac &amp; Linux.</p>
         <div class="code-box">
-          <span id="cli-cmd">curl -sSL ${CANONICAL_ORIGIN}/install | bash</span>
+          <span id="cli-cmd">curl -fsSL ${CANONICAL_ORIGIN}/install.sh | bash</span>
           <button class="copy-btn" onclick="copyCli()">Copy</button>
         </div>
       </div>
@@ -5004,6 +7076,7 @@ export default {
         <h3 style="margin-bottom: 6px;">🌐 REST API &amp; OpenAPI 3.1</h3>
         <p style="margin-bottom: 10px;">Full REST API surface for OpenAI Custom GPT Actions, autonomous agents, and workflows.</p>
         <div style="display:flex; gap:10px; margin-top:14px;">
+          <a href="/explorer" class="btn" style="font-size:13px; padding:10px 14px; text-decoration:none;">Launch Web Explorer</a>
           <a href="/docs" class="btn btn-secondary" style="font-size:13px; padding:10px 14px; text-decoration:none;">View API Docs</a>
           <a href="/openapi.json" class="btn btn-secondary" style="font-size:13px; padding:10px 14px; text-decoration:none;">OpenAPI 3.1 Spec</a>
         </div>
@@ -5026,7 +7099,7 @@ export default {
       setTimeout(() => { event.target.textContent = "Copy URL"; }, 2000);
     }
     function copyCli() {
-      navigator.clipboard.writeText("curl -sSL ${CANONICAL_ORIGIN}/install | bash");
+      navigator.clipboard.writeText("curl -fsSL ${CANONICAL_ORIGIN}/install.sh | bash");
       event.target.textContent = "Copied!";
       setTimeout(() => { event.target.textContent = "Copy"; }, 2000);
     }
