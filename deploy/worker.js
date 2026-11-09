@@ -54,8 +54,8 @@ async function signHmac(secret, message) {
   return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function createAuthCode(secret, payload) {
-  const data = JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + 600 });
+async function createAuthCode(secret, payload, ttlSeconds = 600) {
+  const data = JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + ttlSeconds });
   const b64 = base64UrlEncode(data);
   const sig = (await signHmac(secret, b64)).slice(0, 32);
   return `zd_code.${b64}.${sig}`;
@@ -76,6 +76,65 @@ async function verifyAuthCode(secret, code) {
   } catch {
     return null;
   }
+}
+
+function base64ToBytes(input) {
+  let clean = String(input || "").trim();
+  const commaIdx = clean.indexOf(",");
+  if (clean.startsWith("data:") && commaIdx !== -1) {
+    clean = clean.slice(commaIdx + 1);
+  }
+  clean = clean.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  while (clean.length % 4 !== 0) {
+    clean += "=";
+  }
+  const binary = atob(clean);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function guessMimeType(filePath) {
+  const ext = String(filePath || "").split(".").pop().toLowerCase();
+  const map = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    webp: "image/webp",
+    gif: "image/gif",
+    svg: "image/svg+xml",
+    ico: "image/x-icon",
+    pdf: "application/pdf",
+    zip: "application/zip",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    json: "application/json",
+    csv: "text/csv; charset=utf-8",
+    html: "text/html; charset=utf-8",
+    css: "text/css; charset=utf-8",
+    js: "application/javascript; charset=utf-8",
+    md: "text/markdown; charset=utf-8",
+    txt: "text/plain; charset=utf-8",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  };
+  return map[ext] || "application/octet-stream";
 }
 
 function xmlEscape(str) {
@@ -429,29 +488,77 @@ const MCP_TOOLS = [
   },
   {
     name: "read_file",
-    description: "Read the text contents of a file in the ZeroDrive vault, with optional line slicing (head, tail, or line range) for large files.",
+    description: "Read a text or binary/image file from the ZeroDrive vault. For text files, supports optional line slicing (head, tail, or line range). For images/PDFs/binaries, returns native image content or base64 + a direct download URL.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Vault file path (e.g. 'ROUTER.md', 'AGENTS.md', 'MAIN/notes.md')." },
-        head: { type: "integer", description: "Read only the first N lines." },
-        tail: { type: "integer", description: "Read only the last N lines." },
-        lines: { type: "string", description: "Read a specific line range (e.g. '1-100', '101-200')." }
+        path: { type: "string", description: "Vault file path (e.g. 'ROUTER.md', 'MAIN/notes.md', 'MAIN/screenshot.png')." },
+        head: { type: "integer", description: "Read only the first N lines (text files)." },
+        tail: { type: "integer", description: "Read only the last N lines (text files)." },
+        lines: { type: "string", description: "Read a specific line range (e.g. '1-100', '101-200')." },
+        encoding: { type: "string", description: "Optional: 'utf-8' (default for text) or 'base64' (for binary files)." }
       },
       required: ["path"]
     }
   },
   {
     name: "write_file",
-    description: "Create a new file, overwrite an existing file, or append to a file at any path in the ZeroDrive vault. Parent folders are created automatically.",
+    description: "Create or overwrite ANY file (text, markdown, JSON, code, OR binary files like PNG, JPG, WebP, PDF, ZIP) at any path in the ZeroDrive vault. Supports plain text ('content'), base64 binary ('content_base64' or encoding='base64'), or fetching directly from a URL ('source_url').",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Target vault file path (e.g. 'MAIN/project-notes.md', '_SORT/inbox/idea.md')." },
-        content: { type: "string", description: "Text content to write to the file." },
-        append: { type: "boolean", description: "If true, append content to the end of the existing file instead of overwriting.", default: false }
+        path: { type: "string", description: "Target vault file path (e.g. 'MAIN/notes.md', 'MAIN/assets/crop-1.png', 'MAIN/report.pdf')." },
+        content: { type: "string", description: "Text content (or base64 string if encoding='base64') to write." },
+        content_base64: { type: "string", description: "Base64-encoded binary content (or data:...;base64,... URI) for images, PDFs, or binary files." },
+        source_url: { type: "string", description: "Public or signed HTTP/HTTPS URL to fetch and save directly into the vault (ideal for images, PDFs, and media)." },
+        encoding: { type: "string", description: "'utf-8' (default) or 'base64' if content is base64-encoded binary.", default: "utf-8" },
+        content_type: { type: "string", description: "Optional MIME type (auto-detected from file extension if omitted)." },
+        append: { type: "boolean", description: "If true, append text content to the end of an existing text file.", default: false }
       },
-      required: ["path", "content"]
+      required: ["path"]
+    }
+  },
+  {
+    name: "upload_binary_file",
+    description: "Upload any binary file (PNG screenshots, JPEG/WebP creative crops, PDFs, ZIPs, audio, video, Office docs) into the ZeroDrive vault via base64 data ('content_base64') or by pulling directly from a remote URL ('source_url'). For uploading many large local binary files from a sandbox/terminal without LLM token limits, use 'create_upload_urls' instead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Destination vault path including filename and extension (e.g. 'MAIN/screenshots/page-01.png', 'MAIN/deck.pdf')." },
+        content_base64: { type: "string", description: "Base64-encoded binary data (raw base64 or data:mime;base64,... URI)." },
+        source_url: { type: "string", description: "Direct HTTP/HTTPS URL of the binary file to download straight into the vault." },
+        content_type: { type: "string", description: "Optional MIME type (auto-detected from filename extension if omitted)." }
+      },
+      required: ["path"]
+    }
+  },
+  {
+    name: "create_upload_urls",
+    description: "Generate pre-signed direct HTTP PUT upload URLs for one or multiple vault file paths (e.g. 36 screenshots, crops, PDFs, or large media files). Use this when you have local binary files in your workspace/sandbox: call this tool once with all target paths, then HTTP PUT (or curl -X PUT --upload-file <local_file> <upload_url>) each binary file directly to ZeroDrive at full speed with zero LLM token overhead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of target vault paths to generate upload URLs for (e.g. ['MAIN/crops/crop-1.png', 'MAIN/docs/guide.pdf'])."
+        },
+        path: {
+          type: "string",
+          description: "Single target vault path (if generating just one upload URL)."
+        }
+      }
+    }
+  },
+  {
+    name: "get_download_url",
+    description: "Get a pre-signed direct HTTPS download/preview URL for any file (PDF, image, video, archive, or document) in the ZeroDrive vault.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault file path (e.g. 'MAIN/report.pdf', 'MAIN/screenshot.png')." }
+      },
+      required: ["path"]
     }
   },
   {
@@ -655,7 +762,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
             }
           ]
         },
-        instructions: "ZeroDrive Cloud Vault. Start by calling get_file_tree or reading ROUTER.md to see the vault structure. Use search_filenames to locate files by name, grep_vault to search inside file contents, read_file to inspect files, and write_file / edit_file / move_file to create and update files."
+        instructions: "ZeroDrive Cloud Vault. Supports BOTH text and binary files (PNG, JPG, WebP, PDF, ZIP, MP4, Office docs). Start by calling get_file_tree or reading ROUTER.md to see the vault structure. Use search_filenames to locate files by name, grep_vault to search inside text contents, read_file to inspect text or images, write_file / edit_file / move_file for text and code, and upload_binary_file (via base64 or source_url) or create_upload_urls (pre-signed HTTP PUT URLs for batch/large binary files like screenshots, crops, and PDFs) to save any binary file."
       }
     };
   }
@@ -769,6 +876,52 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           };
         }
 
+        const mimeType = obj.httpMetadata?.contentType || guessMimeType(subpath);
+        const isBinaryOrImage =
+          args.encoding === "base64" ||
+          /^(image|video|audio|application\/(pdf|zip|octet-stream|vnd\.))/.test(mimeType);
+
+        if (isBinaryOrImage) {
+          const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+          const dlToken = await createAuthCode(secret, { op: "download", key: fullKey, path: subpath }, 3600);
+          const downloadUrl = `${CANONICAL_ORIGIN}/vault/download?token=${encodeURIComponent(dlToken)}`;
+
+          if (mimeType.startsWith("image/") && obj.size <= 5 * 1024 * 1024) {
+            const buf = new Uint8Array(await obj.arrayBuffer());
+            const b64 = bytesToBase64(buf);
+            return {
+              jsonrpc: "2.0",
+              id,
+              result: {
+                content: [
+                  { type: "image", data: b64, mimeType },
+                  { type: "text", text: JSON.stringify({ path: subpath, size: obj.size, mimeType, download_url: downloadUrl }, null, 2) }
+                ]
+              }
+            };
+          }
+
+          if (args.encoding === "base64" && obj.size <= 10 * 1024 * 1024) {
+            const buf = new Uint8Array(await obj.arrayBuffer());
+            const b64 = bytesToBase64(buf);
+            return {
+              jsonrpc: "2.0",
+              id,
+              result: {
+                content: [{ type: "text", text: JSON.stringify({ path: subpath, size: obj.size, mimeType, download_url: downloadUrl, content_base64: b64 }, null, 2) }]
+              }
+            };
+          }
+
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [{ type: "text", text: JSON.stringify({ path: subpath, size: obj.size, mimeType, download_url: downloadUrl }, null, 2) }]
+            }
+          };
+        }
+
         let text = await obj.text();
         const lines = text.split("\n");
         if (args.head && args.head > 0) {
@@ -789,11 +942,49 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         };
       }
 
-      if (toolName === "write_file" || toolName === "zd_write") {
+      if (toolName === "write_file" || toolName === "upload_binary_file" || toolName === "zd_write") {
         const subpath = (args.path || "").replace(/^\/+/, "");
         const fullKey = `${userPrefix}/${subpath}`;
-        let content = String(args.content ?? "");
+        const mimeType = args.content_type || guessMimeType(subpath);
 
+        // 1. Direct URL-to-Vault binary fetch
+        if (args.source_url) {
+          const resp = await fetch(String(args.source_url));
+          if (!resp.ok) {
+            return {
+              jsonrpc: "2.0",
+              id,
+              result: { isError: true, content: [{ type: "text", text: `Failed to fetch source_url (${resp.status}): ${args.source_url}` }] }
+            };
+          }
+          const fetchedType = args.content_type || resp.headers.get("content-type") || mimeType;
+          const arrayBuf = await resp.arrayBuffer();
+          await env.VAULT_BUCKET.put(fullKey, arrayBuf, {
+            httpMetadata: { contentType: fetchedType }
+          });
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { content: [{ type: "text", text: `Uploaded ${arrayBuf.byteLength} bytes (${fetchedType}) from URL to ${subpath}.` }] }
+          };
+        }
+
+        // 2. Base64 binary payload (content_base64 or encoding='base64' or data:...;base64,...)
+        const rawB64 = args.content_base64 || (args.encoding === "base64" ? args.content : null) || (typeof args.content === "string" && /^data:[^;]+;base64,/.test(args.content) ? args.content : null);
+        if (rawB64) {
+          const bytes = base64ToBytes(rawB64);
+          await env.VAULT_BUCKET.put(fullKey, bytes, {
+            httpMetadata: { contentType: mimeType }
+          });
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { content: [{ type: "text", text: `Uploaded binary file ${subpath} (${bytes.byteLength} bytes, ${mimeType}).` }] }
+          };
+        }
+
+        // 3. Standard UTF-8 text write / append
+        let content = String(args.content ?? "");
         if (args.append) {
           const existing = await env.VAULT_BUCKET.get(fullKey);
           if (existing) {
@@ -803,13 +994,85 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         }
 
         await env.VAULT_BUCKET.put(fullKey, content, {
-          httpMetadata: { contentType: "text/plain; charset=utf-8" }
+          httpMetadata: { contentType: mimeType.startsWith("text/") || mimeType === "application/json" ? mimeType : "text/plain; charset=utf-8" }
         });
 
         return {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: `Saved ${content.length} characters to ${subpath}.` }] }
+        };
+      }
+
+      if (toolName === "create_upload_urls") {
+        const rawList = Array.isArray(args.paths) ? args.paths : (args.path ? [args.path] : []);
+        if (rawList.length === 0) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: "Provide 'path' or 'paths' array of target vault paths." }] }
+          };
+        }
+        const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+        const uploads = [];
+        for (const p of rawList) {
+          const subpath = String(p || "").replace(/^\/+/, "");
+          if (!subpath) continue;
+          const fullKey = `${userPrefix}/${subpath}`;
+          const mimeType = guessMimeType(subpath);
+          const upToken = await createAuthCode(secret, { op: "upload", key: fullKey, path: subpath, mime: mimeType }, 3600);
+          const uploadUrl = `${CANONICAL_ORIGIN}/vault/upload?token=${encodeURIComponent(upToken)}`;
+          uploads.push({
+            path: subpath,
+            mime_type: mimeType,
+            upload_url: uploadUrl,
+            curl_example: `curl -sS -X PUT --upload-file "${subpath.split("/").pop()}" "${uploadUrl}"`
+          });
+        }
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                instructions: "Send an HTTP PUT (or POST) request with the raw binary file body to each upload_url. Valid for 1 hour. No Authorization header needed on the upload_url itself.",
+                uploads
+              }, null, 2)
+            }]
+          }
+        };
+      }
+
+      if (toolName === "get_download_url" || toolName === "zd_share") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const fullKey = `${userPrefix}/${subpath}`;
+        const headObj = await env.VAULT_BUCKET.head(fullKey);
+        if (!headObj) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: `File not found: ${args.path}` }] }
+          };
+        }
+        const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+        const dlToken = await createAuthCode(secret, { op: "download", key: fullKey, path: subpath }, 86400);
+        const downloadUrl = `${CANONICAL_ORIGIN}/vault/download?token=${encodeURIComponent(dlToken)}`;
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                path: subpath,
+                size: headObj.size,
+                mime_type: headObj.httpMetadata?.contentType || guessMimeType(subpath),
+                download_url: downloadUrl,
+                expires_in_seconds: 86400
+              }, null, 2)
+            }]
+          }
         };
       }
 
@@ -1950,6 +2213,109 @@ export default {
     // 1b. Hosted 24/7 AI Agent MCP Server Endpoint (/mcp or /v1/mcp)
     if (url.pathname === "/mcp" || url.pathname === "/v1/mcp") {
       return handleMCPRequest(request, env, url, corsHeaders);
+    }
+
+    // 1c. Direct Binary File Upload & Download Endpoints (/vault/upload and /vault/download)
+    if (url.pathname === "/vault/upload" && (request.method === "PUT" || request.method === "POST")) {
+      const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+      const tokenParam = url.searchParams.get("token") || "";
+      let targetKey = "";
+      let targetPath = "";
+      let mimeType = request.headers.get("content-type") || "";
+
+      if (tokenParam) {
+        const verified = await verifyAuthCode(secret, tokenParam);
+        if (!verified || verified.op !== "upload" || !verified.key) {
+          return new Response(JSON.stringify({ error: "Invalid or expired upload token" }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        targetKey = verified.key;
+        targetPath = verified.path || "";
+        if (!mimeType || mimeType === "application/octet-stream" || mimeType === "application/x-www-form-urlencoded") {
+          mimeType = verified.mime || guessMimeType(targetPath);
+        }
+      } else {
+        const auth = authenticateMCPRequest(request, env, url);
+        if (!auth.ok) {
+          return new Response(JSON.stringify({ error: auth.error }), {
+            status: 401,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+        if (!targetPath) {
+          return new Response(JSON.stringify({ error: "Missing ?path= parameter" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+        targetKey = `${auth.userPrefix}/${targetPath}`;
+        if (!mimeType || mimeType === "application/octet-stream" || mimeType === "application/x-www-form-urlencoded") {
+          mimeType = guessMimeType(targetPath);
+        }
+      }
+
+      const putObj = await env.VAULT_BUCKET.put(targetKey, request.body, {
+        httpMetadata: { contentType: mimeType }
+      });
+
+      return new Response(JSON.stringify({
+        ok: true,
+        path: targetPath,
+        size: putObj.size,
+        mime_type: mimeType,
+        etag: putObj.etag
+      }, null, 2), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    if (url.pathname === "/vault/download" && (request.method === "GET" || request.method === "HEAD")) {
+      const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+      const tokenParam = url.searchParams.get("token") || "";
+      let targetKey = "";
+      let targetPath = "";
+
+      if (tokenParam) {
+        const verified = await verifyAuthCode(secret, tokenParam);
+        if (!verified || verified.op !== "download" || !verified.key) {
+          return new Response("Invalid or expired download token", { status: 401, headers: corsHeaders });
+        }
+        targetKey = verified.key;
+        targetPath = verified.path || "";
+      } else {
+        const auth = authenticateMCPRequest(request, env, url);
+        if (!auth.ok) {
+          return new Response(auth.error, { status: 401, headers: corsHeaders });
+        }
+        targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+        if (!targetPath) {
+          return new Response("Missing ?path= parameter", { status: 400, headers: corsHeaders });
+        }
+        targetKey = `${auth.userPrefix}/${targetPath}`;
+      }
+
+      const obj = request.method === "HEAD"
+        ? await env.VAULT_BUCKET.head(targetKey)
+        : await env.VAULT_BUCKET.get(targetKey);
+      if (!obj) {
+        return new Response("File not found", { status: 404, headers: corsHeaders });
+      }
+      const mimeType = obj.httpMetadata?.contentType || guessMimeType(targetPath);
+      const fileName = targetPath.split("/").pop() || "download";
+      return new Response(request.method === "HEAD" ? null : obj.body, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": mimeType,
+          "Content-Length": String(obj.size),
+          "Accept-Ranges": "bytes",
+          "Content-Disposition": `inline; filename="${fileName.replace(/"/g, "")}"`
+        }
+      });
     }
 
     // 2. Direct DMG Installer Download from R2
