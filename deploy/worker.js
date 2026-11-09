@@ -1,3 +1,12 @@
+import {
+  isWindowsReservedName,
+  normalizeUnicode,
+  validateCrossPlatformPath,
+  sanitizeCrossPlatformPath,
+  generateConflictedPath,
+  evaluateConflict
+} from "./cross-platform.js";
+
 /**
  * ZeroDrive Cloudflare Worker — Production Multi-Tenant R2 S3 Proxy, Provisioner & DMG Host
  *
@@ -1115,7 +1124,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
       }
 
       if (toolName === "read_file" || toolName === "zd_read") {
-        const subpath = (args.path || "").replace(/^\/+/, "");
+        const subpath = sanitizeCrossPlatformPath((args.path || "").replace(/^\/+/, ""));
         const fullKey = `${userPrefix}/${subpath}`;
         const obj = await env.VAULT_BUCKET.get(fullKey);
         if (!obj) {
@@ -1209,9 +1218,10 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           }
           const fetchedType = args.content_type || resp.headers.get("content-type") || mimeType;
           const arrayBuf = await resp.arrayBuffer();
-          await env.VAULT_BUCKET.put(fullKey, arrayBuf, {
+          const putObj = await env.VAULT_BUCKET.put(fullKey, arrayBuf, {
             httpMetadata: { contentType: fetchedType }
           });
+          broadcastVaultEvent(userPrefix, { event: "change", action: "write", path: subpath, etag: putObj?.etag || "", size: arrayBuf.byteLength, timestamp: new Date().toISOString() });
           return {
             jsonrpc: "2.0",
             id,
@@ -1223,9 +1233,10 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         const rawB64 = args.content_base64 || (args.encoding === "base64" ? args.content : null) || (typeof args.content === "string" && /^data:[^;]+;base64,/.test(args.content) ? args.content : null);
         if (rawB64) {
           const bytes = base64ToBytes(rawB64);
-          await env.VAULT_BUCKET.put(fullKey, bytes, {
+          const putObj = await env.VAULT_BUCKET.put(fullKey, bytes, {
             httpMetadata: { contentType: mimeType }
           });
+          broadcastVaultEvent(userPrefix, { event: "change", action: "write", path: subpath, etag: putObj?.etag || "", size: bytes.byteLength, timestamp: new Date().toISOString() });
           return {
             jsonrpc: "2.0",
             id,
@@ -1243,9 +1254,10 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           }
         }
 
-        await env.VAULT_BUCKET.put(fullKey, content, {
+        const putObj = await env.VAULT_BUCKET.put(fullKey, content, {
           httpMetadata: { contentType: mimeType.startsWith("text/") || mimeType === "application/json" ? mimeType : "text/plain; charset=utf-8" }
         });
+        broadcastVaultEvent(userPrefix, { event: "change", action: "write", path: subpath, etag: putObj?.etag || "", size: content.length, timestamp: new Date().toISOString() });
 
         return {
           jsonrpc: "2.0",
@@ -1348,9 +1360,10 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           };
         }
         const updatedText = currentText.split(oldText).join(newText);
-        await env.VAULT_BUCKET.put(fullKey, updatedText, {
+        const putObj = await env.VAULT_BUCKET.put(fullKey, updatedText, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" }
         });
+        broadcastVaultEvent(userPrefix, { event: "change", action: "write", path: subpath, etag: putObj?.etag || "", timestamp: new Date().toISOString() });
         return {
           jsonrpc: "2.0",
           id,
@@ -1359,8 +1372,8 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
       }
 
       if (toolName === "move_file") {
-        const src = (args.source || "").replace(/^\/+/, "");
-        const dst = (args.destination || "").replace(/^\/+/, "");
+        const src = sanitizeCrossPlatformPath((args.source || "").replace(/^\/+/, ""));
+        const dst = sanitizeCrossPlatformPath((args.destination || "").replace(/^\/+/, ""));
         const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
         if (!srcObj) {
           return {
@@ -1369,10 +1382,11 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
             result: { isError: true, content: [{ type: "text", text: `Source file not found: ${args.source}` }] }
           };
         }
-        await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+        const putObj = await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
           httpMetadata: srcObj.httpMetadata
         });
         await env.VAULT_BUCKET.delete(`${userPrefix}/${src}`);
+        broadcastVaultEvent(userPrefix, { event: "change", action: "move", path: dst, source: src, destination: dst, etag: putObj?.etag || "", timestamp: new Date().toISOString() });
         return {
           jsonrpc: "2.0",
           id,
@@ -1391,9 +1405,10 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
             result: { isError: true, content: [{ type: "text", text: `Source file not found: ${args.source}` }] }
           };
         }
-        await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+        const putObj = await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
           httpMetadata: srcObj.httpMetadata
         });
+        broadcastVaultEvent(userPrefix, { event: "change", action: "copy", path: dst, source: src, destination: dst, etag: putObj?.etag || "", timestamp: new Date().toISOString() });
         return {
           jsonrpc: "2.0",
           id,
@@ -1404,6 +1419,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
       if (toolName === "delete_file" || toolName === "zd_delete") {
         const subpath = (args.path || "").replace(/^\/+/, "");
         await env.VAULT_BUCKET.delete(`${userPrefix}/${subpath}`);
+        broadcastVaultEvent(userPrefix, { event: "change", action: "delete", path: subpath, etag: "", timestamp: new Date().toISOString() });
         return {
           jsonrpc: "2.0",
           id,
@@ -2464,6 +2480,246 @@ function errorResponse(message, status = 400, corsHeaders = {}, extra = {}) {
   return jsonResponse({ ok: false, error: message, ...extra }, status, corsHeaders);
 }
 
+// ============================================================================
+// Real-Time Server-Sent Events (SSE) Engine
+// ============================================================================
+
+// Active SSE subscribers grouped by userPrefix: Map<string, Set<Subscriber>>
+const sseSubscribers = new Map();
+
+function registerSSESubscriber(userPrefix, subscriber) {
+  let set = sseSubscribers.get(userPrefix);
+  if (!set) {
+    set = new Set();
+    sseSubscribers.set(userPrefix, set);
+  }
+  set.add(subscriber);
+  return () => {
+    const currentSet = sseSubscribers.get(userPrefix);
+    if (currentSet) {
+      currentSet.delete(subscriber);
+      if (currentSet.size === 0) {
+        sseSubscribers.delete(userPrefix);
+      }
+    }
+  };
+}
+
+function broadcastVaultEvent(userPrefix, eventPayload) {
+  if (!userPrefix || !eventPayload) return;
+
+  if (!eventPayload.timestamp) {
+    eventPayload.timestamp = new Date().toISOString();
+  }
+  if (!eventPayload.event) {
+    eventPayload.event = "change";
+  }
+  if (!eventPayload.id) {
+    eventPayload.id = `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  // 1. Direct in-memory dispatch to any active streams in this isolate
+  const set = sseSubscribers.get(userPrefix);
+  if (set && set.size > 0) {
+    for (const sub of set) {
+      try {
+        sub.send(eventPayload);
+      } catch (err) {}
+    }
+  }
+
+  // 2. BroadcastChannel dispatch across isolates in same Cloudflare POP
+  if (typeof BroadcastChannel !== "undefined") {
+    try {
+      const channelName = "zd_sse_" + userPrefix.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const bc = new BroadcastChannel(channelName);
+      bc.postMessage(eventPayload);
+      bc.close();
+    } catch {}
+  }
+}
+
+function handleSseEvents(request, env, userPrefix, corsHeaders, url) {
+  const sseHeaders = {
+    ...corsHeaders,
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+  };
+
+  const encoder = new TextEncoder();
+  let cleanup = () => {};
+  let keepAliveTimer = null;
+  let pollTimer = null;
+  let isClosed = false;
+  let bc = null;
+  let unregister = () => {};
+  const seenEventIds = new Set();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      cleanup = () => {
+        if (isClosed) return;
+        isClosed = true;
+        if (keepAliveTimer) {
+          clearInterval(keepAliveTimer);
+          keepAliveTimer = null;
+        }
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        if (bc) {
+          try { bc.close(); } catch {}
+          bc = null;
+        }
+        try { unregister(); } catch {}
+        try { controller.close(); } catch {}
+      };
+
+      const sendRaw = (chunk) => {
+        if (isClosed) return false;
+        try {
+          controller.enqueue(encoder.encode(chunk));
+          return true;
+        } catch (e) {
+          cleanup();
+          return false;
+        }
+      };
+
+      const sendEvent = (eventObj) => {
+        if (isClosed || !eventObj) return;
+        const id = eventObj.id || `${eventObj.action || "change"}_${eventObj.path || ""}_${eventObj.timestamp || Date.now()}`;
+        if (seenEventIds.has(id)) return;
+        seenEventIds.add(id);
+        if (seenEventIds.size > 300) {
+          const first = seenEventIds.values().next().value;
+          seenEventIds.delete(first);
+        }
+        const eventName = eventObj.event || "change";
+        const payloadStr = JSON.stringify(eventObj);
+        sendRaw(`id: ${id}\nevent: ${eventName}\ndata: ${payloadStr}\n\n`);
+      };
+
+      // 1. Initial connection handshake
+      const now = new Date().toISOString();
+      const handshake = {
+        status: "connected",
+        timestamp: now,
+        user_prefix: userPrefix
+      };
+      sendRaw(`event: connected\ndata: ${JSON.stringify(handshake)}\n\n`);
+
+      // 2. Register subscriber for in-memory pushes
+      unregister = registerSSESubscriber(userPrefix, {
+        send: (eventPayload) => {
+          sendEvent(eventPayload);
+        }
+      });
+
+      // 3. Listen on BroadcastChannel for same-POP cross-isolate notifications
+      if (typeof BroadcastChannel !== "undefined") {
+        try {
+          const channelName = "zd_sse_" + userPrefix.replace(/[^a-zA-Z0-9_-]/g, "_");
+          bc = new BroadcastChannel(channelName);
+          bc.onmessage = (msgEvt) => {
+            try {
+              if (msgEvt.data && typeof msgEvt.data === "object") {
+                sendEvent(msgEvt.data);
+              }
+            } catch {}
+          };
+        } catch {}
+      }
+
+      // 4. History / Cursor replay
+      const cursor = request.headers.get("Last-Event-ID") || url.searchParams.get("cursor") || url.searchParams.get("since");
+      const wantHistory = url.searchParams.get("history") === "true" || !!cursor;
+      let lastCheckTime = Date.now();
+
+      if (wantHistory) {
+        try {
+          const activities = await getSystemJson(env, userPrefix, "activity.json", []);
+          if (Array.isArray(activities)) {
+            const limit = Math.min(parseInt(url.searchParams.get("limit") || 10, 10), 50);
+            const slice = activities.slice(0, limit).reverse();
+            for (const act of slice) {
+              const actTime = new Date(act.timestamp).getTime();
+              if (cursor && !isNaN(Number(cursor)) && actTime < Number(cursor)) continue;
+              const id = act.id || `${act.action}:${act.path}:${act.timestamp}`;
+              const payload = {
+                event: "change",
+                action: (act.action || "").replace(/_file$/, ""),
+                path: act.path || act.destination || "",
+                timestamp: act.timestamp || now,
+                etag: act.etag || "",
+                ...act
+              };
+              sendEvent(payload);
+            }
+          }
+        } catch {}
+      }
+
+      // 5. Periodic keep-alive ping comment (every 15s)
+      keepAliveTimer = setInterval(() => {
+        if (isClosed) {
+          cleanup();
+          return;
+        }
+        sendRaw(": ping\n\n");
+      }, 15000);
+
+      // 6. Cross-isolate activity fallback poll (every 3s)
+      pollTimer = setInterval(async () => {
+        if (isClosed) {
+          cleanup();
+          return;
+        }
+        try {
+          const activities = await getSystemJson(env, userPrefix, "activity.json", []);
+          if (!Array.isArray(activities) || activities.length === 0) return;
+          for (const act of activities.slice(0, 10).reverse()) {
+            const actTime = new Date(act.timestamp).getTime();
+            if (actTime >= lastCheckTime) {
+              const id = act.id || `${act.action}:${act.path}:${act.timestamp}`;
+              if (!seenEventIds.has(id)) {
+                const payload = {
+                  event: "change",
+                  action: (act.action || "").replace(/_file$/, ""),
+                  path: act.path || act.destination || "",
+                  timestamp: act.timestamp || new Date().toISOString(),
+                  etag: act.etag || "",
+                  ...act
+                };
+                sendEvent(payload);
+              }
+            }
+          }
+          lastCheckTime = Date.now();
+        } catch {}
+      }, 3000);
+
+      // 7. Request abort signal
+      if (request.signal) {
+        request.signal.addEventListener("abort", () => {
+          cleanup();
+        });
+      }
+    },
+    cancel() {
+      if (typeof cleanup === "function") cleanup();
+    }
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: sseHeaders
+  });
+}
+
 async function handleRestV1Request(request, env, url, corsHeaders) {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -2492,6 +2748,11 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
 
   const userPrefix = auth.userPrefix;
   const pathname = url.pathname.replace(/\/+$/, "");
+
+  // 0. GET /v1/events & GET /v1/activity/stream - Real-Time Server-Sent Events (SSE) Push
+  if ((pathname === "/v1/events" || pathname === "/v1/activity/stream") && request.method === "GET") {
+    return handleSseEvents(request, env, userPrefix, corsHeaders, url);
+  }
 
   // 1. GET /v1/tree - Visual Directory Tree
   if (pathname === "/v1/tree" && request.method === "GET") {
@@ -2703,9 +2964,29 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     let body = {};
     try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
 
-    const targetPath = (body.path || "").replace(/^\/+/, "");
-    if (!targetPath) {
+    const rawPath = body.path || "";
+    if (!rawPath) {
       return errorResponse("Missing required field 'path'", 400, corsHeaders);
+    }
+
+    // Cross-Platform Sanitizer & Normalization
+    const autoSanitize = request.headers.get("x-sanitize-path") === "true" ||
+                         url.searchParams.get("sanitize") === "true" ||
+                         body.sanitize === true;
+
+    const val = validateCrossPlatformPath(rawPath);
+    let targetPath;
+    if (!val.valid) {
+      if (autoSanitize) {
+        targetPath = sanitizeCrossPlatformPath(rawPath);
+      } else {
+        return errorResponse(`Invalid path: ${val.error}`, 400, corsHeaders, {
+          path_issues: val.issues,
+          suggested_path: sanitizeCrossPlatformPath(rawPath)
+        });
+      }
+    } else {
+      targetPath = val.normalizedPath;
     }
 
     const fullKey = `${userPrefix}/${targetPath}`;
@@ -2735,20 +3016,75 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Must provide 'content', 'content_base64', or 'source_url'", 400, corsHeaders);
     }
 
-    const putObj = await env.VAULT_BUCKET.put(fullKey, dataToWrite, {
+    // Conflict Resolution Engine
+    const clientEtag = request.headers.get("if-match") || body.base_etag || body.etag;
+    const clientTimestamp = request.headers.get("if-unmodified-since") || body.base_modified || body.modified;
+    const rawPolicy = request.headers.get("x-conflict-policy") || body.conflict_policy;
+    const conflictPolicy = (rawPolicy || (clientEtag || clientTimestamp ? "branch" : "overwrite")).toLowerCase();
+    const clientId = request.headers.get("x-client-id") ||
+                     request.headers.get("x-device-id") ||
+                     body.client_id ||
+                     body.device_id ||
+                     body.device ||
+                     "device";
+
+    const existing = await env.VAULT_BUCKET.head(fullKey);
+
+    const conflictEval = evaluateConflict({
+      existingMeta: existing,
+      clientEtag,
+      clientTimestamp,
+      conflictPolicy,
+      targetPath,
+      clientId,
+      conflictTimestamp: body.conflict_timestamp || new Date()
+    });
+
+    const finalPath = conflictEval.targetPath;
+    const finalKey = `${userPrefix}/${finalPath}`;
+    const isConflicted = conflictEval.isConflict && conflictEval.action === "branch";
+
+    const putObj = await env.VAULT_BUCKET.put(finalKey, dataToWrite, {
       httpMetadata: { contentType: mimeType }
     });
 
-    await logActivity(env, userPrefix, "write_file", { path: targetPath, size: putObj.size });
+    await logActivity(env, userPrefix, "write_file", {
+      path: finalPath,
+      size: putObj.size,
+      etag: putObj.etag,
+      conflicted: isConflicted,
+      original_path: isConflicted ? targetPath : undefined
+    });
+
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action: "write",
+      path: finalPath,
+      timestamp: new Date().toISOString(),
+      etag: putObj.etag,
+      size: putObj.size,
+      content_type: mimeType,
+      conflicted: isConflicted,
+      original_path: isConflicted ? targetPath : undefined
+    });
+
+    const responseHeaders = { ...corsHeaders };
+    if (isConflicted) {
+      responseHeaders["X-Conflicted"] = "true";
+      responseHeaders["X-Conflicted-Path"] = finalPath;
+    }
 
     return jsonResponse({
       ok: true,
-      path: targetPath,
+      path: finalPath,
+      conflicted: isConflicted,
+      conflict_policy: conflictPolicy,
+      original_path: isConflicted ? targetPath : undefined,
       size: putObj.size,
       etag: putObj.etag,
       content_type: mimeType,
       modified: new Date().toISOString()
-    }, 200, corsHeaders);
+    }, isConflicted ? 201 : 200, responseHeaders);
   }
 
   // 5. POST /v1/files/edit - Surgical in-place text replacement
@@ -2783,7 +3119,16 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       httpMetadata: { contentType: obj.httpMetadata?.contentType || guessMimeType(targetPath) }
     });
 
-    await logActivity(env, userPrefix, "edit_file", { path: targetPath, occurrences: count });
+    await logActivity(env, userPrefix, "edit_file", { path: targetPath, occurrences: count, etag: putObj.etag });
+
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action: "write",
+      path: targetPath,
+      timestamp: new Date().toISOString(),
+      etag: putObj.etag,
+      occurrences_replaced: count
+    });
 
     return jsonResponse({
       ok: true,
@@ -2794,15 +3139,37 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     }, 200, corsHeaders);
   }
 
-  // 6. POST /v1/files/move - Move or rename a file
-  if (pathname === "/v1/files/move" && request.method === "POST") {
+  // 6. POST /v1/files/move or POST /v1/files/rename - Move or rename a file
+  if ((pathname === "/v1/files/move" || pathname === "/v1/files/rename") && request.method === "POST") {
     let body = {};
     try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
 
-    const src = (body.source || "").replace(/^\/+/, "");
-    const dst = (body.destination || "").replace(/^\/+/, "");
-    if (!src || !dst) {
-      return errorResponse("Fields 'source' and 'destination' are required", 400, corsHeaders);
+    const rawSrc = body.source || body.old_path || body.path || "";
+    const rawDst = body.destination || body.new_path || "";
+    if (!rawSrc || !rawDst) {
+      return errorResponse("Fields 'source' and 'destination' (or 'old_path' and 'new_path') are required", 400, corsHeaders);
+    }
+
+    const autoSanitize = request.headers.get("x-sanitize-path") === "true" ||
+                         url.searchParams.get("sanitize") === "true" ||
+                         body.sanitize === true;
+
+    const valSrc = validateCrossPlatformPath(rawSrc);
+    let src;
+    if (!valSrc.valid) {
+      if (autoSanitize) src = sanitizeCrossPlatformPath(rawSrc);
+      else return errorResponse(`Invalid source path: ${valSrc.error}`, 400, corsHeaders);
+    } else {
+      src = valSrc.normalizedPath;
+    }
+
+    const valDst = validateCrossPlatformPath(rawDst);
+    let dst;
+    if (!valDst.valid) {
+      if (autoSanitize) dst = sanitizeCrossPlatformPath(rawDst);
+      else return errorResponse(`Invalid destination path: ${valDst.error}`, 400, corsHeaders);
+    } else {
+      dst = valDst.normalizedPath;
     }
 
     const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
@@ -2810,13 +3177,63 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse(`Source file not found: ${src}`, 404, corsHeaders);
     }
 
-    await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+    const putObj = await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
       httpMetadata: srcObj.httpMetadata
     });
     await env.VAULT_BUCKET.delete(`${userPrefix}/${src}`);
-    await logActivity(env, userPrefix, "move_file", { source: src, destination: dst });
+    await logActivity(env, userPrefix, pathname.endsWith("rename") ? "rename_file" : "move_file", { source: src, destination: dst, etag: putObj?.etag || "" });
+
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action: "move",
+      path: dst,
+      source: src,
+      destination: dst,
+      etag: putObj?.etag || "",
+      timestamp: new Date().toISOString()
+    });
 
     return jsonResponse({ ok: true, source: src, destination: dst }, 200, corsHeaders);
+  }
+
+  // 6b. POST /v1/files/mkdir - Create a directory in vault
+  if (pathname === "/v1/files/mkdir" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const rawPath = body.path || "";
+    if (!rawPath) {
+      return errorResponse("Missing required field 'path'", 400, corsHeaders);
+    }
+
+    const autoSanitize = request.headers.get("x-sanitize-path") === "true" ||
+                         url.searchParams.get("sanitize") === "true" ||
+                         body.sanitize === true;
+
+    const val = validateCrossPlatformPath(rawPath);
+    let targetPath;
+    if (!val.valid) {
+      if (autoSanitize) targetPath = sanitizeCrossPlatformPath(rawPath);
+      else return errorResponse(`Invalid directory path: ${val.error}`, 400, corsHeaders);
+    } else {
+      targetPath = val.normalizedPath;
+    }
+
+    const keepKey = `${userPrefix}/${targetPath}/.keep`;
+    await env.VAULT_BUCKET.put(keepKey, "", {
+      httpMetadata: { contentType: "application/x-empty" }
+    });
+
+    await logActivity(env, userPrefix, "mkdir", { path: targetPath });
+
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action: "create_dir",
+      path: targetPath,
+      timestamp: new Date().toISOString()
+    });
+
+    return jsonResponse({ ok: true, path: targetPath, is_directory: true, created: true }, 201, corsHeaders);
   }
 
   // 7. POST /v1/files/copy - Copy or duplicate a file
@@ -2838,7 +3255,18 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     const putObj = await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
       httpMetadata: srcObj.httpMetadata
     });
-    await logActivity(env, userPrefix, "copy_file", { source: src, destination: dst });
+    await logActivity(env, userPrefix, "copy_file", { source: src, destination: dst, etag: putObj.etag });
+
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action: "copy",
+      path: dst,
+      source: src,
+      destination: dst,
+      timestamp: new Date().toISOString(),
+      etag: putObj.etag,
+      size: putObj.size
+    });
 
     return jsonResponse({ ok: true, source: src, destination: dst, size: putObj.size }, 200, corsHeaders);
   }
@@ -2846,7 +3274,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
   // 8. POST /v1/files/delete or DELETE /v1/files - Delete a file
   if ((pathname === "/v1/files/delete" || pathname === "/v1/files") && (request.method === "POST" || request.method === "DELETE")) {
     let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
-    if (!targetPath && request.method === "POST") {
+    if (!targetPath) {
       try {
         const body = await request.json();
         targetPath = (body.path || "").replace(/^\/+/, "");
@@ -2859,6 +3287,14 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
 
     await env.VAULT_BUCKET.delete(`${userPrefix}/${targetPath}`);
     await logActivity(env, userPrefix, "delete_file", { path: targetPath });
+
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action: "delete",
+      path: targetPath,
+      timestamp: new Date().toISOString(),
+      etag: ""
+    });
 
     return jsonResponse({ ok: true, path: targetPath, deleted: true }, 200, corsHeaders);
   }
@@ -2881,6 +3317,13 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
         if (p) {
           await env.VAULT_BUCKET.delete(`${userPrefix}/${p}`);
           results.push({ action: "delete", path: p, status: "success" });
+          broadcastVaultEvent(userPrefix, {
+            event: "change",
+            action: "delete",
+            path: p,
+            timestamp: new Date().toISOString(),
+            etag: ""
+          });
         }
       } else if (action === "move" || action === "copy") {
         const src = (op.source || "").replace(/^\/+/, "");
@@ -2888,9 +3331,18 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
         if (src && dst) {
           const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
           if (srcObj) {
-            await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, { httpMetadata: srcObj.httpMetadata });
+            const putObj = await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, { httpMetadata: srcObj.httpMetadata });
             if (action === "move") await env.VAULT_BUCKET.delete(`${userPrefix}/${src}`);
             results.push({ action, source: src, destination: dst, status: "success" });
+            broadcastVaultEvent(userPrefix, {
+              event: "change",
+              action,
+              path: dst,
+              source: src,
+              destination: dst,
+              timestamp: new Date().toISOString(),
+              etag: putObj?.etag || ""
+            });
           } else {
             results.push({ action, source: src, destination: dst, status: "error", error: "Source not found" });
           }
@@ -3325,11 +3777,20 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
     const action = String(body.action || "custom_event").trim();
     const entry = await logActivity(env, userPrefix, action, body.details || {});
+    broadcastVaultEvent(userPrefix, {
+      event: "change",
+      action,
+      path: body.details?.path || "",
+      timestamp: entry?.timestamp || new Date().toISOString(),
+      etag: body.details?.etag || "",
+      ...body.details
+    });
     return jsonResponse({ ok: true, activity: entry }, 201, corsHeaders);
   }
 
   return errorResponse(`Endpoint not found: ${request.method} ${pathname}`, 404, corsHeaders, {
     available_endpoints: [
+      "GET /v1/events", "GET /v1/activity/stream",
       "GET /v1/tree", "GET /v1/files", "GET /v1/files/stat", "POST /v1/files/read", "POST /v1/files/write",
       "POST /v1/files/edit", "POST /v1/files/move", "POST /v1/files/copy", "POST /v1/files/delete",
       "POST /v1/files/batch", "POST /v1/files/upload-urls", "GET /v1/files/download-url",
@@ -3868,6 +4329,42 @@ function handleOpenAPISpec(url, corsHeaders) {
           }
         }
       },
+      "/v1/events": {
+        get: {
+          tags: ["Real-Time Push & Events"],
+          summary: "Server-Sent Events (SSE) Push Notifications",
+          description: "Streams live vault file mutations (write, edit, move, copy, delete) in real-time over a persistent HTTP SSE connection. Supports ping heartbeats and automatic reconnection.",
+          operationId: "getEventStream",
+          responses: {
+            "200": {
+              description: "Text Event Stream",
+              content: {
+                "text/event-stream": {
+                  schema: { type: "string" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/v1/activity/stream": {
+        get: {
+          tags: ["Real-Time Push & Events"],
+          summary: "Real-Time Activity SSE Stream (Alias)",
+          description: "Streams real-time activity and file change events over SSE.",
+          operationId: "getActivityStream",
+          responses: {
+            "200": {
+              description: "Text Event Stream",
+              content: {
+                "text/event-stream": {
+                  schema: { type: "string" }
+                }
+              }
+            }
+          }
+        }
+      },
       "/v1/activity": {
         get: {
           tags: ["Multi-Device Fleet"],
@@ -4341,6 +4838,27 @@ function handleApiDocsHtml(url, corsHeaders) {
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"device_id": "naegele-pro", "hostname": "naegele-pro.local", "free_gb": 151.2, "mount_status": "mounted"}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <!-- Section 7: Real-Time SSE Push -->
+    <div class="section-title">7. Real-Time Push Notifications (Server-Sent Events / SSE)</div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method get">GET</span>
+        <span class="ep-path">/v1/events</span>
+        <span class="ep-desc">Live Server-Sent Events stream for vault file mutations</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Establishes a persistent SSE connection. Pushes instant change events (<code>write</code>, <code>edit</code>, <code>move</code>, <code>copy</code>, <code>delete</code>) and periodic <code>: ping</code> heartbeats. Also available at <code>/v1/activity/stream</code>.</p>
+        <pre><code># Stream live events in terminal:
+curl -N -s "https://api.zerodrive.dev/v1/events" \
+  -H "Authorization: Bearer YOUR_TOKEN"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+        <p style="margin-top:12px;font-size:12px;color:var(--text-muted);">In browser JavaScript or EventSource:</p>
+        <pre><code>const es = new EventSource("https://api.zerodrive.dev/v1/events?key=YOUR_TOKEN");
+es.addEventListener("connected", (e) => console.log("Connected:", JSON.parse(e.data)));
+es.addEventListener("change", (e) => console.log("File mutation:", JSON.parse(e.data)));</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
       </div>
     </div>
 
@@ -6442,6 +6960,22 @@ export default {
       return handleRestV1Request(request, env, url, corsHeaders);
     }
 
+    // Real-Time SSE Root Aliases: /events & /activity/stream
+    if (
+      (url.pathname === "/events" || url.pathname === "/events/" ||
+       url.pathname === "/activity/stream" || url.pathname === "/activity/stream/") &&
+      request.method === "GET"
+    ) {
+      const auth = authenticateMCPRequest(request, env, url);
+      if (!auth.ok) {
+        return new Response(JSON.stringify({ ok: false, error: auth.error }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      return handleSseEvents(request, env, auth.userPrefix, corsHeaders, url);
+    }
+
 
     // Force canonical domain (api.zerodrive.dev) for all non-S3 endpoints so legacy zerodrive.aisimple.co is never used for OAuth or MCP
     if (url.hostname === "zerodrive.aisimple.co" && url.pathname !== "/s3" && !url.pathname.startsWith("/s3/")) {
@@ -6596,6 +7130,18 @@ export default {
 
       const putObj = await env.VAULT_BUCKET.put(targetKey, request.body, {
         httpMetadata: { contentType: mimeType }
+      });
+
+      const effectiveUserPrefix = targetKey.split("/").slice(0, 3).join("/");
+      await logActivity(env, effectiveUserPrefix, "write_file", { path: targetPath, size: putObj.size, etag: putObj.etag });
+      broadcastVaultEvent(effectiveUserPrefix, {
+        event: "change",
+        action: "write",
+        path: targetPath,
+        timestamp: new Date().toISOString(),
+        etag: putObj.etag,
+        size: putObj.size,
+        content_type: mimeType
       });
 
       return new Response(JSON.stringify({
@@ -7127,4 +7673,13 @@ echo "  Run 'zd doctor' or 'zerodrive --help' to get started."
       }
     );
   },
+};
+
+export {
+  isWindowsReservedName,
+  normalizeUnicode,
+  validateCrossPlatformPath,
+  sanitizeCrossPlatformPath,
+  generateConflictedPath,
+  evaluateConflict
 };
