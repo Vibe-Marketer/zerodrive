@@ -381,67 +381,107 @@ async function handleS3Proxy(request, env, url) {
 
 const MCP_TOOLS = [
   {
-    name: "zd_list",
-    description: "List files and subfolders in a ZeroDrive vault directory with sizes and dates.",
+    name: "get_file_tree",
+    description: "Get a visual directory tree of the ZeroDrive vault or any subfolder (up to N levels deep) so you can see how folders and files are organized.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Vault directory path (e.g. '', 'MAIN', 'Course').", default: "" },
-        recursive: { type: "boolean", description: "List subdirectories recursively.", default: false }
+        path: { type: "string", description: "Folder path to inspect (e.g. '', 'MAIN', 'Course', '_BUSINESS', '_SKILLS'). Leave empty for vault root.", default: "" },
+        depth: { type: "integer", description: "How many folder levels deep to display (1 to 4, default 2).", default: 2 }
       }
     }
   },
   {
-    name: "zd_read",
-    description: "Read text contents of a file in the ZeroDrive vault with optional line slicing.",
+    name: "list_files",
+    description: "List files and subfolders in a ZeroDrive vault directory with file sizes and last-modified dates.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Vault file path (e.g. 'ROUTER.md', 'MAIN/AGENTS.md')." },
-        head: { type: "integer", description: "Read only the first N lines." },
-        tail: { type: "integer", description: "Read only the last N lines." },
-        lines: { type: "string", description: "Read specific line range (e.g. '1-50')." }
-      },
-      required: ["path"]
+        path: { type: "string", description: "Vault directory path (e.g. '', 'MAIN', 'Course', '_BUSINESS').", default: "" },
+        recursive: { type: "boolean", description: "List all nested files recursively.", default: false }
+      }
     }
   },
   {
-    name: "zd_write",
-    description: "Write or overwrite a text file directly into the ZeroDrive cloud vault 24/7.",
+    name: "search_filenames",
+    description: "Find files and folders across the ZeroDrive vault by filename, keyword, or extension (like 'find' or 'fd').",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Target vault path (e.g. 'MAIN/notes.md', 'Course/summary.txt')." },
-        content: { type: "string", description: "Text content to write." }
-      },
-      required: ["path", "content"]
-    }
-  },
-  {
-    name: "zd_search",
-    description: "Fast keyword & pattern search across the ZeroDrive vault.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Keyword or pattern to search (e.g. '*.md', 'Dan Kennedy')." },
-        path: { type: "string", description: "Directory to search within (optional).", default: "" }
+        query: { type: "string", description: "Filename keyword or pattern to match (e.g. 'ROUTER', '.md', 'Dan Kennedy')." },
+        path: { type: "string", description: "Optional subfolder to restrict the search to (e.g. 'MAIN', 'Course').", default: "" }
       },
       required: ["query"]
     }
   },
   {
-    name: "zd_size",
-    description: "Get instant file count and total size for any folder.",
+    name: "grep_vault",
+    description: "Search inside the text contents of files across the ZeroDrive vault (like 'grep' or 'ripgrep'), returning matching file paths, line numbers, and text snippets.",
     inputSchema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Vault folder path (e.g. 'Course', 'MAIN/LEGENDS').", default: "" }
-      }
+        query: { type: "string", description: "Exact text or keyword to search for inside files." },
+        path: { type: "string", description: "Folder path to search within (e.g. 'MAIN', '_SKILLS', 'Course'). Recommend specifying a folder for fastest results.", default: "" },
+        max_results: { type: "integer", description: "Maximum number of matching snippets to return (default 30).", default: 30 }
+      },
+      required: ["query"]
     }
   },
   {
-    name: "zd_copy",
-    description: "Copy or duplicate a file within the ZeroDrive cloud vault.",
+    name: "read_file",
+    description: "Read the text contents of a file in the ZeroDrive vault, with optional line slicing (head, tail, or line range) for large files.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault file path (e.g. 'ROUTER.md', 'AGENTS.md', 'MAIN/notes.md')." },
+        head: { type: "integer", description: "Read only the first N lines." },
+        tail: { type: "integer", description: "Read only the last N lines." },
+        lines: { type: "string", description: "Read a specific line range (e.g. '1-100', '101-200')." }
+      },
+      required: ["path"]
+    }
+  },
+  {
+    name: "write_file",
+    description: "Create a new file, overwrite an existing file, or append to a file at any path in the ZeroDrive vault. Parent folders are created automatically.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Target vault file path (e.g. 'MAIN/project-notes.md', '_SORT/inbox/idea.md')." },
+        content: { type: "string", description: "Text content to write to the file." },
+        append: { type: "boolean", description: "If true, append content to the end of the existing file instead of overwriting.", default: false }
+      },
+      required: ["path", "content"]
+    }
+  },
+  {
+    name: "edit_file",
+    description: "Modify an existing text file in the ZeroDrive vault by replacing an exact target string with new text without re-uploading the whole file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault file path to edit." },
+        old_text: { type: "string", description: "Exact existing text in the file to find and replace." },
+        new_text: { type: "string", description: "New replacement text." }
+      },
+      required: ["path", "old_text", "new_text"]
+    }
+  },
+  {
+    name: "move_file",
+    description: "Move or rename a file within the ZeroDrive vault.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string", description: "Current vault file path." },
+        destination: { type: "string", description: "New vault file path." }
+      },
+      required: ["source", "destination"]
+    }
+  },
+  {
+    name: "copy_file",
+    description: "Copy or duplicate a file within the ZeroDrive vault.",
     inputSchema: {
       type: "object",
       properties: {
@@ -452,14 +492,24 @@ const MCP_TOOLS = [
     }
   },
   {
-    name: "zd_delete",
-    description: "Delete a file from the ZeroDrive cloud vault.",
+    name: "delete_file",
+    description: "Delete a file from the ZeroDrive vault.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Vault file path to delete." }
       },
       required: ["path"]
+    }
+  },
+  {
+    name: "get_folder_size",
+    description: "Calculate the total file count and storage size (bytes and GB) of any folder in the ZeroDrive vault.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault folder path (e.g. '', 'MAIN', 'Course').", default: "" }
+      }
     }
   }
 ];
@@ -508,6 +558,30 @@ function authenticateMCPRequest(request, env, url) {
   return { ok: false, error: "Invalid OAuth 2.0 token." };
 }
 
+async function buildDirectoryTree(env, userPrefix, baseSubpath, maxDepth, currentDepth = 1, indent = "") {
+  const prefix = baseSubpath ? `${userPrefix}/${baseSubpath}/` : `${userPrefix}/`;
+  const listed = await env.VAULT_BUCKET.list({ prefix, delimiter: "/", limit: 250 });
+  const lines = [];
+
+  const dirs = (listed.delimitedPrefixes || []).map(p => p.slice(prefix.length).replace(/\/$/, "")).filter(Boolean);
+  const files = (listed.objects || [])
+    .map(o => ({ name: o.key.slice(prefix.length), size: o.size }))
+    .filter(f => f.name && !f.name.includes("/"));
+
+  for (const dir of dirs) {
+    lines.push(`${indent}📁 ${dir}/`);
+    if (currentDepth < maxDepth) {
+      const childPath = baseSubpath ? `${baseSubpath}/${dir}` : dir;
+      const childLines = await buildDirectoryTree(env, userPrefix, childPath, maxDepth, currentDepth + 1, indent + "  ");
+      lines.push(...childLines);
+    }
+  }
+  for (const file of files) {
+    lines.push(`${indent}📄 ${file.name} (${file.size} B)`);
+  }
+  return lines;
+}
+
 async function processSingleMCPMessage(msg, env, userPrefix) {
   if (!msg || typeof msg !== "object") {
     return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
@@ -534,7 +608,8 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           resources: { subscribe: false, listChanged: false },
           prompts: { listChanged: false }
         },
-        serverInfo: { name: "ZeroDrive", version: "1.0.0" }
+        serverInfo: { name: "ZeroDrive", version: "1.1.0" },
+        instructions: "ZeroDrive Cloud Vault. Start by calling get_file_tree or reading ROUTER.md to see the vault structure. Use search_filenames to locate files by name, grep_vault to search inside file contents, read_file to inspect files, and write_file / edit_file / move_file to create and update files."
       }
     };
   }
@@ -548,7 +623,31 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
   }
 
   if (method === "resources/list") {
-    return { jsonrpc: "2.0", id, result: { resources: [] } };
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        resources: [
+          { uri: "zerodrive://vault/ROUTER.md", name: "ROUTER.md", description: "Master index and directory map of the ZeroDrive vault", mimeType: "text/markdown" },
+          { uri: "zerodrive://vault/AGENTS.md", name: "AGENTS.md", description: "Agent operating rules and workspace instructions", mimeType: "text/markdown" },
+          { uri: "zerodrive://vault/CONTEXT.md", name: "CONTEXT.md", description: "Current system context and active architecture", mimeType: "text/markdown" }
+        ]
+      }
+    };
+  }
+
+  if (method === "resources/read") {
+    const uri = params?.uri || "";
+    const filePath = uri.replace(/^zerodrive:\/\/vault\/?/, "").replace(/^\/+/, "");
+    const obj = await env.VAULT_BUCKET.get(`${userPrefix}/${filePath}`);
+    const text = obj ? await obj.text() : `Resource not found: ${uri}`;
+    return {
+      jsonrpc: "2.0",
+      id,
+      result: {
+        contents: [{ uri, mimeType: "text/markdown", text }]
+      }
+    };
   }
 
   if (method === "resources/templates/list") {
@@ -572,7 +671,19 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
     const args = params?.arguments || {};
 
     try {
-      if (toolName === "zd_list") {
+      if (toolName === "get_file_tree") {
+        const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
+        const depth = Math.min(Math.max(parseInt(args.depth || 2, 10), 1), 4);
+        const treeLines = await buildDirectoryTree(env, userPrefix, subpath, depth);
+        const header = subpath ? `📁 ${subpath}/` : "📁 ZeroDrive Vault Root (/)";
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: [header, ...treeLines].join("\n") }] }
+        };
+      }
+
+      if (toolName === "list_files" || toolName === "zd_list") {
         const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
         const recursive = !!args.recursive;
@@ -602,7 +713,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         };
       }
 
-      if (toolName === "zd_read") {
+      if (toolName === "read_file" || toolName === "zd_read") {
         const subpath = (args.path || "").replace(/^\/+/, "");
         const fullKey = `${userPrefix}/${subpath}`;
         const obj = await env.VAULT_BUCKET.get(fullKey);
@@ -634,10 +745,19 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         };
       }
 
-      if (toolName === "zd_write") {
+      if (toolName === "write_file" || toolName === "zd_write") {
         const subpath = (args.path || "").replace(/^\/+/, "");
         const fullKey = `${userPrefix}/${subpath}`;
-        const content = args.content ?? "";
+        let content = String(args.content ?? "");
+
+        if (args.append) {
+          const existing = await env.VAULT_BUCKET.get(fullKey);
+          if (existing) {
+            const prevText = await existing.text();
+            content = prevText + (prevText.endsWith("\n") ? "" : "\n") + content;
+          }
+        }
+
         await env.VAULT_BUCKET.put(fullKey, content, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" }
         });
@@ -645,11 +765,65 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         return {
           jsonrpc: "2.0",
           id,
-          result: { content: [{ type: "text", text: `Successfully wrote ${String(content).length} characters to ${args.path} in ZeroDrive cloud vault.` }] }
+          result: { content: [{ type: "text", text: `Saved ${content.length} characters to ${subpath}.` }] }
         };
       }
 
-      if (toolName === "zd_copy") {
+      if (toolName === "edit_file") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        const fullKey = `${userPrefix}/${subpath}`;
+        const obj = await env.VAULT_BUCKET.get(fullKey);
+        if (!obj) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: `File not found: ${args.path}` }] }
+          };
+        }
+        const currentText = await obj.text();
+        const oldText = String(args.old_text ?? "");
+        const newText = String(args.new_text ?? "");
+        if (!oldText || !currentText.includes(oldText)) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: `old_text not found in ${args.path}. Read the file first to verify exact text.` }] }
+          };
+        }
+        const updatedText = currentText.split(oldText).join(newText);
+        await env.VAULT_BUCKET.put(fullKey, updatedText, {
+          httpMetadata: { contentType: "text/plain; charset=utf-8" }
+        });
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Updated ${subpath} (${updatedText.length} characters).` }] }
+        };
+      }
+
+      if (toolName === "move_file") {
+        const src = (args.source || "").replace(/^\/+/, "");
+        const dst = (args.destination || "").replace(/^\/+/, "");
+        const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
+        if (!srcObj) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: `Source file not found: ${args.source}` }] }
+          };
+        }
+        await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+          httpMetadata: srcObj.httpMetadata
+        });
+        await env.VAULT_BUCKET.delete(`${userPrefix}/${src}`);
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Moved ${src} to ${dst}.` }] }
+        };
+      }
+
+      if (toolName === "copy_file" || toolName === "zd_copy") {
         const src = (args.source || "").replace(/^\/+/, "");
         const dst = (args.destination || "").replace(/^\/+/, "");
         const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
@@ -666,22 +840,22 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         return {
           jsonrpc: "2.0",
           id,
-          result: { content: [{ type: "text", text: `Copied ${args.source} to ${args.destination}.` }] }
+          result: { content: [{ type: "text", text: `Copied ${src} to ${dst}.` }] }
         };
       }
 
-      if (toolName === "zd_delete") {
+      if (toolName === "delete_file" || toolName === "zd_delete") {
         const subpath = (args.path || "").replace(/^\/+/, "");
         await env.VAULT_BUCKET.delete(`${userPrefix}/${subpath}`);
         return {
           jsonrpc: "2.0",
           id,
-          result: { content: [{ type: "text", text: `Deleted ${args.path} from ZeroDrive cloud vault.` }] }
+          result: { content: [{ type: "text", text: `Deleted ${subpath} from ZeroDrive vault.` }] }
         };
       }
 
-      if (toolName === "zd_search") {
-        const query = (args.query || "").toLowerCase().replace(/\*/g, "");
+      if (toolName === "search_filenames" || toolName === "zd_search") {
+        const query = (args.query || args.pattern || "").toLowerCase().replace(/\*/g, "");
         const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
 
@@ -708,7 +882,49 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         };
       }
 
-      if (toolName === "zd_size") {
+      if (toolName === "grep_vault") {
+        const query = String(args.query || "").trim();
+        const queryLower = query.toLowerCase();
+        const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
+        const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+        const maxResults = Math.min(Math.max(parseInt(args.max_results || 30, 10), 1), 100);
+
+        const textExtensions = /\.(md|txt|json|jsonl|yaml|yml|csv|tsv|js|ts|jsx|tsx|py|sh|swift|html|css|xml|toml|ini|conf|env|sql)$/i;
+        const listed = await env.VAULT_BUCKET.list({ prefix, limit: 500 });
+        const candidateKeys = (listed.objects || [])
+          .filter(o => o.size > 0 && o.size <= 512 * 1024 && textExtensions.test(o.key))
+          .slice(0, 80);
+
+        const results = [];
+        for (const objMeta of candidateKeys) {
+          if (results.length >= maxResults) break;
+          const obj = await env.VAULT_BUCKET.get(objMeta.key);
+          if (!obj) continue;
+          const text = await obj.text();
+          if (!text.toLowerCase().includes(queryLower)) continue;
+
+          const relPath = objMeta.key.slice(userPrefix.length + 1);
+          const lines = text.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].toLowerCase().includes(queryLower)) {
+              results.push({
+                path: relPath,
+                line: i + 1,
+                snippet: lines[i].trim().slice(0, 300)
+              });
+              if (results.length >= maxResults) break;
+            }
+          }
+        }
+
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] }
+        };
+      }
+
+      if (toolName === "get_folder_size" || toolName === "zd_size") {
         const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
 
