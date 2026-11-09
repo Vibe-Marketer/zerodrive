@@ -1819,74 +1819,7 @@ function handleOAuthProtectedResource(url, corsHeaders) {
   });
 }
 
-function handleOpenAPISpec(url, corsHeaders) {
-  const origin = CANONICAL_ORIGIN;
-  const spec = {
-    openapi: "3.1.0",
-    info: {
-      title: "ZeroDrive",
-      description: "Hosted 24/7 ZeroDrive Cloud Vault MCP Server with native OAuth 2.0 authentication.",
-      version: "1.1.0",
-      "x-logo": {
-        url: CONNECTOR_ICON_URL,
-        altText: "ZeroDrive"
-      }
-    },
-    servers: [{ url: origin }],
-    paths: {
-      "/mcp": {
-        post: {
-          summary: "ZeroDrive MCP JSON-RPC 2.0 Endpoint",
-          operationId: "executeMCP",
-          security: [{ OAuth2: ["mcp", "vault:read", "vault:write"] }],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    jsonrpc: { type: "string", example: "2.0" },
-                    id: { type: "string", example: "1" },
-                    method: { type: "string", example: "tools/list" },
-                    params: { type: "object" }
-                  }
-                }
-              }
-            }
-          },
-          responses: {
-            "200": { description: "MCP response" },
-            "401": { description: "OAuth 2.0 token required" }
-          }
-        }
-      }
-    },
-    components: {
-      securitySchemes: {
-        OAuth2: {
-          type: "oauth2",
-          description: "ZeroDrive OAuth 2.0 flow",
-          flows: {
-            authorizationCode: {
-              authorizationUrl: `${origin}/oauth/authorize`,
-              tokenUrl: `${origin}/oauth/token`,
-              scopes: {
-                mcp: "Full MCP agent vault access",
-                "vault:read": "Read files in vault",
-                "vault:write": "Write files in vault"
-              }
-            }
-          }
-        }
-      }
-    },
-    security: [{ OAuth2: ["mcp", "vault:read", "vault:write"] }]
-  };
-  return new Response(JSON.stringify(spec, null, 2), {
-    headers: { ...corsHeaders, "Content-Type": "application/json" }
-  });
-}
+
 
 function handleAIPluginManifest(url, corsHeaders) {
   const origin = CANONICAL_ORIGIN;
@@ -2463,6 +2396,1886 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
   });
 }
 
+
+// ============================================================================
+// ZeroDrive REST API v1, Multi-Device Fleet, OpenAPI 3.1 & Interactive Docs
+// ============================================================================
+
+async function getSystemJson(env, userPrefix, fileKey, defaultValue = []) {
+  try {
+    const obj = await env.VAULT_BUCKET.get(`${userPrefix}/_SYSTEM/${fileKey}`);
+    if (!obj) return defaultValue;
+    const text = await obj.text();
+    return JSON.parse(text);
+  } catch {
+    return defaultValue;
+  }
+}
+
+async function setSystemJson(env, userPrefix, fileKey, data) {
+  try {
+    await env.VAULT_BUCKET.put(
+      `${userPrefix}/_SYSTEM/${fileKey}`,
+      JSON.stringify(data, null, 2),
+      { httpMetadata: { contentType: "application/json; charset=utf-8" } }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function logActivity(env, userPrefix, action, details = {}) {
+  try {
+    const activities = await getSystemJson(env, userPrefix, "activity.json", []);
+    const entry = {
+      id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      action,
+      ...details
+    };
+    activities.unshift(entry);
+    // Keep last 250 activities
+    if (activities.length > 250) activities.length = 250;
+    await setSystemJson(env, userPrefix, "activity.json", activities);
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
+function jsonResponse(data, status = 200, corsHeaders = {}) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json; charset=utf-8"
+    }
+  });
+}
+
+function errorResponse(message, status = 400, corsHeaders = {}, extra = {}) {
+  return jsonResponse({ ok: false, error: message, ...extra }, status, corsHeaders);
+}
+
+async function handleRestV1Request(request, env, url, corsHeaders) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  const auth = authenticateMCPRequest(request, env, url);
+  if (!auth.ok) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "Unauthorized",
+        message: auth.error || "Valid Bearer API key or OAuth 2.0 token required.",
+        login_url: `${CANONICAL_ORIGIN}/login`,
+        docs: `${CANONICAL_ORIGIN}/docs`
+      }, null, 2),
+      {
+        status: 401,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json; charset=utf-8",
+          "WWW-Authenticate": `Bearer realm="ZeroDrive", resource_metadata="${CANONICAL_ORIGIN}/.well-known/oauth-protected-resource"`
+        }
+      }
+    );
+  }
+
+  const userPrefix = auth.userPrefix;
+  const pathname = url.pathname.replace(/\/+$/, "");
+
+  // 1. GET /v1/tree - Visual Directory Tree
+  if (pathname === "/v1/tree" && request.method === "GET") {
+    const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const depth = Math.min(Math.max(parseInt(url.searchParams.get("depth") || 2, 10), 1), 4);
+    const treeLines = await buildDirectoryTree(env, userPrefix, subpath, depth);
+    const header = subpath ? `📁 ${subpath}/` : "📁 ZeroDrive Vault Root (/)";
+    return jsonResponse({
+      ok: true,
+      path: subpath || "/",
+      depth,
+      header,
+      tree: [header, ...treeLines].join("\n"),
+      lines_count: treeLines.length + 1
+    }, 200, corsHeaders);
+  }
+
+  // 2. GET /v1/files - List files and directories
+  if (pathname === "/v1/files" && request.method === "GET") {
+    const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+    const recursive = url.searchParams.get("recursive") === "true";
+
+    const listed = recursive
+      ? await env.VAULT_BUCKET.list({ prefix, limit: 1000 })
+      : await listDirectoryComplete(env, prefix);
+
+    const directories = [];
+    for (const p of listed.delimitedPrefixes || []) {
+      const folderName = p.slice(prefix.length).replace(/\/$/, "");
+      if (folderName) {
+        directories.push({
+          name: folderName,
+          path: p.slice(userPrefix.length + 1).replace(/\/$/, "")
+        });
+      }
+    }
+
+    const files = [];
+    for (const o of listed.objects || []) {
+      const fileName = o.key.slice(prefix.length);
+      if (fileName && (!fileName.includes("/") || recursive)) {
+        files.push({
+          name: fileName,
+          path: o.key.slice(userPrefix.length + 1),
+          size: o.size,
+          modified: o.uploaded.toISOString(),
+          mime_type: o.httpMetadata?.contentType || guessMimeType(fileName),
+          etag: o.etag
+        });
+      }
+    }
+
+    return jsonResponse({
+      ok: true,
+      path: subpath || "/",
+      directories,
+      files,
+      total_count: directories.length + files.length
+    }, 200, corsHeaders);
+  }
+
+  // 3. POST /v1/files/read (or GET /v1/files/read) - Read file contents with line slicing
+  if ((pathname === "/v1/files/read" || pathname === "/v1/read") && (request.method === "POST" || request.method === "GET")) {
+    let body = {};
+    if (request.method === "POST") {
+      try { body = await request.json(); } catch { body = {}; }
+    }
+    const targetPath = (body.path || url.searchParams.get("path") || "").replace(/^\/+/, "");
+    if (!targetPath) {
+      return errorResponse("Missing required parameter 'path'", 400, corsHeaders);
+    }
+
+    const headLines = body.head !== undefined ? parseInt(body.head, 10) : (url.searchParams.get("head") ? parseInt(url.searchParams.get("head"), 10) : undefined);
+    const tailLines = body.tail !== undefined ? parseInt(body.tail, 10) : (url.searchParams.get("tail") ? parseInt(url.searchParams.get("tail"), 10) : undefined);
+    const lineRange = body.lines || url.searchParams.get("lines") || "";
+    const encoding = body.encoding || url.searchParams.get("encoding") || "utf-8";
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    const obj = await env.VAULT_BUCKET.get(fullKey);
+    if (!obj) {
+      return errorResponse(`File not found: ${targetPath}`, 404, corsHeaders);
+    }
+
+    const mimeType = obj.httpMetadata?.contentType || guessMimeType(targetPath);
+    const isBinaryMime = /^(image|video|audio|application\/(pdf|zip|x-tar|gzip|x-7z-compressed|vnd\.rar|x-apple-diskimage|octet-stream))/.test(mimeType);
+
+    const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+    const dlToken = await createAuthCode(secret, { op: "download", key: fullKey, path: targetPath }, 86400);
+    const downloadUrl = `${CANONICAL_ORIGIN}/vault/download?token=${encodeURIComponent(dlToken)}`;
+
+    if (isBinaryMime || encoding === "base64") {
+      const arrayBuffer = await obj.arrayBuffer();
+      const base64Data = bytesToBase64(new Uint8Array(arrayBuffer));
+      return jsonResponse({
+        ok: true,
+        path: targetPath,
+        size: obj.size,
+        mime_type: mimeType,
+        is_binary: true,
+        encoding: "base64",
+        content_base64: base64Data,
+        download_url: downloadUrl
+      }, 200, corsHeaders);
+    }
+
+    // Text file reading
+    let text = await obj.text();
+    let totalLines = text.split("\n").length;
+    let isTruncated = false;
+
+    if (headLines && headLines > 0) {
+      const split = text.split("\n");
+      text = split.slice(0, headLines).join("\n");
+      isTruncated = true;
+    } else if (tailLines && tailLines > 0) {
+      const split = text.split("\n");
+      text = split.slice(-tailLines).join("\n");
+      isTruncated = true;
+    } else if (lineRange && lineRange.includes("-")) {
+      const [start, end] = lineRange.split("-").map(n => parseInt(n.trim(), 10));
+      if (!isNaN(start) && !isNaN(end) && start > 0) {
+        const split = text.split("\n");
+        text = split.slice(start - 1, end).join("\n");
+        isTruncated = true;
+      }
+    }
+
+    return jsonResponse({
+      ok: true,
+      path: targetPath,
+      size: obj.size,
+      mime_type: mimeType,
+      is_binary: false,
+      total_lines: totalLines,
+      is_truncated: isTruncated,
+      content: text,
+      download_url: downloadUrl
+    }, 200, corsHeaders);
+  }
+
+  // 4. POST /v1/files/write - Write or append to any file (text, base64, URL)
+  if ((pathname === "/v1/files/write" || pathname === "/v1/write") && (request.method === "POST" || request.method === "PUT")) {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const targetPath = (body.path || "").replace(/^\/+/, "");
+    if (!targetPath) {
+      return errorResponse("Missing required field 'path'", 400, corsHeaders);
+    }
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    let mimeType = body.content_type || guessMimeType(targetPath);
+    let dataToWrite;
+
+    if (body.source_url) {
+      const resp = await fetch(body.source_url);
+      if (!resp.ok) {
+        return errorResponse(`Failed to fetch source_url: HTTP ${resp.status}`, 400, corsHeaders);
+      }
+      dataToWrite = await resp.arrayBuffer();
+      if (!body.content_type && resp.headers.get("content-type")) {
+        mimeType = resp.headers.get("content-type");
+      }
+    } else if (body.content_base64) {
+      dataToWrite = base64ToBytes(body.content_base64);
+    } else if (body.content !== undefined) {
+      if (body.append) {
+        const existing = await env.VAULT_BUCKET.get(fullKey);
+        const existingText = existing ? await existing.text() : "";
+        dataToWrite = existingText + body.content;
+      } else {
+        dataToWrite = String(body.content);
+      }
+    } else {
+      return errorResponse("Must provide 'content', 'content_base64', or 'source_url'", 400, corsHeaders);
+    }
+
+    const putObj = await env.VAULT_BUCKET.put(fullKey, dataToWrite, {
+      httpMetadata: { contentType: mimeType }
+    });
+
+    await logActivity(env, userPrefix, "write_file", { path: targetPath, size: putObj.size });
+
+    return jsonResponse({
+      ok: true,
+      path: targetPath,
+      size: putObj.size,
+      etag: putObj.etag,
+      content_type: mimeType,
+      modified: new Date().toISOString()
+    }, 200, corsHeaders);
+  }
+
+  // 5. POST /v1/files/edit - Surgical in-place text replacement
+  if (pathname === "/v1/files/edit" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const targetPath = (body.path || "").replace(/^\/+/, "");
+    const oldText = String(body.old_text ?? "");
+    const newText = String(body.new_text ?? "");
+
+    if (!targetPath || !oldText) {
+      return errorResponse("Fields 'path' and 'old_text' are required", 400, corsHeaders);
+    }
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    const obj = await env.VAULT_BUCKET.get(fullKey);
+    if (!obj) {
+      return errorResponse(`File not found: ${targetPath}`, 404, corsHeaders);
+    }
+
+    const currentText = await obj.text();
+    if (!currentText.includes(oldText)) {
+      return errorResponse("old_text not found in file. Read the file first to verify exact string.", 400, corsHeaders);
+    }
+
+    const parts = currentText.split(oldText);
+    const count = parts.length - 1;
+    const updatedText = parts.join(newText);
+
+    const putObj = await env.VAULT_BUCKET.put(fullKey, updatedText, {
+      httpMetadata: { contentType: obj.httpMetadata?.contentType || guessMimeType(targetPath) }
+    });
+
+    await logActivity(env, userPrefix, "edit_file", { path: targetPath, occurrences: count });
+
+    return jsonResponse({
+      ok: true,
+      path: targetPath,
+      occurrences_replaced: count,
+      new_size: putObj.size,
+      etag: putObj.etag
+    }, 200, corsHeaders);
+  }
+
+  // 6. POST /v1/files/move - Move or rename a file
+  if (pathname === "/v1/files/move" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const src = (body.source || "").replace(/^\/+/, "");
+    const dst = (body.destination || "").replace(/^\/+/, "");
+    if (!src || !dst) {
+      return errorResponse("Fields 'source' and 'destination' are required", 400, corsHeaders);
+    }
+
+    const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
+    if (!srcObj) {
+      return errorResponse(`Source file not found: ${src}`, 404, corsHeaders);
+    }
+
+    await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+      httpMetadata: srcObj.httpMetadata
+    });
+    await env.VAULT_BUCKET.delete(`${userPrefix}/${src}`);
+    await logActivity(env, userPrefix, "move_file", { source: src, destination: dst });
+
+    return jsonResponse({ ok: true, source: src, destination: dst }, 200, corsHeaders);
+  }
+
+  // 7. POST /v1/files/copy - Copy or duplicate a file
+  if (pathname === "/v1/files/copy" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const src = (body.source || "").replace(/^\/+/, "");
+    const dst = (body.destination || "").replace(/^\/+/, "");
+    if (!src || !dst) {
+      return errorResponse("Fields 'source' and 'destination' are required", 400, corsHeaders);
+    }
+
+    const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
+    if (!srcObj) {
+      return errorResponse(`Source file not found: ${src}`, 404, corsHeaders);
+    }
+
+    const putObj = await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+      httpMetadata: srcObj.httpMetadata
+    });
+    await logActivity(env, userPrefix, "copy_file", { source: src, destination: dst });
+
+    return jsonResponse({ ok: true, source: src, destination: dst, size: putObj.size }, 200, corsHeaders);
+  }
+
+  // 8. POST /v1/files/delete or DELETE /v1/files - Delete a file
+  if ((pathname === "/v1/files/delete" || pathname === "/v1/files") && (request.method === "POST" || request.method === "DELETE")) {
+    let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+    if (!targetPath && request.method === "POST") {
+      try {
+        const body = await request.json();
+        targetPath = (body.path || "").replace(/^\/+/, "");
+      } catch {}
+    }
+
+    if (!targetPath) {
+      return errorResponse("Missing parameter 'path'", 400, corsHeaders);
+    }
+
+    await env.VAULT_BUCKET.delete(`${userPrefix}/${targetPath}`);
+    await logActivity(env, userPrefix, "delete_file", { path: targetPath });
+
+    return jsonResponse({ ok: true, path: targetPath, deleted: true }, 200, corsHeaders);
+  }
+
+  // 9. POST /v1/files/batch - Batch operations (copy, move, delete)
+  if (pathname === "/v1/files/batch" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const operations = Array.isArray(body.operations) ? body.operations : [];
+    if (operations.length === 0) {
+      return errorResponse("Field 'operations' must be a non-empty array", 400, corsHeaders);
+    }
+
+    const results = [];
+    for (const op of operations.slice(0, 50)) {
+      const action = op.action;
+      if (action === "delete") {
+        const p = (op.path || "").replace(/^\/+/, "");
+        if (p) {
+          await env.VAULT_BUCKET.delete(`${userPrefix}/${p}`);
+          results.push({ action: "delete", path: p, status: "success" });
+        }
+      } else if (action === "move" || action === "copy") {
+        const src = (op.source || "").replace(/^\/+/, "");
+        const dst = (op.destination || "").replace(/^\/+/, "");
+        if (src && dst) {
+          const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
+          if (srcObj) {
+            await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, { httpMetadata: srcObj.httpMetadata });
+            if (action === "move") await env.VAULT_BUCKET.delete(`${userPrefix}/${src}`);
+            results.push({ action, source: src, destination: dst, status: "success" });
+          } else {
+            results.push({ action, source: src, destination: dst, status: "error", error: "Source not found" });
+          }
+        }
+      }
+    }
+
+    return jsonResponse({ ok: true, executed_count: results.length, results }, 200, corsHeaders);
+  }
+
+  // 10. POST /v1/files/upload-urls - Direct pre-signed upload URLs for zero-token binary streaming
+  if (pathname === "/v1/files/upload-urls" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const rawPaths = Array.isArray(body.paths) ? body.paths : (body.path ? [body.path] : []);
+    if (rawPaths.length === 0) {
+      return errorResponse("Provide 'paths' array or 'path' string", 400, corsHeaders);
+    }
+
+    const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+    const uploadUrls = {};
+    for (const raw of rawPaths.slice(0, 100)) {
+      const subpath = String(raw).replace(/^\/+/, "");
+      if (!subpath) continue;
+      const fullKey = `${userPrefix}/${subpath}`;
+      const mimeType = guessMimeType(subpath);
+      const token = await createAuthCode(secret, { op: "upload", key: fullKey, path: subpath, mime: mimeType }, 3600);
+      const uploadUrl = `${CANONICAL_ORIGIN}/vault/upload?token=${encodeURIComponent(token)}`;
+      uploadUrls[subpath] = {
+        path: subpath,
+        url: uploadUrl,
+        method: "PUT",
+        expires_in_seconds: 3600,
+        curl_example: `curl -sS -X PUT --upload-file "./${subpath.split('/').pop()}" "${uploadUrl}"`
+      };
+    }
+
+    return jsonResponse({
+      ok: true,
+      expires_in_seconds: 3600,
+      method: "PUT",
+      upload_urls: uploadUrls
+    }, 200, corsHeaders);
+  }
+
+  // 11. GET /v1/files/download-url - Pre-signed download URL with HTTP Range support
+  if (pathname === "/v1/files/download-url" && (request.method === "GET" || request.method === "POST")) {
+    let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+    if (!targetPath && request.method === "POST") {
+      try {
+        const body = await request.json();
+        targetPath = (body.path || "").replace(/^\/+/, "");
+      } catch {}
+    }
+
+    if (!targetPath) {
+      return errorResponse("Missing parameter 'path'", 400, corsHeaders);
+    }
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    const headObj = await env.VAULT_BUCKET.head(fullKey);
+    if (!headObj) {
+      return errorResponse(`File not found: ${targetPath}`, 404, corsHeaders);
+    }
+
+    const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+    const dlToken = await createAuthCode(secret, { op: "download", key: fullKey, path: targetPath }, 86400);
+    const downloadUrl = `${CANONICAL_ORIGIN}/vault/download?token=${encodeURIComponent(dlToken)}`;
+
+    return jsonResponse({
+      ok: true,
+      path: targetPath,
+      size: headObj.size,
+      mime_type: headObj.httpMetadata?.contentType || guessMimeType(targetPath),
+      download_url: downloadUrl,
+      expires_in_seconds: 86400,
+      supports_range: true
+    }, 200, corsHeaders);
+  }
+
+  // 12. GET /v1/size - Folder size and item count
+  if (pathname === "/v1/size" && request.method === "GET") {
+    const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+
+    let count = 0;
+    let totalBytes = 0;
+    let cursor;
+    do {
+      const listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000, cursor });
+      for (const obj of listed.objects || []) {
+        count++;
+        totalBytes += obj.size;
+      }
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor && count < 50000);
+
+    return jsonResponse({
+      ok: true,
+      path: subpath || "/",
+      fileCount: count,
+      totalBytes,
+      sizeFormatted: `${(totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+    }, 200, corsHeaders);
+  }
+
+  // 13. GET /v1/search - Fast filename and extension search
+  if (pathname === "/v1/search" && request.method === "GET") {
+    const query = (url.searchParams.get("query") || url.searchParams.get("q") || "").toLowerCase().replace(/\*/g, "");
+    if (!query) {
+      return errorResponse("Missing parameter 'query'", 400, corsHeaders);
+    }
+
+    const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+
+    const matches = [];
+    let cursor;
+    let scanned = 0;
+    do {
+      const listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000, cursor });
+      for (const obj of listed.objects || []) {
+        scanned++;
+        const relPath = obj.key.slice(userPrefix.length + 1);
+        if (relPath.toLowerCase().includes(query)) {
+          matches.push({
+            path: relPath,
+            size: obj.size,
+            modified: obj.uploaded.toISOString(),
+            mime_type: obj.httpMetadata?.contentType || guessMimeType(relPath)
+          });
+          if (matches.length >= 100) break;
+        }
+      }
+      cursor = listed.truncated && matches.length < 100 ? listed.cursor : undefined;
+    } while (cursor && scanned < 25000);
+
+    return jsonResponse({
+      ok: true,
+      query,
+      path: subpath || "/",
+      matches_count: matches.length,
+      matches
+    }, 200, corsHeaders);
+  }
+
+  // 14. POST /v1/grep - Text content search inside files
+  if (pathname === "/v1/grep" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const query = String(body.query || "").trim();
+    if (!query) {
+      return errorResponse("Missing parameter 'query'", 400, corsHeaders);
+    }
+    const queryLower = query.toLowerCase();
+    const subpath = (body.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+    const maxResults = Math.min(Math.max(parseInt(body.max_results || 30, 10), 1), 100);
+
+    const textExtensions = /\.(md|txt|json|jsonl|yaml|yml|csv|tsv|js|ts|jsx|tsx|py|sh|swift|html|css|xml|toml|ini|conf|env|sql)$/i;
+    const directListed = await listDirectoryComplete(env, prefix, 4);
+    const recursiveListed = await env.VAULT_BUCKET.list({ prefix, limit: 800 });
+
+    const seenKeys = new Set();
+    const candidateKeys = [];
+    for (const o of [...(directListed.objects || []), ...(recursiveListed.objects || [])]) {
+      if (seenKeys.has(o.key)) continue;
+      seenKeys.add(o.key);
+      if (o.key.includes("/.runitback/") || o.key.includes("/node_modules/") || o.key.includes("/.git/")) continue;
+      if (o.size > 0 && o.size <= 512 * 1024 && textExtensions.test(o.key)) {
+        candidateKeys.push(o);
+        if (candidateKeys.length >= 100) break;
+      }
+    }
+
+    const results = [];
+    for (const objMeta of candidateKeys) {
+      if (results.length >= maxResults) break;
+      const obj = await env.VAULT_BUCKET.get(objMeta.key);
+      if (!obj) continue;
+      const text = await obj.text();
+      if (!text.toLowerCase().includes(queryLower)) continue;
+
+      const relPath = objMeta.key.slice(userPrefix.length + 1);
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(queryLower)) {
+          results.push({
+            path: relPath,
+            line: i + 1,
+            snippet: lines[i].trim().slice(0, 300)
+          });
+          if (results.length >= maxResults) break;
+        }
+      }
+    }
+
+    return jsonResponse({
+      ok: true,
+      query,
+      path: subpath || "/",
+      matches_count: results.length,
+      results
+    }, 200, corsHeaders);
+  }
+
+  // 15. GET /v1/doctor - Diagnostics & capabilities
+  if (pathname === "/v1/doctor" && request.method === "GET") {
+    const rootListing = await listDirectoryComplete(env, `${userPrefix}/`, 5);
+    const skillsListing = await listDirectoryComplete(env, `${userPrefix}/_SKILLS/`, 5);
+    const devices = await getSystemJson(env, userPrefix, "devices.json", []);
+    const symlinks = await getSystemJson(env, userPrefix, "symlinks.json", []);
+
+    return jsonResponse({
+      ok: true,
+      status: "healthy",
+      domain: "api.zerodrive.dev",
+      mcp_endpoint: `${CANONICAL_ORIGIN}/mcp`,
+      openapi_spec: `${CANONICAL_ORIGIN}/openapi.json`,
+      documentation: `${CANONICAL_ORIGIN}/docs`,
+      tenant_vault_prefix: userPrefix,
+      root_folders: rootListing.dirs,
+      root_files: rootListing.files.map(f => f.name),
+      installed_skills_count: skillsListing.dirs.length,
+      installed_skills: skillsListing.dirs,
+      connected_devices_count: devices.length,
+      active_symlinks_count: symlinks.length,
+      capabilities: {
+        rest_api: "Full v1 REST API operational",
+        hosted_mcp: "JSON-RPC 2.0 24/7 operational",
+        streaming_uploads: "Pre-signed PUT URLs up to 5GB (videos, ZIPs, binaries)",
+        streaming_downloads: "HTTP Range 206 supported for media streaming",
+        agent_skills: "Packaged directly into _SKILLS/<verb-noun-name>/"
+      }
+    }, 200, corsHeaders);
+  }
+
+  // 16. GET /v1/skills - List or inspect reusable skills
+  if (pathname === "/v1/skills" && request.method === "GET") {
+    const skillName = url.searchParams.get("name");
+    if (skillName) {
+      const cleanName = skillName.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+      const skillPrefix = `${userPrefix}/_SKILLS/${cleanName}/`;
+      const skillMd = await env.VAULT_BUCKET.get(`${userPrefix}/_SKILLS/${cleanName}/SKILL.md`);
+      if (!skillMd) {
+        return errorResponse(`Skill '${cleanName}' not found in _SKILLS/`, 404, corsHeaders);
+      }
+      const filesListing = await listDirectoryComplete(env, skillPrefix, 2);
+      return jsonResponse({
+        ok: true,
+        skill: cleanName,
+        folder: `_SKILLS/${cleanName}`,
+        skill_md: await skillMd.text(),
+        bundled_files: filesListing.files.map(f => f.name)
+      }, 200, corsHeaders);
+    }
+
+    const skillsListing = await listDirectoryComplete(env, `${userPrefix}/_SKILLS/`, 5);
+    const skills = [];
+    for (const dir of skillsListing.dirs) {
+      const obj = await env.VAULT_BUCKET.get(`${userPrefix}/_SKILLS/${dir}/SKILL.md`);
+      let description = "";
+      if (obj) {
+        const text = await obj.text();
+        const match = text.match(/description:\s*([^\n]+)/i);
+        if (match) description = match[1].trim();
+      }
+      skills.push({ name: dir, folder: `_SKILLS/${dir}`, description });
+    }
+
+    return jsonResponse({
+      ok: true,
+      count: skills.length,
+      skills
+    }, 200, corsHeaders);
+  }
+
+  // 17. POST /v1/skills - Create or package a reusable skill
+  if (pathname === "/v1/skills" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    let skillName = String(body.name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+
+    if (!skillName) {
+      return errorResponse("Provide a valid skill name (e.g. 'create-substack-articles')", 400, corsHeaders);
+    }
+
+    const bannedWords = ["forge", "engine", "system", "suite", "hub", "nexus", "matrix", "factory", "mastery", "ultimate", "pro", "2-0"];
+    const usedBanned = bannedWords.filter(w => skillName.split("-").includes(w));
+    if (usedBanned.length > 0) {
+      return errorResponse(`Skill name '${skillName}' contains banned buzzword(s): ${usedBanned.join(", ")}. Rename using plain verb-noun format (e.g. 'create-substack-articles').`, 400, corsHeaders);
+    }
+
+    const desc = String(body.description || "Reusable ZeroDrive agent skill.").trim();
+    let bodyMd = String(body.instructions || "").trim();
+    if (!bodyMd.startsWith("---")) {
+      bodyMd = `---\nname: ${skillName}\ndescription: ${desc.replace(/\n+/g, " ")}\n---\n\n${bodyMd}\n`;
+    }
+
+    const skillFolder = `_SKILLS/${skillName}`;
+    const skillMdKey = `${userPrefix}/${skillFolder}/SKILL.md`;
+    await env.VAULT_BUCKET.put(skillMdKey, bodyMd, {
+      httpMetadata: { contentType: "text/markdown; charset=utf-8" }
+    });
+
+    const savedFiles = [`${skillFolder}/SKILL.md`];
+    if (Array.isArray(body.files)) {
+      for (const f of body.files) {
+        const rel = String(f?.relative_path || "").replace(/^\/+/, "");
+        if (!rel) continue;
+        const fileSubpath = `${skillFolder}/${rel}`;
+        const fileKey = `${userPrefix}/${fileSubpath}`;
+        const fileMime = guessMimeType(fileSubpath);
+
+        if (f.source_url) {
+          const resp = await fetch(String(f.source_url));
+          if (resp.ok) {
+            const buf = await resp.arrayBuffer();
+            await env.VAULT_BUCKET.put(fileKey, buf, { httpMetadata: { contentType: resp.headers.get("content-type") || fileMime } });
+            savedFiles.push(fileSubpath);
+          }
+        } else if (f.content_base64) {
+          const bytes = base64ToBytes(f.content_base64);
+          await env.VAULT_BUCKET.put(fileKey, bytes, { httpMetadata: { contentType: fileMime } });
+          savedFiles.push(fileSubpath);
+        } else if (f.content !== undefined) {
+          await env.VAULT_BUCKET.put(fileKey, String(f.content), { httpMetadata: { contentType: fileMime } });
+          savedFiles.push(fileSubpath);
+        }
+      }
+    }
+
+    await logActivity(env, userPrefix, "save_skill", { skill: skillName, files: savedFiles });
+
+    return jsonResponse({
+      ok: true,
+      skill: skillName,
+      folder: skillFolder,
+      saved_files: savedFiles
+    }, 201, corsHeaders);
+  }
+
+  // 18. Multi-Device Fleet: GET /v1/devices & POST /v1/devices/heartbeat
+  if (pathname === "/v1/devices" && request.method === "GET") {
+    const devices = await getSystemJson(env, userPrefix, "devices.json", []);
+    return jsonResponse({ ok: true, count: devices.length, devices }, 200, corsHeaders);
+  }
+
+  if (pathname === "/v1/devices/heartbeat" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const deviceId = String(body.device_id || body.hostname || "unknown-device").trim();
+    const devices = await getSystemJson(env, userPrefix, "devices.json", []);
+
+    const updatedDevice = {
+      device_id: deviceId,
+      hostname: body.hostname || deviceId,
+      os: body.os || "macOS",
+      free_gb: body.free_gb !== undefined ? Number(body.free_gb) : null,
+      mount_status: body.mount_status || "mounted",
+      mount_path: body.mount_path || "~/.zerodrive-mount",
+      cli_version: body.version || "1.1.0",
+      ip: request.headers.get("cf-connecting-ip") || "unknown",
+      last_heartbeat: new Date().toISOString()
+    };
+
+    const idx = devices.findIndex(d => d.device_id === deviceId);
+    if (idx >= 0) {
+      devices[idx] = { ...devices[idx], ...updatedDevice };
+    } else {
+      devices.push(updatedDevice);
+    }
+
+    await setSystemJson(env, userPrefix, "devices.json", devices);
+    return jsonResponse({ ok: true, device: updatedDevice }, 200, corsHeaders);
+  }
+
+  // 19. Multi-Device Symlinks: GET /v1/symlinks & POST /v1/symlinks
+  if (pathname === "/v1/symlinks" && request.method === "GET") {
+    const symlinks = await getSystemJson(env, userPrefix, "symlinks.json", []);
+    return jsonResponse({ ok: true, count: symlinks.length, symlinks }, 200, corsHeaders);
+  }
+
+  if (pathname === "/v1/symlinks" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const localPath = String(body.local_path || "").trim();
+    const vaultTarget = String(body.vault_target || "").trim();
+    if (!localPath || !vaultTarget) {
+      return errorResponse("Fields 'local_path' and 'vault_target' are required", 400, corsHeaders);
+    }
+
+    const symlinks = await getSystemJson(env, userPrefix, "symlinks.json", []);
+    const entry = {
+      id: `sym_${Date.now()}`,
+      device_id: body.device_id || "naegele-pro",
+      local_path: localPath,
+      vault_target: vaultTarget,
+      created_at: new Date().toISOString()
+    };
+
+    const existingIdx = symlinks.findIndex(s => s.device_id === entry.device_id && s.local_path === localPath);
+    if (existingIdx >= 0) {
+      symlinks[existingIdx] = entry;
+    } else {
+      symlinks.push(entry);
+    }
+
+    await setSystemJson(env, userPrefix, "symlinks.json", symlinks);
+    await logActivity(env, userPrefix, "register_symlink", entry);
+
+    return jsonResponse({ ok: true, symlink: entry }, 201, corsHeaders);
+  }
+
+  // 20. Activity Ledger: GET /v1/activity & POST /v1/activity
+  if (pathname === "/v1/activity" && request.method === "GET") {
+    const activities = await getSystemJson(env, userPrefix, "activity.json", []);
+    return jsonResponse({ ok: true, count: activities.length, activities }, 200, corsHeaders);
+  }
+
+  if (pathname === "/v1/activity" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+    const action = String(body.action || "custom_event").trim();
+    const entry = await logActivity(env, userPrefix, action, body.details || {});
+    return jsonResponse({ ok: true, activity: entry }, 201, corsHeaders);
+  }
+
+  return errorResponse(`Endpoint not found: ${request.method} ${pathname}`, 404, corsHeaders, {
+    available_endpoints: [
+      "GET /v1/tree", "GET /v1/files", "POST /v1/files/read", "POST /v1/files/write",
+      "POST /v1/files/edit", "POST /v1/files/move", "POST /v1/files/copy", "POST /v1/files/delete",
+      "POST /v1/files/batch", "POST /v1/files/upload-urls", "GET /v1/files/download-url",
+      "GET /v1/size", "GET /v1/search", "POST /v1/grep", "GET /v1/doctor",
+      "GET /v1/skills", "POST /v1/skills", "GET /v1/devices", "POST /v1/devices/heartbeat",
+      "GET /v1/symlinks", "POST /v1/symlinks", "GET /v1/activity", "POST /v1/activity"
+    ]
+  });
+}
+
+function handleOpenAPISpec(url, corsHeaders) {
+  const origin = CANONICAL_ORIGIN;
+  const spec = {
+    openapi: "3.1.0",
+    info: {
+      title: "ZeroDrive REST & MCP API",
+      description: "Complete REST API and 24/7 hosted Model Context Protocol (MCP) server for ZeroDrive Cloud Vault. Query, browse, stream, edit, and organize files across every connected device and AI agent.",
+      version: "1.2.0",
+      "x-logo": {
+        url: CONNECTOR_ICON_URL,
+        altText: "ZeroDrive"
+      },
+      contact: {
+        name: "ZeroDrive Support",
+        url: "https://zerodrive.dev",
+        email: "naegele412@gmail.com"
+      }
+    },
+    servers: [
+      { url: origin, description: "ZeroDrive Production Edge API" }
+    ],
+    tags: [
+      { name: "Vault Files", description: "Read, write, edit, slice, move, copy, and stream files" },
+      { name: "Search & Intelligence", description: "Fast server-side filename searching and text grep" },
+      { name: "Streaming & Binaries", description: "Direct pre-signed upload URLs and media streaming" },
+      { name: "Agent Skills", description: "Reusable skills packaged into _SKILLS/ with strict naming rules" },
+      { name: "Multi-Device Fleet", description: "Fleet telemetry, device heartbeats, and symlink management" },
+      { name: "Diagnostics & MCP", description: "Vault health doctor and JSON-RPC 2.0 MCP interface" }
+    ],
+    paths: {
+      "/v1/tree": {
+        get: {
+          tags: ["Vault Files"],
+          summary: "Get Visual Folder Tree",
+          description: "Returns a visual directory tree hierarchy of the vault or subfolder.",
+          operationId: "getTree",
+          parameters: [
+            { name: "path", in: "query", schema: { type: "string" }, description: "Subfolder path to inspect (e.g. '', 'MAIN', 'Course')" },
+            { name: "depth", in: "query", schema: { type: "integer", default: 2, minimum: 1, maximum: 4 }, description: "Depth of tree traversal" }
+          ],
+          responses: {
+            "200": { description: "Directory tree rendered cleanly" },
+            "401": { description: "Unauthorized" }
+          }
+        }
+      },
+      "/v1/files": {
+        get: {
+          tags: ["Vault Files"],
+          summary: "List Files and Directories",
+          description: "List contents of any folder with file sizes, modified timestamps, and MIME types.",
+          operationId: "listFiles",
+          parameters: [
+            { name: "path", in: "query", schema: { type: "string" }, description: "Directory path" },
+            { name: "recursive", in: "query", schema: { type: "boolean", default: false }, description: "List recursively" }
+          ],
+          responses: {
+            "200": { description: "Folder listing" },
+            "401": { description: "Unauthorized" }
+          }
+        },
+        delete: {
+          tags: ["Vault Files"],
+          summary: "Delete File",
+          description: "Delete a file from the vault.",
+          operationId: "deleteFileQuery",
+          parameters: [
+            { name: "path", in: "query", required: true, schema: { type: "string" }, description: "File path to delete" }
+          ],
+          responses: {
+            "200": { description: "File deleted" }
+          }
+        }
+      },
+      "/v1/files/read": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Read File with Slicing",
+          description: "Read text contents with optional line range slicing (head/tail/lines) or retrieve binary metadata and download URL.",
+          operationId: "readFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["path"],
+                  properties: {
+                    path: { type: "string", description: "Vault file path (e.g. 'MAIN/notes.md')" },
+                    head: { type: "integer", description: "Read first N lines" },
+                    tail: { type: "integer", description: "Read last N lines" },
+                    lines: { type: "string", description: "Line range (e.g. '1-100')" },
+                    encoding: { type: "string", enum: ["utf-8", "base64"], default: "utf-8" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "File content retrieved" }
+          }
+        }
+      },
+      "/v1/files/write": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Write or Append File",
+          description: "Create, overwrite, or append to any file in the vault via text, base64 binary, or remote source_url.",
+          operationId: "writeFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["path"],
+                  properties: {
+                    path: { type: "string", description: "Target vault path" },
+                    content: { type: "string", description: "UTF-8 text content" },
+                    content_base64: { type: "string", description: "Base64 data for binary files" },
+                    source_url: { type: "string", description: "URL to download directly into vault" },
+                    content_type: { type: "string", description: "MIME type (optional)" },
+                    append: { type: "boolean", default: false, description: "Append to existing file" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "File written successfully" }
+          }
+        }
+      },
+      "/v1/files/edit": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Surgical Text Replacement",
+          description: "Replace exact target string with replacement text in a file without re-uploading the entire document.",
+          operationId: "editFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["path", "old_text", "new_text"],
+                  properties: {
+                    path: { type: "string", description: "Vault path" },
+                    old_text: { type: "string", description: "Exact string to find" },
+                    new_text: { type: "string", description: "Replacement string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Text replaced" }
+          }
+        }
+      },
+      "/v1/files/move": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Move or Rename File",
+          description: "Move or rename a file within the vault.",
+          operationId: "moveFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["source", "destination"],
+                  properties: {
+                    source: { type: "string" },
+                    destination: { type: "string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "File moved" }
+          }
+        }
+      },
+      "/v1/files/copy": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Copy File",
+          description: "Duplicate a file to a new destination in the vault.",
+          operationId: "copyFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["source", "destination"],
+                  properties: {
+                    source: { type: "string" },
+                    destination: { type: "string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "File copied" }
+          }
+        }
+      },
+      "/v1/files/delete": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Delete File via POST",
+          description: "Delete a file from the vault.",
+          operationId: "deleteFile",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["path"],
+                  properties: {
+                    path: { type: "string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "File deleted" }
+          }
+        }
+      },
+      "/v1/files/batch": {
+        post: {
+          tags: ["Vault Files"],
+          summary: "Batch File Operations",
+          description: "Execute multiple move, copy, and delete operations in a single atomic request.",
+          operationId: "batchOperations",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["operations"],
+                  properties: {
+                    operations: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: ["action"],
+                        properties: {
+                          action: { type: "string", enum: ["delete", "copy", "move"] },
+                          path: { type: "string" },
+                          source: { type: "string" },
+                          destination: { type: "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Batch results" }
+          }
+        }
+      },
+      "/v1/files/upload-urls": {
+        post: {
+          tags: ["Streaming & Binaries"],
+          summary: "Create Pre-Signed Upload URLs",
+          description: "Generate 1-hour pre-signed direct HTTP PUT upload URLs for streaming large local files (screenshots, PDFs, MP4/MOV videos, ZIPs up to 5GB) with zero LLM token overhead.",
+          operationId: "createUploadUrls",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    paths: { type: "array", items: { type: "string" } },
+                    path: { type: "string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Pre-signed PUT URLs generated" }
+          }
+        }
+      },
+      "/v1/files/download-url": {
+        get: {
+          tags: ["Streaming & Binaries"],
+          summary: "Get Pre-Signed Download URL",
+          description: "Get a 24-hour HTTPS download URL with HTTP Range (206) support for fast streaming of videos, PDFs, and archives.",
+          operationId: "getDownloadUrl",
+          parameters: [
+            { name: "path", in: "query", required: true, schema: { type: "string" } }
+          ],
+          responses: {
+            "200": { description: "Download URL returned" }
+          }
+        }
+      },
+      "/v1/size": {
+        get: {
+          tags: ["Search & Intelligence"],
+          summary: "Get Folder Size & Item Count",
+          description: "Calculate exact byte size, GB formatted total, and file count for any folder.",
+          operationId: "getFolderSize",
+          parameters: [
+            { name: "path", in: "query", schema: { type: "string" }, description: "Folder path (leave blank for vault root)" }
+          ],
+          responses: {
+            "200": { description: "Size summary" }
+          }
+        }
+      },
+      "/v1/search": {
+        get: {
+          tags: ["Search & Intelligence"],
+          summary: "Search Filenames & Extensions",
+          description: "Fast server-side wildcard search across all files in vault.",
+          operationId: "searchFilenames",
+          parameters: [
+            { name: "query", in: "query", required: true, schema: { type: "string" }, description: "Keyword or extension to find" },
+            { name: "path", in: "query", schema: { type: "string" }, description: "Subfolder filter" }
+          ],
+          responses: {
+            "200": { description: "Matching files" }
+          }
+        }
+      },
+      "/v1/grep": {
+        post: {
+          tags: ["Search & Intelligence"],
+          summary: "Grep Inside Text Files",
+          description: "Search text contents across markdown, code, and text files, returning line numbers and snippets.",
+          operationId: "grepVault",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["query"],
+                  properties: {
+                    query: { type: "string", description: "Search keyword or text" },
+                    path: { type: "string", description: "Folder to restrict search to" },
+                    max_results: { type: "integer", default: 30 }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Grep results" }
+          }
+        }
+      },
+      "/v1/doctor": {
+        get: {
+          tags: ["Diagnostics & MCP"],
+          summary: "Vault Doctor Health Check",
+          description: "Inspect root folders, installed skills, connected devices, and service capabilities.",
+          operationId: "getVaultDoctor",
+          responses: {
+            "200": { description: "Health diagnostics" }
+          }
+        }
+      },
+      "/v1/skills": {
+        get: {
+          tags: ["Agent Skills"],
+          summary: "List or Inspect Skills",
+          description: "List all agent skills in _SKILLS/ or inspect a specific skill's SKILL.md.",
+          operationId: "getSkills",
+          parameters: [
+            { name: "name", in: "query", schema: { type: "string" }, description: "Specific skill name (e.g. 'create-substack-articles')" }
+          ],
+          responses: {
+            "200": { description: "Skill details or list" }
+          }
+        },
+        post: {
+          tags: ["Agent Skills"],
+          summary: "Package and Save Skill",
+          description: "Package a reusable Agent Skill into _SKILLS/<verb-noun-name>/SKILL.md enforcing naming rules and buzzword filters.",
+          operationId: "saveSkill",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["name", "description", "instructions"],
+                  properties: {
+                    name: { type: "string", description: "Lowercase hyphenated verb-noun name (e.g. 'create-substack-articles')" },
+                    description: { type: "string", description: "Short description" },
+                    instructions: { type: "string", description: "Markdown instructions for SKILL.md" },
+                    files: {
+                      type: "array",
+                      description: "Optional bundled scripts or files",
+                      items: {
+                        type: "object",
+                        required: ["relative_path"],
+                        properties: {
+                          relative_path: { type: "string" },
+                          content: { type: "string" },
+                          content_base64: { type: "string" },
+                          source_url: { type: "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "201": { description: "Skill saved" }
+          }
+        }
+      },
+      "/v1/devices": {
+        get: {
+          tags: ["Multi-Device Fleet"],
+          summary: "List Connected Devices",
+          description: "List all registered Mac computers, servers, and VMs connected to the vault.",
+          operationId: "getDevices",
+          responses: {
+            "200": { description: "Device fleet status" }
+          }
+        }
+      },
+      "/v1/devices/heartbeat": {
+        post: {
+          tags: ["Multi-Device Fleet"],
+          summary: "Record Device Heartbeat",
+          description: "Record disk space, mount state, and heartbeat from a connected device.",
+          operationId: "recordDeviceHeartbeat",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["device_id"],
+                  properties: {
+                    device_id: { type: "string" },
+                    hostname: { type: "string" },
+                    os: { type: "string" },
+                    free_gb: { type: "number" },
+                    mount_status: { type: "string" },
+                    mount_path: { type: "string" },
+                    version: { type: "string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "Heartbeat acknowledged" }
+          }
+        }
+      },
+      "/v1/symlinks": {
+        get: {
+          tags: ["Multi-Device Fleet"],
+          summary: "List Active Symlinks",
+          description: "List folder shortcuts created across user devices.",
+          operationId: "getSymlinks",
+          responses: {
+            "200": { description: "Symlink registry" }
+          }
+        },
+        post: {
+          tags: ["Multi-Device Fleet"],
+          summary: "Register Local Symlink",
+          description: "Register a local symlink on a device mapping to a vault folder.",
+          operationId: "registerSymlink",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["local_path", "vault_target"],
+                  properties: {
+                    device_id: { type: "string" },
+                    local_path: { type: "string" },
+                    vault_target: { type: "string" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "201": { description: "Symlink registered" }
+          }
+        }
+      },
+      "/v1/activity": {
+        get: {
+          tags: ["Multi-Device Fleet"],
+          summary: "Get Activity Ledger",
+          description: "Recent file migrations, sync events, and agent operations across devices.",
+          operationId: "getActivity",
+          responses: {
+            "200": { description: "Recent activity entries" }
+          }
+        },
+        post: {
+          tags: ["Multi-Device Fleet"],
+          summary: "Log Custom Activity",
+          description: "Record a custom activity entry in the vault ledger.",
+          operationId: "logActivityEntry",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["action"],
+                  properties: {
+                    action: { type: "string" },
+                    details: { type: "object" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "201": { description: "Activity recorded" }
+          }
+        }
+      },
+      "/mcp": {
+        post: {
+          tags: ["Diagnostics & MCP"],
+          summary: "ZeroDrive MCP JSON-RPC 2.0 Endpoint",
+          operationId: "executeMCP",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    jsonrpc: { type: "string", example: "2.0" },
+                    id: { type: "string", example: "1" },
+                    method: { type: "string", example: "tools/list" },
+                    params: { type: "object" }
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            "200": { description: "MCP JSON-RPC response" }
+          }
+        }
+      }
+    },
+    components: {
+      securitySchemes: {
+        BearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "API_KEY / OAuth Token",
+          description: "ZeroDrive Master API Key or OAuth 2.0 Bearer token"
+        },
+        OAuth2: {
+          type: "oauth2",
+          description: "ZeroDrive OAuth 2.0 flow with 1-click Google authentication",
+          flows: {
+            authorizationCode: {
+              authorizationUrl: `${origin}/oauth/authorize`,
+              tokenUrl: `${origin}/oauth/token`,
+              scopes: {
+                mcp: "Full MCP and REST agent vault access",
+                "vault:read": "Read files in vault",
+                "vault:write": "Write and upload files in vault"
+              }
+            }
+          }
+        }
+      }
+    },
+    security: [
+      { BearerAuth: [] },
+      { OAuth2: ["mcp", "vault:read", "vault:write"] }
+    ]
+  };
+
+  return new Response(JSON.stringify(spec, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8" }
+  });
+}
+
+function handleApiDocsHtml(url, corsHeaders) {
+  const origin = CANONICAL_ORIGIN;
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ZeroDrive REST API &amp; Agent Documentation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="${CONNECTOR_ICON_URL}">
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card-bg: rgba(255, 255, 255, 0.03);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #f5a623;
+      --accent-glow: rgba(245, 166, 35, 0.15);
+      --text: #f5f5f7;
+      --text-muted: #8e8e93;
+      --code-bg: #12131a;
+      --green: #34c759;
+      --blue: #0a84ff;
+    }
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+    header {
+      border-bottom: 1px solid var(--card-border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      background: rgba(9, 10, 15, 0.85);
+      backdrop-filter: blur(16px);
+      z-index: 100;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: #fff;
+      font-weight: 700;
+      font-size: 18px;
+    }
+    .brand img { width: 34px; height: 34px; border-radius: 8px; }
+    .nav-links { display: flex; gap: 20px; align-items: center; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 14px; transition: color 0.15s; }
+    .nav-links a:hover { color: #fff; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: rgba(52, 199, 89, 0.12);
+      border: 1px solid rgba(52, 199, 89, 0.25);
+      border-radius: 999px;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 48px 24px;
+    }
+    h1 { font-size: 38px; margin: 0 0 12px; letter-spacing: -0.02em; }
+    .subtitle { font-size: 18px; color: var(--text-muted); margin: 0 0 40px; max-width: 760px; }
+    .quick-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-bottom: 48px;
+    }
+    .quick-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 18px;
+    }
+    .quick-card h4 { margin: 0 0 6px; font-size: 15px; color: #fff; }
+    .quick-card p { margin: 0; font-size: 13px; color: var(--text-muted); }
+    .endpoint {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      margin-bottom: 24px;
+      overflow: hidden;
+    }
+    .endpoint-header {
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      border-bottom: 1px solid var(--card-border);
+      background: rgba(255, 255, 255, 0.015);
+    }
+    .method {
+      font-family: ui-monospace, Menlo, monospace;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      letter-spacing: 0.05em;
+    }
+    .method.get { background: rgba(52, 199, 89, 0.15); color: var(--green); border: 1px solid rgba(52, 199, 89, 0.3); }
+    .method.post { background: rgba(245, 166, 35, 0.15); color: var(--accent); border: 1px solid rgba(245, 166, 35, 0.3); }
+    .method.delete { background: rgba(255, 69, 58, 0.15); color: #ff453a; border: 1px solid rgba(255, 69, 58, 0.3); }
+    .ep-path { font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 600; color: #fff; }
+    .ep-desc { color: var(--text-muted); font-size: 13px; margin-left: auto; }
+    .endpoint-body { padding: 20px; font-size: 14px; }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      color: #e5e5ea;
+      margin: 12px 0;
+      position: relative;
+    }
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .copy-btn:hover { background: rgba(255, 255, 255, 0.16); }
+    .section-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin: 48px 0 18px;
+      color: #fff;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">
+      <img src="${CONNECTOR_ICON_URL}" alt="ZeroDrive">
+      <span>ZeroDrive API</span>
+    </a>
+    <div class="nav-links">
+      <span class="badge"><span class="badge-dot"></span> v1 Live Edge</span>
+      <a href="/openapi.json">OpenAPI 3.1 Spec</a>
+      <a href="/mcp">Hosted MCP</a>
+      <a href="/v1/health">Health</a>
+    </div>
+  </header>
+
+  <div class="container">
+    <h1>ZeroDrive REST &amp; Agent API</h1>
+    <p class="subtitle">Complete, low-latency REST API and 24/7 Model Context Protocol (MCP) server for querying, reading, writing, and streaming your entire cloud vault across all your Macs, servers, and AI agents.</p>
+
+    <div class="quick-bar">
+      <div class="quick-card">
+        <h4>Base URL</h4>
+        <p><code>https://api.zerodrive.dev</code></p>
+      </div>
+      <div class="quick-card">
+        <h4>Authentication</h4>
+        <p><code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
+      </div>
+      <div class="quick-card">
+        <h4>OpenAPI 3.1 Blueprint</h4>
+        <p><a href="/openapi.json" style="color:var(--accent);">api.zerodrive.dev/openapi.json</a></p>
+      </div>
+      <div class="quick-card">
+        <h4>Hosted Agent MCP</h4>
+        <p><a href="/mcp" style="color:var(--green);">api.zerodrive.dev/mcp</a></p>
+      </div>
+    </div>
+
+    <!-- Section 1: Authentication -->
+    <div class="section-title">1. Authentication</div>
+    <p style="color:var(--text-muted); font-size:14px;">Every request requires a Bearer token in the <code>Authorization</code> header or as a <code>?key=</code> query parameter. You can use your Master API Key or an OAuth 2.0 token obtained via 1-click Google Login (<code>/login</code>).</p>
+    <pre><code>curl -H "Authorization: Bearer zd_oauth_master_..." "https://api.zerodrive.dev/v1/tree?depth=2"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+
+    <!-- Section 2: Vault Navigation -->
+    <div class="section-title">2. Vault Browsing &amp; Sizing</div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method get">GET</span>
+        <span class="ep-path">/v1/tree</span>
+        <span class="ep-desc">Visual directory tree of the vault</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Query parameters: <code>path</code> (optional, e.g. <code>MAIN</code>), <code>depth</code> (1 to 4, default 2).</p>
+        <pre><code>curl -s "https://api.zerodrive.dev/v1/tree?path=MAIN&amp;depth=2" \
+  -H "Authorization: Bearer YOUR_TOKEN"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method get">GET</span>
+        <span class="ep-path">/v1/files</span>
+        <span class="ep-desc">List files and folders with sizes and MIME types</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Query parameters: <code>path</code> (optional), <code>recursive</code> (boolean, default false).</p>
+        <pre><code>curl -s "https://api.zerodrive.dev/v1/files?path=MAIN" \
+  -H "Authorization: Bearer YOUR_TOKEN"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method get">GET</span>
+        <span class="ep-path">/v1/size</span>
+        <span class="ep-desc">Instant file count and byte / GB totals</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s "https://api.zerodrive.dev/v1/size?path=MAIN" \
+  -H "Authorization: Bearer YOUR_TOKEN"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <!-- Section 3: File Operations -->
+    <div class="section-title">3. File Operations (Read, Write, Edit, Move, Delete)</div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/files/read</span>
+        <span class="ep-desc">Read file with line slicing or fetch binary metadata</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Accepts <code>path</code>, and optional <code>head</code>, <code>tail</code>, <code>lines</code> (e.g. <code>"1-50"</code>), or <code>encoding</code>.</p>
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/files/read" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "MAIN/notes.md", "lines": "1-30"}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/files/write</span>
+        <span class="ep-desc">Write or append text, base64 binary, or fetch from URL</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/files/write" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "MAIN/log.txt", "content": "Agent entry\n", "append": true}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/files/edit</span>
+        <span class="ep-desc">Surgical find-and-replace inside a file</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/files/edit" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "MAIN/config.json", "old_text": "v1.0.0", "new_text": "v1.1.0"}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/files/upload-urls</span>
+        <span class="ep-desc">Pre-signed HTTP PUT upload URLs for multi-GB streaming</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Generates 1-hour signed direct upload URLs. Upload from your terminal or script with zero LLM token overhead:</p>
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/files/upload-urls" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"paths": ["MAIN/demo.mp4", "MAIN/bundle.zip"]}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <!-- Section 4: Search -->
+    <div class="section-title">4. Search &amp; Content Grep</div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method get">GET</span>
+        <span class="ep-path">/v1/search</span>
+        <span class="ep-desc">Fast server-side wildcard search</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s "https://api.zerodrive.dev/v1/search?query=.mp4&amp;path=MAIN" \
+  -H "Authorization: Bearer YOUR_TOKEN"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/grep</span>
+        <span class="ep-desc">Search inside text/code file contents</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/grep" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Dan Kennedy", "path": "MAIN", "max_results": 20}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <!-- Section 5: Agent Skills -->
+    <div class="section-title">5. Agent Skills Engine (<code>_SKILLS/</code>)</div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/skills</span>
+        <span class="ep-desc">Package and save reusable Agent Skills</span>
+      </div>
+      <div class="endpoint-body">
+        <p>Enforces lowercase hyphenated verb-noun names (e.g. <code>create-substack-articles</code>) and blocks grand buzzwords.</p>
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/skills" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "create-substack-articles",
+    "description": "Draft Substack newsletter articles in brand voice.",
+    "instructions": "# Instructions\n\n1. Write compelling hook..."
+  }'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <!-- Section 6: Fleet & Symlinks -->
+    <div class="section-title">6. Multi-Device Fleet &amp; Symlink Registry</div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method get">GET</span>
+        <span class="ep-path">/v1/devices</span>
+        <span class="ep-desc">List all connected Macs and devices</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s "https://api.zerodrive.dev/v1/devices" \
+  -H "Authorization: Bearer YOUR_TOKEN"</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+    <div class="endpoint">
+      <div class="endpoint-header">
+        <span class="method post">POST</span>
+        <span class="ep-path">/v1/devices/heartbeat</span>
+        <span class="ep-desc">Send device SSD telemetry and mount health</span>
+      </div>
+      <div class="endpoint-body">
+        <pre><code>curl -s -X POST "https://api.zerodrive.dev/v1/devices/heartbeat" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id": "naegele-pro", "hostname": "naegele-pro.local", "free_gb": 151.2, "mount_status": "mounted"}'</code><button class="copy-btn" onclick="copyPre(this)">Copy</button></pre>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    function copyPre(btn) {
+      const code = btn.parentElement.querySelector("code").innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        btn.innerText = "Copied!";
+        setTimeout(() => { btn.innerText = "Copy"; }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+  });
+}
+
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -2477,6 +4290,26 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
+
+    // 0. Interactive API Documentation (/docs, /v1/docs, /api-docs)
+    if (url.pathname === "/docs" || url.pathname === "/v1/docs" || url.pathname === "/api-docs") {
+      return handleApiDocsHtml(url, corsHeaders);
+    }
+
+    // 0a. REST API v1 Router (/v1/*)
+    if (
+      url.pathname.startsWith("/v1/") &&
+      url.pathname !== "/v1/mcp" &&
+      url.pathname !== "/v1/health" &&
+      url.pathname !== "/v1/vault/provision" &&
+      url.pathname !== "/v1/openapi.json" &&
+      url.pathname !== "/v1/oauth/authorize" &&
+      url.pathname !== "/v1/oauth/token" &&
+      url.pathname !== "/v1/oauth/register"
+    ) {
+      return handleRestV1Request(request, env, url, corsHeaders);
+    }
+
 
     // Force canonical domain (api.zerodrive.dev) for all non-S3 endpoints so legacy zerodrive.aisimple.co is never used for OAuth or MCP
     if (url.hostname === "zerodrive.aisimple.co" && url.pathname !== "/s3" && !url.pathname.startsWith("/s3/")) {
@@ -3087,12 +4920,23 @@ echo "  Run 'zd doctor' or 'zerodrive --help' to get started."
       </div>
     </div>
 
-    <div class="card" style="margin-bottom: 30px;">
-      <h3 style="margin-bottom: 6px;">⚡ ZeroDrive Developer CLI</h3>
-      <p style="margin-bottom: 10px;">Sub-second queries, file slicing, and high-speed transfers without mount stalls on Mac &amp; Linux.</p>
-      <div class="code-box">
-        <span id="cli-cmd">curl -fsSL ${CANONICAL_ORIGIN}/install.sh | bash</span>
-        <button class="copy-btn" onclick="copyCli()">Copy</button>
+    <div class="grid" style="margin-bottom: 24px;">
+      <div class="card">
+        <h3 style="margin-bottom: 6px;">⚡ ZeroDrive Developer CLI</h3>
+        <p style="margin-bottom: 10px;">Sub-second queries, file slicing, and high-speed transfers without mount stalls on Mac &amp; Linux.</p>
+        <div class="code-box">
+          <span id="cli-cmd">curl -fsSL ${CANONICAL_ORIGIN}/install.sh | bash</span>
+          <button class="copy-btn" onclick="copyCli()">Copy</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom: 6px;">🌐 REST API &amp; OpenAPI 3.1</h3>
+        <p style="margin-bottom: 10px;">Full REST API surface for OpenAI Custom GPT Actions, autonomous agents, and workflows.</p>
+        <div style="display:flex; gap:10px; margin-top:14px;">
+          <a href="/docs" class="btn btn-secondary" style="font-size:13px; padding:10px 14px; text-decoration:none;">View API Docs</a>
+          <a href="/openapi.json" class="btn btn-secondary" style="font-size:13px; padding:10px 14px; text-decoration:none;">OpenAPI 3.1 Spec</a>
+        </div>
       </div>
     </div>
 
