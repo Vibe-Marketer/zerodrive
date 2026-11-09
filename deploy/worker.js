@@ -19,6 +19,43 @@ async function sha256Hex(input) {
     .join("");
 }
 
+async function signHmac(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function createAuthCode(secret, payload) {
+  const data = JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + 600 });
+  const b64 = btoa(data).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const sig = (await signHmac(secret, b64)).slice(0, 32);
+  return `zd_code.${b64}.${sig}`;
+}
+
+async function verifyAuthCode(secret, code) {
+  if (!code || !code.startsWith("zd_code.")) return null;
+  const parts = code.split(".");
+  if (parts.length !== 3) return null;
+  const [, b64, sig] = parts;
+  const expectedSig = (await signHmac(secret, b64)).slice(0, 32);
+  if (sig !== expectedSig) return null;
+  try {
+    const raw = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
+    const data = JSON.parse(raw);
+    if (data.exp && data.exp < Math.floor(Date.now() / 1000)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 function xmlEscape(str) {
   return String(str)
     .replace(/&/g, "&amp;")
@@ -435,7 +472,14 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
         id: null,
         error: { code: -32000, message: `Unauthorized: ${auth.error}` },
       }),
-      { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        status: 401,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          "WWW-Authenticate": `Bearer realm="ZeroDrive", authorization_uri="${url.origin}/oauth/authorize", token_uri="${url.origin}/oauth/token", resource_metadata="${url.origin}/.well-known/oauth-authorization-server"`,
+        },
+      }
     );
   }
 
@@ -650,9 +694,138 @@ function handleGoogleAuthStart(request, env, url) {
     return new Response("GOOGLE_CLIENT_ID is not configured in worker environment", { status: 500 });
   }
   const redirectUri = env.AUTH_REDIRECT_URI || `${url.origin}/auth/callback`;
-  const state = url.searchParams.get("state") || "mcp";
-  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+  
+  // Capture client OAuth parameters (e.g. from Muse, Claude, Cursor, ChatGPT)
+  const clientRedirectUri = url.searchParams.get("redirect_uri") || "";
+  const clientState = url.searchParams.get("state") || "";
+  const codeChallenge = url.searchParams.get("code_challenge") || "";
+  const clientIdParam = url.searchParams.get("client_id") || "";
+
+  let statePayload = { s: clientState };
+  if (clientRedirectUri && clientRedirectUri !== redirectUri) {
+    statePayload.r = clientRedirectUri;
+    statePayload.c = codeChallenge;
+    statePayload.cid = clientIdParam;
+  } else if (clientState) {
+    statePayload.s = clientState;
+  }
+
+  const encodedState = btoa(JSON.stringify(statePayload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent&state=${encodeURIComponent(encodedState)}`;
   return Response.redirect(googleAuthUrl, 302);
+}
+
+function handleOpenIDConfiguration(url, corsHeaders) {
+  const origin = url.origin;
+  const config = {
+    issuer: origin,
+    authorization_endpoint: `${origin}/oauth/authorize`,
+    token_endpoint: `${origin}/oauth/token`,
+    userinfo_endpoint: `${origin}/oauth/userinfo`,
+    jwks_uri: `${origin}/.well-known/jwks.json`,
+    registration_endpoint: `${origin}/oauth/register`,
+    scopes_supported: ["openid", "email", "profile", "mcp", "vault:read", "vault:write"],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+    code_challenge_methods_supported: ["S256", "plain"],
+    service_documentation: "https://zerodrive.dev",
+  };
+  return new Response(JSON.stringify(config, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+async function handleOAuthToken(request, env, url, corsHeaders) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  let body = {};
+  const ctype = request.headers.get("content-type") || "";
+  if (ctype.includes("application/json")) {
+    body = await request.json().catch(() => ({}));
+  } else {
+    try {
+      const formData = await request.formData();
+      body = Object.fromEntries(formData.entries());
+    } catch {
+      const text = await request.text();
+      body = Object.fromEntries(new URLSearchParams(text).entries());
+    }
+  }
+
+  const grantType = body.grant_type || url.searchParams.get("grant_type") || "authorization_code";
+  const code = body.code || url.searchParams.get("code") || "";
+  const clientSecret = env.GOOGLE_CLIENT_SECRET || "";
+
+  if (grantType === "authorization_code") {
+    const payload = await verifyAuthCode(clientSecret, code);
+    if (!payload) {
+      return new Response(
+        JSON.stringify({ error: "invalid_grant", error_description: "Invalid or expired authorization code" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        access_token: payload.sessionToken,
+        token_type: "Bearer",
+        expires_in: 31536000,
+        refresh_token: payload.sessionToken,
+        scope: "mcp vault:read vault:write",
+        token: payload.sessionToken,
+        mcp_endpoint: `${url.origin}/mcp`,
+        user: { email: payload.email, vault: payload.userPrefix }
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
+  if (grantType === "refresh_token") {
+    const refreshToken = body.refresh_token || url.searchParams.get("refresh_token") || "";
+    if (!refreshToken) {
+      return new Response(
+        JSON.stringify({ error: "invalid_request", error_description: "Missing refresh_token" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        access_token: refreshToken,
+        token_type: "Bearer",
+        expires_in: 31536000,
+        scope: "mcp vault:read vault:write",
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
+  return new Response(
+    JSON.stringify({ error: "unsupported_grant_type", error_description: `Grant type '${grantType}' is not supported` }),
+    { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+}
+
+async function handleOAuthUserInfo(request, env, url, corsHeaders) {
+  const auth = authenticateMCPRequest(request, env, url);
+  if (!auth.ok) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  return new Response(
+    JSON.stringify({
+      sub: "user",
+      email: "naegele412@gmail.com",
+      email_verified: true,
+      name: "ZeroDrive Vault Owner",
+      vault_prefix: auth.userPrefix,
+    }),
+    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
 }
 
 async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
@@ -718,10 +891,33 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
     userPrefix = `usr_${cleanName}_${userHash}`;
     sessionToken = `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
   }
-  const state = url.searchParams.get("state") || "";
+  
+  // Unpack state parameter
+  const rawState = url.searchParams.get("state") || "";
+  let clientRedirectUri = "";
+  let clientState = "";
+  if (rawState) {
+    try {
+      const decoded = atob(rawState.replace(/-/g, "+").replace(/_/g, "/"));
+      const parsed = JSON.parse(decoded);
+      if (parsed.r) clientRedirectUri = parsed.r;
+      if (parsed.s) clientState = parsed.s;
+    } catch {
+      clientState = rawState;
+    }
+  }
+
+  // If external OAuth client (like Muse, Claude, Cursor) initiated login:
+  if (clientRedirectUri) {
+    const authCode = await createAuthCode(clientSecret, { email, sessionToken, userPrefix });
+    const targetUrl = new URL(clientRedirectUri);
+    targetUrl.searchParams.set("code", authCode);
+    if (clientState) targetUrl.searchParams.set("state", clientState);
+    return Response.redirect(targetUrl.toString(), 302);
+  }
 
   // If redirecting to native Mac app
-  if (state === "app") {
+  if (clientState === "app") {
     return Response.redirect(`zerodrive://auth?token=${sessionToken}&email=${encodeURIComponent(email)}`, 302);
   }
 
@@ -1001,11 +1197,36 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 0. Google OAuth 2.0 Login & Callback
-    if (url.pathname === "/auth/google" || url.pathname === "/login") {
+    // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & OIDC)
+    if (
+      url.pathname === "/.well-known/openid-configuration" ||
+      url.pathname === "/.well-known/oauth-authorization-server"
+    ) {
+      return handleOpenIDConfiguration(url, corsHeaders);
+    }
+
+    // 0b. OAuth 2.0 Authorization Endpoint
+    if (
+      url.pathname === "/oauth/authorize" ||
+      url.pathname === "/authorize" ||
+      url.pathname === "/auth/google" ||
+      url.pathname === "/login"
+    ) {
       return handleGoogleAuthStart(request, env, url);
     }
-    if (url.pathname === "/auth/callback") {
+
+    // 0c. OAuth 2.0 Token Exchange Endpoint
+    if (url.pathname === "/oauth/token" || url.pathname === "/token") {
+      return handleOAuthToken(request, env, url, corsHeaders);
+    }
+
+    // 0d. OAuth 2.0 UserInfo Endpoint
+    if (url.pathname === "/oauth/userinfo" || url.pathname === "/userinfo") {
+      return handleOAuthUserInfo(request, env, url, corsHeaders);
+    }
+
+    // 0e. Google OAuth 2.0 Callback
+    if (url.pathname === "/auth/callback" || url.pathname === "/oauth/callback") {
       return handleGoogleAuthCallback(request, env, url, corsHeaders);
     }
 
