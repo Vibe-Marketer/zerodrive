@@ -397,7 +397,20 @@ function authenticateMCPRequest(request, env, url) {
 
   // Check master vault key or user-specific prefix
   const masterKey = env.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
-  if (token.startsWith("zd_oauth_") || token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew")) {
+  if (token.startsWith("zd_oauth_master_") || token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew") || token === "zd_oauth_master") {
+    return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
+  }
+
+  if (token.startsWith("zd_oauth_usr_")) {
+    const match = token.match(/^zd_oauth_(usr_[a-zA-Z0-9_]+?)_[a-f0-9]+$/);
+    if (match && match[1]) {
+      const tenant = match[1];
+      return { ok: true, userPrefix: `tenants/${tenant}/${tenant}` };
+    }
+  }
+
+  // Backwards compatibility for existing test token
+  if (token.startsWith("zd_oauth_")) {
     return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
   }
 
@@ -689,16 +702,22 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
   const user = await userResp.json();
   const email = (user.email || "").toLowerCase().trim();
 
-  // Route to Andrew's master vault if Andrew, or create isolated user prefix
+  // Route to Andrew's master vault if naegele412@gmail.com, or create isolated user prefix
+  const isMasterAdmin = email === "naegele412@gmail.com";
   let userPrefix = "usr_andrew_8bc7fb477f";
-  if (!email.includes("naegele") && !email.includes("aisimple.co") && !email.includes("clickable")) {
+  let sessionToken = "";
+
+  const tokenHash = await sha256Hex(`${email}:${clientSecret}:v2`);
+
+  if (isMasterAdmin) {
+    userPrefix = "usr_andrew_8bc7fb477f";
+    sessionToken = `zd_oauth_master_${tokenHash.slice(0, 32)}`;
+  } else {
     const cleanName = email.split("@")[0].replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
     const userHash = (await sha256Hex(email)).slice(0, 10);
     userPrefix = `usr_${cleanName}_${userHash}`;
+    sessionToken = `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
   }
-
-  // Generate deterministic ZeroDrive session token for this user
-  const sessionToken = `zd_oauth_${await sha256Hex(`${email}:${clientSecret}:v1`)}`;
   const state = url.searchParams.get("state") || "";
 
   // If redirecting to native Mac app
