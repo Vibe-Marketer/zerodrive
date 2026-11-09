@@ -714,10 +714,12 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
   <meta charset="utf-8">
   <title>ZeroDrive — Authenticated</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/app-icon.png">
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0c; color: #f5f5f7; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
     .card { background: #16161a; border: 1px solid #2a2a32; border-radius: 20px; padding: 40px; max-width: 480px; width: 100%; text-align: center; box-shadow: 0 24px 48px rgba(0,0,0,0.6); }
-    h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px; color: #fff; letter-spacing: -0.5px; }
+    .logo { height: 38px; margin-bottom: 24px; display: inline-block; }
+    h1 { font-size: 24px; font-weight: 700; margin: 0 0 8px; color: #fff; letter-spacing: -0.5px; }
     p { color: #8e8e93; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
     .badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(48, 209, 88, 0.15); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-bottom: 24px; }
     .box { background: #0d0d10; border: 1px solid #26262e; padding: 14px; border-radius: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #64d2ff; word-break: break-all; text-align: left; margin-bottom: 24px; }
@@ -727,6 +729,7 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
 </head>
 <body>
   <div class="card">
+    <img src="/logo.png" class="logo" alt="ZeroDrive">
     <div class="badge">● Connected: ${xmlEscape(email)}</div>
     <h1>ZeroDrive Authenticated</h1>
     <p>Your Google account has been verified. Your vault (<code>${xmlEscape(userPrefix)}</code>) is ready for your apps and AI agents.</p>
@@ -801,6 +804,38 @@ export default {
           ETag: dmgObj.httpEtag || `"${dmgObj.etag}"`,
         },
       });
+    }
+
+    // 2c. Brand Logos & Favicon
+    if (url.pathname === "/logo.png" || url.pathname === "/assets/logo.png") {
+      let obj = await env.VAULT_BUCKET.get("assets/logo.png");
+      if (!obj) {
+        obj = await env.VAULT_BUCKET.get("tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f/assets/logo.png");
+      }
+      if (obj) {
+        return new Response(obj.body, {
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=86400",
+          },
+        });
+      }
+    }
+    if (url.pathname === "/app-icon.png" || url.pathname === "/favicon.ico") {
+      let obj = await env.VAULT_BUCKET.get("assets/app-icon.png");
+      if (!obj) {
+        obj = await env.VAULT_BUCKET.get("tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f/assets/app-icon.png");
+      }
+      if (obj) {
+        return new Response(obj.body, {
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "image/png",
+            "Cache-Control": "public, max-age=86400",
+          },
+        });
+      }
     }
 
     // 3. Health Check
