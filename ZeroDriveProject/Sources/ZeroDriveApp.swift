@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import FileProvider
 
 @main
 struct ZeroDriveApp: App {
@@ -196,6 +197,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     for u in fileURLs {
                         let rel = u.path.replacingOccurrences(of: mountPath, with: "")
                         _ = await RcloneRCClient.shared.forgetFile(relativePath: rel)
+                        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier("ZeroDrive"), displayName: "ZeroDrive")
+                        try? await NSFileProviderManager(for: domain)?.evictItem(withIdentifier: NSFileProviderItemIdentifier(rel))
                     }
                 default:
                     break

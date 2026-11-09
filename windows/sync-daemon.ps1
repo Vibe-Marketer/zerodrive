@@ -231,6 +231,169 @@ function Set-LocalPlaceholder {
     }
 }
 
+# 2b. Smart Disk Auto-Eviction & Dehydration
+# Identifies cached files older than 7 days and calls CfDehydratePlaceholder
+# (or marks cloud-only / offline attribute) when disk free space is below threshold.
+
+$Global:CloudFilterLoaded = $false
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'ZeroDrive.NativeCloudFilter').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace ZeroDrive {
+    public static class NativeCloudFilter {
+        [Flags]
+        public enum CF_DEHYDRATE_FLAGS : uint {
+            NONE = 0x00000000,
+            BACKGROUND = 0x00000001
+        }
+
+        [DllImport("cldapi.dll", SetLastError = true)]
+        public static extern int CfDehydratePlaceholder(
+            SafeFileHandle FileHandle,
+            long StartingOffset,
+            long Length,
+            CF_DEHYDRATE_FLAGS DehydrateFlags,
+            IntPtr Overlapped
+        );
+
+        public static int DehydrateFile(string path) {
+            try {
+                using (var handle = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete)) {
+                    return CfDehydratePlaceholder(handle.SafeFileHandle, 0, -1, CF_DEHYDRATE_FLAGS.BACKGROUND, IntPtr.Zero);
+                }
+            } catch {
+                return -1;
+            }
+        }
+    }
+}
+"@ -ErrorAction SilentlyContinue
+        $Global:CloudFilterLoaded = $true
+    } else {
+        $Global:CloudFilterLoaded = $true
+    }
+} catch {
+    $Global:CloudFilterLoaded = $false
+}
+
+function Invoke-ZeroDriveDehydration {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [int]$OlderThanDays = 7,
+
+        [Parameter(Mandatory = $false)]
+        [double]$MinFreeSpaceGB = 20.0,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Force
+    )
+
+    # Check drive free space
+    $driveRoot = [System.IO.Path]::GetPathRoot($SyncRoot)
+    $freeGB = 999.0
+    try {
+        if ([System.IO.Directory]::Exists($driveRoot)) {
+            $driveInfo = [System.IO.DriveInfo]::new($driveRoot)
+            $freeGB = [math]::Round($driveInfo.AvailableFreeSpace / 1GB, 2)
+        }
+    } catch {}
+
+    if (-not $Force -and $freeGB -ge $MinFreeSpaceGB) {
+        Write-Verbose "[Dehydrate] Disk free space ($freeGB GB) is above threshold ($MinFreeSpaceGB GB). No dehydration needed."
+        return @{ evicted = 0; bytes_reclaimed = 0; free_gb = $freeGB }
+    }
+
+    Write-Host "[Dehydrate] Checking for cached files older than $OlderThanDays days (Free space: $freeGB GB, Threshold: $MinFreeSpaceGB GB)..." -ForegroundColor Yellow
+
+    $cutoffDate = (Get-Date).ToUniversalTime().AddDays(-$OlderThanDays)
+    $evictedCount = 0
+    $reclaimedBytes = [long]0
+
+    $allFiles = Get-ChildItem -LiteralPath $SyncRoot -File -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($file in $allFiles) {
+        if (Should-IgnoreFile -FilePath $file.FullName) { continue }
+        if ($file.FullName.EndsWith(":zerodrive")) { continue }
+
+        # Only process files with cached data on disk
+        if ($file.Length -le 0) { continue }
+
+        $lastAccess = $file.LastAccessTimeUtc
+        $lastWrite = $file.LastWriteTimeUtc
+        $fileAgeDate = if ($lastAccess -and $lastAccess -gt [datetime]::MinValue) { $lastAccess } else { $lastWrite }
+
+        if ($fileAgeDate -lt $cutoffDate) {
+            $localPath = $file.FullName
+            $relPath = Get-RelativeVaultPath -LocalFullPath $localPath
+            $fileSize = $file.Length
+
+            Write-Host "[Dehydrate] Evicting cached file: $relPath ($fileSize bytes, last access: $($fileAgeDate.ToString('yyyy-MM-dd')))" -ForegroundColor DarkCyan
+
+            $Global:SuppressedPaths.TryAdd($localPath, 1) | Out-Null
+            try {
+                $dehydratedViaCldApi = $false
+                if ($Global:CloudFilterLoaded) {
+                    try {
+                        $hr = [ZeroDrive.NativeCloudFilter]::DehydrateFile($localPath)
+                        if ($hr -eq 0) {
+                            $dehydratedViaCldApi = $true
+                        }
+                    } catch {}
+                }
+
+                if (-not $dehydratedViaCldApi) {
+                    # Fallback routine: store ADS metadata, truncate payload to 0 bytes, mark cloud-only
+                    $metaJson = @{
+                        vault_path = $relPath
+                        size       = $fileSize
+                        modified   = $file.LastWriteTimeUtc.ToString("o")
+                        hydrated   = $false
+                    } | ConvertTo-Json -Compress
+
+                    Set-Content -LiteralPath "$localPath`:zerodrive" -Value $metaJson -ErrorAction SilentlyContinue
+                    [System.IO.File]::WriteAllBytes($localPath, [byte[]]@())
+
+                    (Get-Item -LiteralPath $localPath).LastWriteTimeUtc = $lastWrite
+                    (Get-Item -LiteralPath $localPath).LastAccessTimeUtc = $lastAccess
+
+                    try {
+                        & attrib.exe +U -P "$localPath" 2>$null
+                    } catch {}
+
+                    try {
+                        $curAttr = [System.IO.File]::GetAttributes($localPath)
+                        [System.IO.File]::SetAttributes($localPath, $curAttr -bor [System.IO.FileAttributes]::Offline)
+                    } catch {}
+                }
+
+                $evictedCount++
+                $reclaimedBytes += $fileSize
+                Write-Host "[Dehydrate] Dehydrated: $relPath (Reclaimed $fileSize bytes)" -ForegroundColor Green
+            } catch {
+                Write-Host "[Dehydrate] Failed to dehydrate $relPath : $($_.Exception.Message)" -ForegroundColor Red
+            } finally {
+                Start-Sleep -Milliseconds 200
+                $dummy = [byte]0
+                $Global:SuppressedPaths.TryRemove($localPath, [ref]$dummy) | Out-Null
+            }
+        }
+    }
+
+    $reclaimedMB = [math]::Round($reclaimedBytes / 1MB, 2)
+    Write-Host "[Dehydrate] Dehydration run complete. Evicted $evictedCount file(s), reclaimed $reclaimedMB MB local SSD space." -ForegroundColor Green
+
+    return @{
+        evicted = $evictedCount
+        bytes_reclaimed = $reclaimedBytes
+        free_gb = $freeGB
+    }
+}
+
 # 3. Initial Tree Fetch & Placeholders
 function Sync-InitialVaultTree {
     Write-Host "[Sync] Enumerating remote files from ZeroDrive..." -ForegroundColor Yellow
@@ -437,14 +600,25 @@ function Poll-RemoteLedgerActivity {
 Sync-InitialVaultTree
 $watcher = Start-LocalWatcher
 
+# Run initial background dehydration check on startup
+Invoke-ZeroDriveDehydration -OlderThanDays 7 -MinFreeSpaceGB 20.0
+
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host " ZeroDrive Sync Engine is running. Press Ctrl+C to stop." -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
+$loopCount = 0
 try {
     while ($Global:Running) {
         Start-Sleep -Seconds 3
         Poll-RemoteLedgerActivity
+
+        $loopCount++
+        # Check dehydration every 1200 ticks (approx 1 hour)
+        if ($loopCount -ge 1200) {
+            $loopCount = 0
+            Invoke-ZeroDriveDehydration -OlderThanDays 7 -MinFreeSpaceGB 20.0
+        }
     }
 }
 finally {

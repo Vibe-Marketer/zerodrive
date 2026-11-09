@@ -75,11 +75,18 @@ public actor ManageFileProvider {
         isPolling = true
         NSLog("[ZeroDrive] Starting FileProvider background activity poller (interval: %.1fs)", intervalSeconds)
         pollerTask = Task { [weak self] in
+            var tickCount = 0
             while !Task.isCancelled {
                 if let self = self {
                     let sseActive = await self.isSSEActive()
                     if !sseActive {
                         await self.pollRemoteActivity()
+                    }
+                    tickCount += 1
+                    // Periodic auto-eviction pass every hour (720 ticks * 5s = 3600s)
+                    if tickCount >= 720 {
+                        tickCount = 0
+                        _ = await self.evictInactivePlaceholders(olderThanDays: 7)
                     }
                 }
                 do {
@@ -470,6 +477,92 @@ public actor ManageFileProvider {
         }
     }
 
+    // MARK: - Smart Disk Auto-Eviction & Dehydration
+
+    /// Evicts inactive file placeholders back to 0-byte APFS dataless placeholders
+    /// that haven't been accessed in `olderThanDays` (default 7 days).
+    /// Keeps files visible in Finder while immediately reclaiming local SSD space.
+    @discardableResult
+    public func evictInactivePlaceholders(olderThanDays: Int = 7) async -> [String] {
+        let domain = NSFileProviderDomain(identifier: domainIdentifier, displayName: "ZeroDrive")
+        guard let manager = NSFileProviderManager(for: domain) else {
+            NSLog("[ZeroDrive] NSFileProviderManager unavailable for domain: %@", domainIdentifier.rawValue)
+            return []
+        }
+
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        var rootURLs: [URL] = [
+            homeDir.appendingPathComponent("Library/CloudStorage/ZeroDrive")
+        ]
+
+        if let userVisibleURL = try? await manager.getUserVisibleURL(for: .rootContainer) {
+            if !rootURLs.contains(where: { $0.path == userVisibleURL.path }) {
+                rootURLs.append(userVisibleURL)
+            }
+        }
+
+        let cutoffDate = Date().addingTimeInterval(-Double(olderThanDays) * 86400)
+        var evictedIdentifiers: [String] = []
+
+        for rootURL in rootURLs {
+            guard FileManager.default.fileExists(atPath: rootURL.path) else { continue }
+
+            let resourceKeys: Set<URLResourceKey> = [
+                .isRegularFileKey,
+                .contentAccessDateKey,
+                .contentModificationDateKey,
+                .totalFileAllocatedSizeKey,
+                .fileAllocatedSizeKey,
+                .fileSizeKey
+            ]
+
+            guard let enumerator = FileManager.default.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: Array(resourceKeys),
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            let fileURLs = enumerator.compactMap { $0 as? URL }
+            for fileURL in fileURLs {
+                do {
+                    let values = try fileURL.resourceValues(forKeys: resourceKeys)
+                    guard values.isRegularFile == true else { continue }
+
+                    // Only evict files consuming physical blocks on the APFS volume
+                    let allocatedBytes = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
+                    guard allocatedBytes > 0 else { continue }
+
+                    // Check last access date, falling back to modification date
+                    let lastAccess = values.contentAccessDate ?? values.contentModificationDate ?? Date.distantPast
+                    if lastAccess < cutoffDate {
+                        let basePath = rootURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        let fullPath = fileURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        var relPath = fullPath
+                        if fullPath.hasPrefix(basePath + "/") {
+                            relPath = String(fullPath.dropFirst(basePath.count + 1))
+                        }
+                        let itemIdentifier = NSFileProviderItemIdentifier(relPath)
+
+                        do {
+                            try await manager.evictItem(withIdentifier: itemIdentifier)
+                            evictedIdentifiers.append(relPath)
+                            NSLog("[ZeroDrive] Evicted inactive placeholder: %@ (reclaimed %lld bytes)", relPath, Int64(allocatedBytes))
+                        } catch {
+                            NSLog("[ZeroDrive] Evict item %@ notice: %@", relPath, error.localizedDescription)
+                        }
+                    }
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        if !evictedIdentifiers.isEmpty {
+            NSLog("[ZeroDrive] Eviction complete. Reclaimed local SSD space for %ld files older than %ld days.", evictedIdentifiers.count, olderThanDays)
+        }
+        return evictedIdentifiers
+    }
+
     private func parentContainerIdentifier(for rawPath: String) -> NSFileProviderItemIdentifier {
         let clean = rawPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if let lastSlash = clean.lastIndex(of: "/") {
@@ -479,5 +572,13 @@ public actor ManageFileProvider {
             }
         }
         return .rootContainer
+    }
+}
+
+// MARK: - NSFileProviderManager Eviction Compatibility Extension
+extension NSFileProviderManager {
+    /// Convenience async wrapper enabling evictItem(withIdentifier:) parameter naming
+    public func evictItem(withIdentifier itemIdentifier: NSFileProviderItemIdentifier) async throws {
+        try await self.evictItem(identifier: itemIdentifier)
     }
 }
