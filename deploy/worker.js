@@ -11,6 +11,28 @@
  * 4. Notarized DMG Installer Download (`GET /download/ZeroDrive-Installer.dmg`)
  */
 
+function base64UrlEncode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(b64Url) {
+  let b64 = String(b64Url).replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4 !== 0) {
+    b64 += "=";
+  }
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 async function sha256Hex(input) {
   const data = new TextEncoder().encode(input);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
@@ -34,7 +56,7 @@ async function signHmac(secret, message) {
 
 async function createAuthCode(secret, payload) {
   const data = JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + 600 });
-  const b64 = btoa(data).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const b64 = base64UrlEncode(data);
   const sig = (await signHmac(secret, b64)).slice(0, 32);
   return `zd_code.${b64}.${sig}`;
 }
@@ -47,7 +69,7 @@ async function verifyAuthCode(secret, code) {
   const expectedSig = (await signHmac(secret, b64)).slice(0, 32);
   if (sig !== expectedSig) return null;
   try {
-    const raw = atob(b64.replace(/-/g, "+").replace(/_/g, "/"));
+    const raw = base64UrlDecode(b64);
     const data = JSON.parse(raw);
     if (data.exp && data.exp < Math.floor(Date.now() / 1000)) return null;
     return data;
@@ -416,6 +438,29 @@ const MCP_TOOLS = [
         path: { type: "string", description: "Vault folder path (e.g. 'Course', 'MAIN/LEGENDS').", default: "" }
       }
     }
+  },
+  {
+    name: "zd_copy",
+    description: "Copy or duplicate a file within the ZeroDrive cloud vault.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        source: { type: "string", description: "Source vault file path." },
+        destination: { type: "string", description: "Destination vault file path." }
+      },
+      required: ["source", "destination"]
+    }
+  },
+  {
+    name: "zd_delete",
+    description: "Delete a file from the ZeroDrive cloud vault.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault file path to delete." }
+      },
+      required: ["path"]
+    }
   }
 ];
 
@@ -428,10 +473,12 @@ function authenticateMCPRequest(request, env, url) {
     token = url.searchParams.get("key").trim();
   } else if (url.searchParams.get("token")) {
     token = url.searchParams.get("token").trim();
+  } else if (url.searchParams.get("access_token")) {
+    token = url.searchParams.get("access_token").trim();
   }
 
   if (!token) {
-    return { ok: false, error: "OAuth 2.0 authentication required. Connect via /oauth/authorize or /login." };
+    return { ok: false, error: "OAuth 2.0 authentication required." };
   }
 
   // Check master vault key or user-specific prefix
@@ -448,7 +495,7 @@ function authenticateMCPRequest(request, env, url) {
     }
   }
 
-  // Backwards compatibility for existing test token
+  // Backwards compatibility for existing OAuth tokens
   if (token.startsWith("zd_oauth_")) {
     return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
   }
@@ -461,98 +508,63 @@ function authenticateMCPRequest(request, env, url) {
   return { ok: false, error: "Invalid OAuth 2.0 token." };
 }
 
-async function handleMCPRequest(request, env, url, corsHeaders) {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+async function processSingleMCPMessage(msg, env, userPrefix) {
+  if (!msg || typeof msg !== "object") {
+    return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
   }
 
-  const acceptHeader = request.headers.get("Accept") || "";
+  const { id, method, params } = msg;
 
-  // If opened directly in browser or as a GET/HEAD request without token, redirect straight to OAuth login
-  const hasToken = request.headers.get("Authorization") || url.searchParams.get("key") || url.searchParams.get("token");
-  if (!hasToken && (request.method === "GET" || request.method === "HEAD" || acceptHeader.includes("text/html"))) {
-    return Response.redirect(`${url.origin}/login`, 302);
+  // Notifications (no id or notifications/*) do not return a JSON-RPC response object
+  if (id === undefined || (typeof method === "string" && method.startsWith("notifications/"))) {
+    return null;
   }
-
-  const auth = authenticateMCPRequest(request, env, url);
-  if (!auth.ok) {
-    return new Response(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: null,
-        error: {
-          code: -32000,
-          message: "Authentication required. Connect via ZeroDrive OAuth 2.0.",
-          data: {
-            auth_flow: "oauth2",
-            login_url: `${url.origin}/login`,
-            authorization_endpoint: `${url.origin}/oauth/authorize`,
-            token_endpoint: `${url.origin}/oauth/token`,
-            discovery: `${url.origin}/.well-known/oauth-authorization-server`
-          }
-        },
-      }),
-      {
-        status: 401,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-          "WWW-Authenticate": `Bearer realm="ZeroDrive", authorization_uri="${url.origin}/oauth/authorize", token_uri="${url.origin}/oauth/token", resource_metadata="${url.origin}/.well-known/oauth-authorization-server"`,
-        },
-      }
-    );
-  }
-
-  if (request.method === "GET") {
-    return new Response(JSON.stringify({
-      status: "online",
-      server: "ZeroDrive Hosted MCP Server",
-      protocol: "2024-11-05",
-      authenticatedAs: auth.userPrefix,
-      tools: MCP_TOOLS.map(t => t.name)
-    }, null, 2), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
-    });
-  }
-
-  if (request.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
-  }
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
-    });
-  }
-
-  const { id, method, params } = body;
-  const userPrefix = auth.userPrefix;
 
   if (method === "initialize") {
-    return new Response(JSON.stringify({
+    const requestedVersion = params?.protocolVersion || "2025-03-26";
+    const supportedVersions = ["2024-11-05", "2025-03-26", "2025-06-18"];
+    const protocolVersion = supportedVersions.includes(requestedVersion) ? requestedVersion : "2025-03-26";
+    return {
       jsonrpc: "2.0",
       id,
       result: {
-        protocolVersion: "2024-11-05",
-        capabilities: { tools: {} },
-        serverInfo: { name: "zerodrive-hosted-mcp", version: "1.0.0" }
+        protocolVersion,
+        capabilities: {
+          tools: { listChanged: false },
+          resources: { subscribe: false, listChanged: false },
+          prompts: { listChanged: false }
+        },
+        serverInfo: { name: "ZeroDrive", version: "1.0.0" }
       }
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    };
   }
 
-  if (method === "notifications/initialized") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+  if (method === "ping") {
+    return { jsonrpc: "2.0", id, result: {} };
   }
 
   if (method === "tools/list") {
-    return new Response(JSON.stringify({
-      jsonrpc: "2.0",
-      id,
-      result: { tools: MCP_TOOLS }
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return { jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } };
+  }
+
+  if (method === "resources/list") {
+    return { jsonrpc: "2.0", id, result: { resources: [] } };
+  }
+
+  if (method === "resources/templates/list") {
+    return { jsonrpc: "2.0", id, result: { resourceTemplates: [] } };
+  }
+
+  if (method === "prompts/list") {
+    return { jsonrpc: "2.0", id, result: { prompts: [] } };
+  }
+
+  if (method === "logging/setLevel") {
+    return { jsonrpc: "2.0", id, result: {} };
+  }
+
+  if (method === "completion/complete") {
+    return { jsonrpc: "2.0", id, result: { completion: { values: [], total: 0, hasMore: false } } };
   }
 
   if (method === "tools/call") {
@@ -561,7 +573,7 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
 
     try {
       if (toolName === "zd_list") {
-        const subpath = (args.path || "").replace(/^\/+/, "");
+        const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
         const recursive = !!args.recursive;
 
@@ -583,11 +595,11 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
           }
         }
 
-        return new Response(JSON.stringify({
+        return {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: JSON.stringify(items, null, 2) }] }
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        };
       }
 
       if (toolName === "zd_read") {
@@ -595,11 +607,11 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
         const fullKey = `${userPrefix}/${subpath}`;
         const obj = await env.VAULT_BUCKET.get(fullKey);
         if (!obj) {
-          return new Response(JSON.stringify({
+          return {
             jsonrpc: "2.0",
             id,
             result: { isError: true, content: [{ type: "text", text: `File not found: ${args.path}` }] }
-          }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          };
         }
 
         let text = await obj.text();
@@ -609,57 +621,95 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
         } else if (args.tail && args.tail > 0) {
           text = lines.slice(-args.tail).join("\n");
         } else if (args.lines) {
-          const parts = args.lines.split("-").map(n => parseInt(n.trim(), 10));
+          const parts = String(args.lines).split("-").map(n => parseInt(n.trim(), 10));
           if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
             text = lines.slice(Math.max(0, parts[0] - 1), parts[1]).join("\n");
           }
         }
 
-        return new Response(JSON.stringify({
+        return {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text }] }
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        };
       }
 
       if (toolName === "zd_write") {
         const subpath = (args.path || "").replace(/^\/+/, "");
         const fullKey = `${userPrefix}/${subpath}`;
-        const content = args.content || "";
+        const content = args.content ?? "";
         await env.VAULT_BUCKET.put(fullKey, content, {
           httpMetadata: { contentType: "text/plain; charset=utf-8" }
         });
 
-        return new Response(JSON.stringify({
+        return {
           jsonrpc: "2.0",
           id,
-          result: { content: [{ type: "text", text: `Successfully wrote ${content.length} characters to ${args.path} in ZeroDrive cloud vault.` }] }
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          result: { content: [{ type: "text", text: `Successfully wrote ${String(content).length} characters to ${args.path} in ZeroDrive cloud vault.` }] }
+        };
+      }
+
+      if (toolName === "zd_copy") {
+        const src = (args.source || "").replace(/^\/+/, "");
+        const dst = (args.destination || "").replace(/^\/+/, "");
+        const srcObj = await env.VAULT_BUCKET.get(`${userPrefix}/${src}`);
+        if (!srcObj) {
+          return {
+            jsonrpc: "2.0",
+            id,
+            result: { isError: true, content: [{ type: "text", text: `Source file not found: ${args.source}` }] }
+          };
+        }
+        await env.VAULT_BUCKET.put(`${userPrefix}/${dst}`, srcObj.body, {
+          httpMetadata: srcObj.httpMetadata
+        });
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Copied ${args.source} to ${args.destination}.` }] }
+        };
+      }
+
+      if (toolName === "zd_delete") {
+        const subpath = (args.path || "").replace(/^\/+/, "");
+        await env.VAULT_BUCKET.delete(`${userPrefix}/${subpath}`);
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Deleted ${args.path} from ZeroDrive cloud vault.` }] }
+        };
       }
 
       if (toolName === "zd_search") {
         const query = (args.query || "").toLowerCase().replace(/\*/g, "");
-        const subpath = (args.path || "").replace(/^\/+/, "");
+        const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
 
-        const listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000 });
         const matches = [];
-        for (const obj of listed.objects || []) {
-          const relPath = obj.key.slice(userPrefix.length + 1);
-          if (relPath.toLowerCase().includes(query)) {
-            matches.push({ path: relPath, size: obj.size, modified: obj.uploaded.toISOString() });
+        let cursor;
+        let scanned = 0;
+        do {
+          const listed = await env.VAULT_BUCKET.list({ prefix, limit: 1000, cursor });
+          for (const obj of listed.objects || []) {
+            scanned++;
+            const relPath = obj.key.slice(userPrefix.length + 1);
+            if (relPath.toLowerCase().includes(query)) {
+              matches.push({ path: relPath, size: obj.size, modified: obj.uploaded.toISOString() });
+              if (matches.length >= 100) break;
+            }
           }
-        }
+          cursor = listed.truncated && matches.length < 100 ? listed.cursor : undefined;
+        } while (cursor && scanned < 25000);
 
-        return new Response(JSON.stringify({
+        return {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: JSON.stringify(matches, null, 2) }] }
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        };
       }
 
       if (toolName === "zd_size") {
-        const subpath = (args.path || "").replace(/^\/+/, "");
+        const subpath = (args.path || "").replace(/^\/+/, "").replace(/\/+$/, "");
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
 
         let count = 0;
@@ -674,38 +724,141 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
           cursor = listed.truncated ? listed.cursor : undefined;
         } while (cursor && count < 50000);
 
-        return new Response(JSON.stringify({
+        return {
           jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: JSON.stringify({ path: args.path || "/", fileCount: count, totalBytes, sizeFormatted: `${(totalBytes / (1024*1024*1024)).toFixed(2)} GB` }, null, 2) }] }
-        }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        };
       }
 
-      return new Response(JSON.stringify({
+      return {
         jsonrpc: "2.0",
         id,
         result: { isError: true, content: [{ type: "text", text: `Unknown tool: ${toolName}` }] }
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      };
     } catch (err) {
-      return new Response(JSON.stringify({
+      return {
         jsonrpc: "2.0",
         id,
         result: { isError: true, content: [{ type: "text", text: `Error: ${err.message || String(err)}` }] }
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      };
     }
   }
 
-  if (method === "ping") {
-    return new Response(JSON.stringify({ jsonrpc: "2.0", id, result: {} }), {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: { code: -32601, message: `Method not found: ${method}` }
+  };
+}
+
+async function handleMCPRequest(request, env, url, corsHeaders) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  const acceptHeader = request.headers.get("Accept") || "";
+  const isBrowserNavigation =
+    request.method === "GET" &&
+    acceptHeader.includes("text/html") &&
+    !acceptHeader.includes("application/json") &&
+    !acceptHeader.includes("text/event-stream");
+
+  const auth = authenticateMCPRequest(request, env, url);
+  if (!auth.ok) {
+    // Only redirect if a human explicitly opens /mcp in a browser tab
+    if (isBrowserNavigation) {
+      return Response.redirect(`${url.origin}/login`, 302);
+    }
+
+    return new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: -32000,
+          message: "Authentication required. Connect via ZeroDrive OAuth 2.0.",
+          data: {
+            auth_flow: "oauth2",
+            login_url: `${url.origin}/login`,
+            authorization_endpoint: `${url.origin}/oauth/authorize`,
+            token_endpoint: `${url.origin}/oauth/token`,
+            registration_endpoint: `${url.origin}/oauth/register`,
+            discovery: `${url.origin}/.well-known/oauth-authorization-server`
+          }
+        },
+      }),
+      {
+        status: 401,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          "WWW-Authenticate": `Bearer realm="ZeroDrive", resource_metadata="${url.origin}/.well-known/oauth-protected-resource", authorization_uri="${url.origin}/oauth/authorize", token_uri="${url.origin}/oauth/token"`,
+        },
+      }
+    );
+  }
+
+  if (request.method === "DELETE") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  if (request.method === "GET") {
+    // Per MCP Streamable HTTP specification: if client requests an SSE stream via GET,
+    // returning 405 tells the client cleanly to use POST for JSON-RPC request/response.
+    if (acceptHeader.includes("text/event-stream")) {
+      return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
+    }
+    return new Response(JSON.stringify({
+      status: "online",
+      server: "ZeroDrive Hosted MCP Server",
+      protocol: "2025-03-26",
+      authenticatedAs: auth.userPrefix,
+      tools: MCP_TOOLS.map(t => t.name)
+    }, null, 2), {
       headers: { ...corsHeaders, "Content-Type": "application/json" }
     });
   }
 
-  return new Response(JSON.stringify({
-    jsonrpc: "2.0",
-    id,
-    error: { code: -32601, message: `Method not found: ${method}` }
-  }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
+  }
+
+  const userPrefix = auth.userPrefix;
+  const responseHeaders = {
+    ...corsHeaders,
+    "Content-Type": "application/json",
+    "Mcp-Session-Id": "zd-session-live"
+  };
+
+  if (Array.isArray(body)) {
+    const results = [];
+    for (const item of body) {
+      const res = await processSingleMCPMessage(item, env, userPrefix);
+      if (res !== null) results.push(res);
+    }
+    if (results.length === 0) {
+      return new Response(null, { status: 202, headers: responseHeaders });
+    }
+    return new Response(JSON.stringify(results), { status: 200, headers: responseHeaders });
+  }
+
+  const singleResult = await processSingleMCPMessage(body, env, userPrefix);
+  if (singleResult === null) {
+    return new Response(null, { status: 202, headers: responseHeaders });
+  }
+
+  return new Response(JSON.stringify(singleResult), { status: 200, headers: responseHeaders });
 }
 
 function handleGoogleAuthStart(request, env, url) {
@@ -730,8 +883,8 @@ function handleGoogleAuthStart(request, env, url) {
     statePayload.s = clientState;
   }
 
-  const encodedState = btoa(JSON.stringify(statePayload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent&state=${encodeURIComponent(encodedState)}`;
+  const encodedState = base64UrlEncode(JSON.stringify(statePayload));
+  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=select_account&state=${encodeURIComponent(encodedState)}`;
   return Response.redirect(googleAuthUrl, 302);
 }
 
@@ -850,10 +1003,10 @@ function handleOpenIDConfiguration(url, corsHeaders) {
     userinfo_endpoint: `${origin}/oauth/userinfo`,
     jwks_uri: `${origin}/.well-known/jwks.json`,
     registration_endpoint: `${origin}/oauth/register`,
-    scopes_supported: ["openid", "email", "profile", "mcp", "vault:read", "vault:write"],
+    scopes_supported: ["mcp", "vault:read", "vault:write", "openid", "email", "profile"],
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
+    token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
     code_challenge_methods_supported: ["S256", "plain"],
     service_documentation: "https://zerodrive.dev",
   };
@@ -879,10 +1032,11 @@ async function handleOAuthRegister(request, env, url, corsHeaders) {
     }
   }
 
-  const clientName = body.client_name || "Agent Connector";
+  const clientName = body.client_name || "MCP Client";
   const redirectUris = Array.isArray(body.redirect_uris) && body.redirect_uris.length > 0
     ? body.redirect_uris
     : [`${url.origin}/auth/callback`];
+  const authMethod = body.token_endpoint_auth_method || "none";
 
   const now = Math.floor(Date.now() / 1000);
   const clientSeed = `${clientName}:${redirectUris.join(",")}:${env.GOOGLE_CLIENT_SECRET || "zd_secret"}`;
@@ -891,16 +1045,19 @@ async function handleOAuthRegister(request, env, url, corsHeaders) {
 
   const responsePayload = {
     client_id: clientId,
-    client_secret: clientSecret,
     client_id_issued_at: now,
-    client_secret_expires_at: 0,
     client_name: clientName,
     redirect_uris: redirectUris,
-    grant_types: ["authorization_code", "refresh_token"],
-    response_types: ["code"],
-    token_endpoint_auth_method: body.token_endpoint_auth_method || "client_secret_post",
-    scope: "mcp vault:read vault:write",
+    grant_types: Array.isArray(body.grant_types) && body.grant_types.length > 0 ? body.grant_types : ["authorization_code", "refresh_token"],
+    response_types: Array.isArray(body.response_types) && body.response_types.length > 0 ? body.response_types : ["code"],
+    token_endpoint_auth_method: authMethod,
+    scope: body.scope || "mcp vault:read vault:write",
   };
+
+  if (authMethod !== "none") {
+    responsePayload.client_secret = clientSecret;
+    responsePayload.client_secret_expires_at = 0;
+  }
 
   return new Response(JSON.stringify(responsePayload, null, 2), {
     status: 201,
@@ -935,13 +1092,19 @@ async function handleOAuthToken(request, env, url, corsHeaders) {
   const grantType = body.grant_type || url.searchParams.get("grant_type") || "authorization_code";
   const code = body.code || url.searchParams.get("code") || "";
   const clientSecret = env.GOOGLE_CLIENT_SECRET || "";
+  const tokenHeaders = {
+    ...corsHeaders,
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    Pragma: "no-cache",
+  };
 
   if (grantType === "authorization_code") {
     const payload = await verifyAuthCode(clientSecret, code);
     if (!payload) {
       return new Response(
         JSON.stringify({ error: "invalid_grant", error_description: "Invalid or expired authorization code" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 400, headers: tokenHeaders }
       );
     }
 
@@ -952,11 +1115,8 @@ async function handleOAuthToken(request, env, url, corsHeaders) {
         expires_in: 31536000,
         refresh_token: payload.sessionToken,
         scope: "mcp vault:read vault:write",
-        token: payload.sessionToken,
-        mcp_endpoint: `${url.origin}/mcp`,
-        user: { email: payload.email, vault: payload.userPrefix }
       }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 200, headers: tokenHeaders }
     );
   }
 
@@ -965,7 +1125,7 @@ async function handleOAuthToken(request, env, url, corsHeaders) {
     if (!refreshToken) {
       return new Response(
         JSON.stringify({ error: "invalid_request", error_description: "Missing refresh_token" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 400, headers: tokenHeaders }
       );
     }
     return new Response(
@@ -973,15 +1133,16 @@ async function handleOAuthToken(request, env, url, corsHeaders) {
         access_token: refreshToken,
         token_type: "Bearer",
         expires_in: 31536000,
+        refresh_token: refreshToken,
         scope: "mcp vault:read vault:write",
       }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 200, headers: tokenHeaders }
     );
   }
 
   return new Response(
     JSON.stringify({ error: "unsupported_grant_type", error_description: `Grant type '${grantType}' is not supported` }),
-    { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    { status: 400, headers: tokenHeaders }
   );
 }
 
@@ -1069,16 +1230,16 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
     sessionToken = `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
   }
   
-  // Unpack state parameter
+  // Unpack state parameter safely
   const rawState = url.searchParams.get("state") || "";
   let clientRedirectUri = "";
   let clientState = "";
   if (rawState) {
     try {
-      const decoded = atob(rawState.replace(/-/g, "+").replace(/_/g, "/"));
+      const decoded = base64UrlDecode(rawState);
       const parsed = JSON.parse(decoded);
       if (parsed.r) clientRedirectUri = parsed.r;
-      if (parsed.s) clientState = parsed.s;
+      if (parsed.s !== undefined) clientState = parsed.s;
     } catch {
       clientState = rawState;
     }
@@ -1367,11 +1528,12 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, Range, x-amz-content-sha256, x-amz-date, x-amz-copy-source",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Range, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, x-amz-content-sha256, x-amz-date, x-amz-copy-source",
+      "Access-Control-Expose-Headers": "WWW-Authenticate, Mcp-Session-Id, MCP-Protocol-Version",
     };
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
     // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & RFC 9728 & OIDC & OpenAPI)
@@ -1381,21 +1543,33 @@ export default {
     if (url.pathname === "/.well-known/ai-plugin.json") {
       return handleAIPluginManifest(url, corsHeaders);
     }
+    if (url.pathname === "/.well-known/jwks.json") {
+      return new Response(JSON.stringify({ keys: [] }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
     if (
-      url.pathname === "/.well-known/oauth-protected-resource" ||
-      url.pathname === "/.well-known/oauth-protected-resource/mcp"
+      url.pathname.startsWith("/.well-known/oauth-protected-resource") ||
+      url.pathname === "/mcp/.well-known/oauth-protected-resource"
     ) {
       return handleOAuthProtectedResource(url, corsHeaders);
     }
     if (
-      url.pathname === "/.well-known/openid-configuration" ||
-      url.pathname === "/.well-known/oauth-authorization-server"
+      url.pathname.startsWith("/.well-known/openid-configuration") ||
+      url.pathname.startsWith("/.well-known/oauth-authorization-server") ||
+      url.pathname === "/mcp/.well-known/openid-configuration" ||
+      url.pathname === "/mcp/.well-known/oauth-authorization-server"
     ) {
       return handleOpenIDConfiguration(url, corsHeaders);
     }
 
     // 0b. OAuth 2.0 Dynamic Client Registration (RFC 7591)
-    if (url.pathname === "/oauth/register" || url.pathname === "/register") {
+    if (
+      url.pathname === "/oauth/register" ||
+      url.pathname === "/register" ||
+      url.pathname === "/mcp/register" ||
+      url.pathname === "/v1/oauth/register"
+    ) {
       return handleOAuthRegister(request, env, url, corsHeaders);
     }
 
@@ -1403,23 +1577,34 @@ export default {
     if (
       url.pathname === "/oauth/authorize" ||
       url.pathname === "/authorize" ||
+      url.pathname === "/mcp/authorize" ||
+      url.pathname === "/v1/oauth/authorize" ||
       url.pathname === "/auth/google" ||
       url.pathname === "/login"
     ) {
       return handleGoogleAuthStart(request, env, url);
     }
 
-    // 0c. OAuth 2.0 Token Exchange Endpoint
-    if (url.pathname === "/oauth/token" || url.pathname === "/token") {
+    // 0d. OAuth 2.0 Token Exchange Endpoint
+    if (
+      url.pathname === "/oauth/token" ||
+      url.pathname === "/token" ||
+      url.pathname === "/mcp/token" ||
+      url.pathname === "/v1/oauth/token"
+    ) {
       return handleOAuthToken(request, env, url, corsHeaders);
     }
 
-    // 0d. OAuth 2.0 UserInfo Endpoint
-    if (url.pathname === "/oauth/userinfo" || url.pathname === "/userinfo") {
+    // 0e. OAuth 2.0 UserInfo Endpoint
+    if (
+      url.pathname === "/oauth/userinfo" ||
+      url.pathname === "/userinfo" ||
+      url.pathname === "/mcp/userinfo"
+    ) {
       return handleOAuthUserInfo(request, env, url, corsHeaders);
     }
 
-    // 0e. Google OAuth 2.0 Callback
+    // 0f. Google OAuth 2.0 Callback
     if (url.pathname === "/auth/callback" || url.pathname === "/oauth/callback") {
       return handleGoogleAuthCallback(request, env, url, corsHeaders);
     }
