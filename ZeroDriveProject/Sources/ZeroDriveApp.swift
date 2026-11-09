@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupTerminationSignalTrap()
 
         Task {
+            await ManageFileProvider.shared.registerDomainIfNeeded()
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
         }
     }

@@ -67,6 +67,7 @@ swiftc -O \
   -framework Charts \
   -framework AVFoundation \
   -framework IOKit \
+  -framework FileProvider \
   -o "${ARM64_BIN}" \
   ${SWIFT_FILES}
 
@@ -79,6 +80,7 @@ swiftc -O \
   -framework Charts \
   -framework AVFoundation \
   -framework IOKit \
+  -framework FileProvider \
   -o "${X86_64_BIN}" \
   ${SWIFT_FILES}
 
@@ -128,6 +130,42 @@ if [ -f "FinderSyncExtension/ZeroDriveFinderSync.swift" ]; then
   rm -f "${BUILD_DIR}/ZeroDriveFinderSync-arm64" "${BUILD_DIR}/ZeroDriveFinderSync-x86_64"
 fi
 
+if [ -f "ZeroDriveFileProvider/file-provider-extension.swift" ]; then
+  echo "    -> Compiling Apple FileProvider Extension (ZeroDriveFileProvider.appex)..."
+  FP_BUNDLE="${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFileProvider.appex"
+  mkdir -p "${FP_BUNDLE}/Contents/MacOS"
+  cp "ZeroDriveFileProvider/Info.plist" "${FP_BUNDLE}/Contents/Info.plist"
+
+  FP_SWIFT_FILES=$(find ZeroDriveFileProvider -name "*.swift")
+
+  swiftc -O \
+    -target arm64-apple-macos13.0 \
+    -parse-as-library \
+    -module-name ZeroDriveFileProvider \
+    -framework Cocoa \
+    -framework FileProvider \
+    -framework UniformTypeIdentifiers \
+    -Xlinker -e -Xlinker _NSExtensionMain \
+    -o "${BUILD_DIR}/ZeroDriveFileProvider-arm64" \
+    ${FP_SWIFT_FILES}
+
+  swiftc -O \
+    -target x86_64-apple-macos13.0 \
+    -parse-as-library \
+    -module-name ZeroDriveFileProvider \
+    -framework Cocoa \
+    -framework FileProvider \
+    -framework UniformTypeIdentifiers \
+    -Xlinker -e -Xlinker _NSExtensionMain \
+    -o "${BUILD_DIR}/ZeroDriveFileProvider-x86_64" \
+    ${FP_SWIFT_FILES}
+
+  lipo -create -output "${FP_BUNDLE}/Contents/MacOS/ZeroDriveFileProvider" \
+    "${BUILD_DIR}/ZeroDriveFileProvider-arm64" \
+    "${BUILD_DIR}/ZeroDriveFileProvider-x86_64"
+  rm -f "${BUILD_DIR}/ZeroDriveFileProvider-arm64" "${BUILD_DIR}/ZeroDriveFileProvider-x86_64"
+fi
+
 echo "==> [5/6] Code signing ZeroDrive.app with identity: ${SIGN_IDENTITY}..."
 ENTITLEMENTS_FLAG=""
 if [ -f "Assets/Entitlements.plist" ]; then
@@ -144,6 +182,13 @@ if [ -d "${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex" ]; then
     --entitlements FinderSyncExtension/Entitlements.plist \
     --sign "${SIGN_IDENTITY}" \
     "${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex"
+fi
+
+if [ -d "${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFileProvider.appex" ]; then
+  codesign --force ${TIMESTAMP_FLAG} --options runtime \
+    --entitlements ZeroDriveFileProvider/Entitlements.plist \
+    --sign "${SIGN_IDENTITY}" \
+    "${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFileProvider.appex"
 fi
 
 codesign --force ${TIMESTAMP_FLAG} --options runtime ${ENTITLEMENTS_FLAG} --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}/Contents/Resources/rclone"
