@@ -3389,6 +3389,132 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     }, 200, corsHeaders);
   }
 
+  // 10b. Multipart Large Upload API (/v1/files/multipart/*)
+  // High-performance concurrent chunk streaming for massive renders (5GB - 50GB+)
+  if (pathname === "/v1/files/multipart/init" && request.method === "POST") {
+    let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+    if (!targetPath) {
+      try {
+        const body = await request.json();
+        targetPath = (body.path || "").replace(/^\/+/, "");
+      } catch {}
+    }
+    if (!targetPath) {
+      return errorResponse("Missing parameter 'path'", 400, corsHeaders);
+    }
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    const mimeType = guessMimeType(targetPath);
+    try {
+      const mp = await env.VAULT_BUCKET.createMultipartUpload(fullKey, {
+        httpMetadata: { contentType: mimeType }
+      });
+      return jsonResponse({
+        ok: true,
+        upload_id: mp.uploadId,
+        path: targetPath,
+        key: fullKey,
+        part_size: 10485760
+      }, 200, corsHeaders);
+    } catch (e) {
+      return errorResponse(`Failed to initiate multipart upload: ${e.message}`, 500, corsHeaders);
+    }
+  }
+
+  if (pathname === "/v1/files/multipart/part" && (request.method === "PUT" || request.method === "POST")) {
+    let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+    const uploadId = url.searchParams.get("upload_id") || url.searchParams.get("uploadId");
+    const partNum = parseInt(url.searchParams.get("part_number") || url.searchParams.get("partNumber") || "0", 10);
+
+    if (!targetPath || !uploadId || partNum < 1 || partNum > 10000) {
+      return errorResponse("Missing 'path', 'upload_id', or valid 'part_number' (1-10000)", 400, corsHeaders);
+    }
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    try {
+      const mp = env.VAULT_BUCKET.resumeMultipartUpload(fullKey, uploadId);
+      const part = await mp.uploadPart(partNum, request.body);
+      const etag = part.etag.replace(/^"+|"+$/g, "");
+      return new Response(JSON.stringify({
+        ok: true,
+        part_number: partNum,
+        etag: etag
+      }), {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+          "ETag": `"${etag}"`
+        }
+      });
+    } catch (e) {
+      return errorResponse(`Part upload failed: ${e.message}`, 500, corsHeaders);
+    }
+  }
+
+  if (pathname === "/v1/files/multipart/complete" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch {}
+    let targetPath = (url.searchParams.get("path") || body.path || "").replace(/^\/+/, "");
+    const uploadId = url.searchParams.get("upload_id") || url.searchParams.get("uploadId") || body.upload_id || body.uploadId;
+    const rawParts = body.parts || [];
+
+    if (!targetPath || !uploadId || !Array.isArray(rawParts) || rawParts.length === 0) {
+      return errorResponse("Missing 'path', 'upload_id', or 'parts' array", 400, corsHeaders);
+    }
+
+    const parts = rawParts.map(p => ({
+      partNumber: parseInt(p.part_number || p.partNumber, 10),
+      etag: String(p.etag || "").replace(/^"+|"+$/g, "")
+    })).sort((a, b) => a.partNumber - b.partNumber);
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    try {
+      const mp = env.VAULT_BUCKET.resumeMultipartUpload(fullKey, uploadId);
+      const completed = await mp.complete(parts);
+      const finalEtag = completed.httpEtag || `"${completed.etag}"`;
+
+      await logActivity(env, userPrefix, "write_file", { path: targetPath, size: completed.size, etag: finalEtag });
+      broadcastVaultEvent(userPrefix, {
+        event: "change",
+        action: "write",
+        path: targetPath,
+        timestamp: new Date().toISOString(),
+        etag: finalEtag,
+        size: completed.size
+      });
+
+      return jsonResponse({
+        ok: true,
+        path: targetPath,
+        etag: finalEtag,
+        size: completed.size
+      }, 200, corsHeaders);
+    } catch (e) {
+      return errorResponse(`Complete multipart upload failed: ${e.message}`, 500, corsHeaders);
+    }
+  }
+
+  if (pathname === "/v1/files/multipart/abort" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch {}
+    let targetPath = (url.searchParams.get("path") || body.path || "").replace(/^\/+/, "");
+    const uploadId = url.searchParams.get("upload_id") || url.searchParams.get("uploadId") || body.upload_id || body.uploadId;
+
+    if (!targetPath || !uploadId) {
+      return errorResponse("Missing 'path' or 'upload_id'", 400, corsHeaders);
+    }
+
+    const fullKey = `${userPrefix}/${targetPath}`;
+    try {
+      const mp = env.VAULT_BUCKET.resumeMultipartUpload(fullKey, uploadId);
+      await mp.abort();
+      return jsonResponse({ ok: true, aborted: true }, 200, corsHeaders);
+    } catch (e) {
+      return errorResponse(`Abort failed: ${e.message}`, 500, corsHeaders);
+    }
+  }
+
   // 11. GET /v1/files/download-url - Pre-signed download URL with HTTP Range support
   if (pathname === "/v1/files/download-url" && (request.method === "GET" || request.method === "POST")) {
     let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");

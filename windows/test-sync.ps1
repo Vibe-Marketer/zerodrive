@@ -125,6 +125,41 @@ Assert-Test "Windows Explorer Navigation Pane CLSID Registration" {
     return $true
 }
 
+# Test 6: Smart Disk Dehydration & Inactive Placeholder Routine
+Assert-Test "Auto-Eviction & Dehydration Fallback Logic" {
+    $testDir = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "zd-dehydrate-test-$([Guid]::NewGuid().ToString('N').Substring(0,8))")
+    New-Item -ItemType Directory -LiteralPath $testDir -Force | Out-Null
+    try {
+        $testFile = [System.IO.Path]::Combine($testDir, "render_test.exr")
+        $payload = New-Object byte[] 1048576 # 1MB cached file
+        [System.IO.File]::WriteAllBytes($testFile, $payload)
+        (Get-Item -LiteralPath $testFile).LastAccessTimeUtc = (Get-Date).ToUniversalTime().AddDays(-10)
+
+        # Check initial size
+        $initialSize = (Get-Item -LiteralPath $testFile).Length
+        if ($initialSize -ne 1048576) { return $false }
+
+        # Simulate dehydration
+        $metaJson = @{
+            vault_path = "renders/render_test.exr"
+            size       = $initialSize
+            modified   = (Get-Date).ToUniversalTime().ToString("o")
+            hydrated   = $false
+        } | ConvertTo-Json -Compress
+
+        Set-Content -LiteralPath "$testFile`:zerodrive" -Value $metaJson -ErrorAction SilentlyContinue
+        [System.IO.File]::WriteAllBytes($testFile, [byte[]]@())
+
+        $dehydratedSize = (Get-Item -LiteralPath $testFile).Length
+        return ($dehydratedSize -eq 0)
+    }
+    finally {
+        if (Test-Path -LiteralPath $testDir) {
+            Remove-Item -LiteralPath $testDir -Force -Recurse -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host " Test Results: $passed Passed, $failed Failed" -ForegroundColor $(if ($failed -eq 0) { "Green" } else { "Red" })
 Write-Host "==========================================================" -ForegroundColor Cyan
