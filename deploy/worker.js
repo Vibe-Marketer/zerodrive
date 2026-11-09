@@ -426,10 +426,12 @@ function authenticateMCPRequest(request, env, url) {
     token = authHeader.slice(7).trim();
   } else if (url.searchParams.get("key")) {
     token = url.searchParams.get("key").trim();
+  } else if (url.searchParams.get("token")) {
+    token = url.searchParams.get("token").trim();
   }
 
   if (!token) {
-    return { ok: false, error: "Missing ZeroDrive API key. Provide 'Authorization: Bearer <key>' or '?key=<key>'." };
+    return { ok: false, error: "OAuth 2.0 authentication required. Connect via /oauth/authorize or /login." };
   }
 
   // Check master vault key or user-specific prefix
@@ -456,12 +458,20 @@ function authenticateMCPRequest(request, env, url) {
     return { ok: true, userPrefix: `tenants/${clean}/${clean}` };
   }
 
-  return { ok: false, error: "Invalid ZeroDrive API key." };
+  return { ok: false, error: "Invalid OAuth 2.0 token." };
 }
 
 async function handleMCPRequest(request, env, url, corsHeaders) {
   if (request.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  const acceptHeader = request.headers.get("Accept") || "";
+
+  // If opened directly in browser or as a GET request without token, redirect straight to OAuth login
+  const hasToken = request.headers.get("Authorization") || url.searchParams.get("key") || url.searchParams.get("token");
+  if (!hasToken && (request.method === "GET" || acceptHeader.includes("text/html"))) {
+    return Response.redirect(`${url.origin}/login`, 302);
   }
 
   const auth = authenticateMCPRequest(request, env, url);
@@ -470,7 +480,17 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
       JSON.stringify({
         jsonrpc: "2.0",
         id: null,
-        error: { code: -32000, message: `Unauthorized: ${auth.error}` },
+        error: {
+          code: -32000,
+          message: "Authentication required. Connect via ZeroDrive OAuth 2.0.",
+          data: {
+            auth_flow: "oauth2",
+            login_url: `${url.origin}/login`,
+            authorization_endpoint: `${url.origin}/oauth/authorize`,
+            token_endpoint: `${url.origin}/oauth/token`,
+            discovery: `${url.origin}/.well-known/oauth-authorization-server`
+          }
+        },
       }),
       {
         status: 401,
@@ -713,6 +733,18 @@ function handleGoogleAuthStart(request, env, url) {
   const encodedState = btoa(JSON.stringify(statePayload)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent&state=${encodeURIComponent(encodedState)}`;
   return Response.redirect(googleAuthUrl, 302);
+}
+
+function handleOAuthProtectedResource(url, corsHeaders) {
+  const origin = url.origin;
+  return new Response(JSON.stringify({
+    resource: `${origin}/mcp`,
+    authorization_servers: [origin],
+    scopes_supported: ["mcp", "vault:read", "vault:write"],
+    bearer_methods_supported: ["header"],
+  }, null, 2), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" }
+  });
 }
 
 function handleOpenIDConfiguration(url, corsHeaders) {
@@ -1197,7 +1229,13 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & OIDC)
+    // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & RFC 9728 & OIDC)
+    if (
+      url.pathname === "/.well-known/oauth-protected-resource" ||
+      url.pathname === "/.well-known/oauth-protected-resource/mcp"
+    ) {
+      return handleOAuthProtectedResource(url, corsHeaders);
+    }
     if (
       url.pathname === "/.well-known/openid-configuration" ||
       url.pathname === "/.well-known/oauth-authorization-server"
