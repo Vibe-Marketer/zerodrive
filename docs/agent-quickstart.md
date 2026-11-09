@@ -158,12 +158,70 @@ Tell your agent:
 
 ---
 
-## 7. Remote Linux & Cloud Agents (VPS, Codespaces, Docker)
+## 7. Remote Linux & Cloud Agents (1-Line Headless Vault Mount)
 
-To connect an agent running on a remote headless machine:
+Connect any headless Linux VPS (Ubuntu, Debian, Fedora, Arch, Alpine), cloud VM, Docker container, GitHub Codespace, or remote AI agent to your ZeroDrive vault with a single command.
 
-1. Install the `zerodrive` CLI binary onto the machine.
-2. Place your ZeroDrive vault credentials in `~/.config/zerodrive/vault.conf`:
+### The 1-Line Mount Command
+
+Run this on your server or container:
+
+```bash
+curl -sSL https://api.zerodrive.dev/install | bash
+```
+
+To provide your API token non-interactively (e.g. in cloud-init, CI/CD, or automated provisioning):
+
+```bash
+ZERODRIVE_TOKEN="<your-token-or-access-key>" curl -sSL https://api.zerodrive.dev/install | bash
+```
+
+### What the 1-Line Mount Does Automatically
+
+1. **OS & Arch Detection:** Detects Linux (`x86_64`, `aarch64` / `arm64`) and macOS.
+2. **Engine & FUSE Setup:** Verifies or installs `rclone` and FUSE (`fuse3`) drivers.
+3. **Cloud Vault Remote Configuration:** Automatically creates `/etc/zerodrive/vault.conf` and user configurations targeting `https://api.zerodrive.dev/s3` with your credentials (or auto-provisions an isolated agent vault ID).
+4. **Persistent systemd Service:** Installs and enables `/etc/systemd/system/zerodrive.service` to auto-mount at `/zerodrive` with:
+   - `--vfs-cache-mode full` (read/write/append streaming cache)
+   - `--dir-cache-time 72h` and `--poll-interval 15s` (fast directory caching)
+   - `Restart=always` with 5s delay on network loss or reboot
+   - Remote control daemon enabled on `127.0.0.1:55729`
+5. **Developer & Agent CLI:** Installs `zerodrive` and `zd` to `/usr/local/bin` (or `~/.local/bin`) for instant queries and file operations.
+
+### Health Check & Status Verification
+
+Check your live mount and VFS cache status anytime:
+
+```bash
+zd status
+# or
+zerodrive status
+```
+
+Example status output:
+```text
+⚡ ZeroDrive System Status
+══════════════════════════════════════════════════════
+  Vault Mount:             ✓ Connected & Mounted
+  Mount Path:              /zerodrive
+  Disk Free:               42.5 GiB available (80 GB total)
+  Local VFS Cache:         1.2 GB (24 cached files)
+  VFS Sync Queue:          Idle (0 pending VFS uploads)
+  Active Symlinks:         0 local folder shortcuts active
+  Vault Prefix:            zerodrive-vault-prod
+══════════════════════════════════════════════════════
+```
+
+Run full health diagnostics across the cloud vault and hosted MCP server:
+
+```bash
+zd doctor
+```
+
+### Manual Configuration Fallback
+
+If you prefer to configure rclone manually without the automated installer:
+1. Place credentials in `~/.config/zerodrive/vault.conf`:
    ```ini
    [primary_vault]
    type = s3
@@ -175,8 +233,8 @@ To connect an agent running on a remote headless machine:
    force_path_style = true
    no_check_bucket = true
    ```
-3. Run `zerodrive doctor` to verify the connection.
-4. Alternatively, point any remote agent directly to the 24/7 hosted MCP server at `https://api.zerodrive.dev/mcp` via OAuth 2.0 with zero local configuration.
+2. Run `zd status` or `zd doctor` to verify the connection.
+3. Alternatively, connect any remote agent directly to the hosted 24/7 MCP server at `https://api.zerodrive.dev/mcp` via OAuth 2.0 with zero local configuration.
 
 ---
 

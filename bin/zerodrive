@@ -24,6 +24,8 @@ DEFAULT_BUCKET_PREFIX = "zerodrive-vault-prod/usr_andrew_8bc7fb477f"
 # ZeroDrive Configuration & State (Primary: ~/.config/zerodrive/, Fallback: ~/.config/rclone/)
 CONFIG_DIR = os.path.expanduser("~/.config/zerodrive")
 LEGACY_DIR = os.path.expanduser("~/.config/rclone")
+SYSTEM_CONFIG_DIR = "/etc/zerodrive"
+SYSTEM_LEGACY_DIR = "/etc/rclone"
 
 def get_config_path(filename, default_legacy_name=None):
     p = os.path.join(CONFIG_DIR, filename)
@@ -33,6 +35,12 @@ def get_config_path(filename, default_legacy_name=None):
     lp = os.path.join(LEGACY_DIR, legacy_file)
     if os.path.exists(lp):
         return lp
+    sp = os.path.join(SYSTEM_CONFIG_DIR, filename)
+    if os.path.exists(sp):
+        return sp
+    slp = os.path.join(SYSTEM_LEGACY_DIR, legacy_file)
+    if os.path.exists(slp):
+        return slp
     return p
 
 SETTINGS_PATH = get_config_path("zerodrive-vault.json")
@@ -40,7 +48,15 @@ CONFIG_FILE = get_config_path("vault.conf", "rclone.conf")
 SYMLINKS_PATH = get_config_path("zerodrive-symlinks.json")
 LOCAL_TELEMETRY = get_config_path("migration-telemetry.json")
 REMOTE_TELEMETRY = get_config_path("remote-migration-telemetry.json")
-MOUNT_DIR = os.path.expanduser("~/ZeroDrive/My Drive")
+
+def resolve_mount_dir():
+    if os.environ.get("ZERODRIVE_MOUNT_DIR"):
+        return os.path.abspath(os.environ["ZERODRIVE_MOUNT_DIR"])
+    if os.path.ismount("/zerodrive") or (os.path.exists("/zerodrive") and not sys.platform.startswith("darwin")):
+        return "/zerodrive"
+    return os.path.expanduser("~/ZeroDrive/My Drive")
+
+MOUNT_DIR = resolve_mount_dir()
 RC_URL = "http://127.0.0.1:55729"
 
 # Locate ZeroDrive Storage Engine core binary
@@ -224,7 +240,12 @@ def cmd_status(args):
 
     # Check mount
     mount_proc = subprocess.run(["mount"], capture_output=True, text=True)
-    is_mounted = ".zerodrive-mount" in mount_proc.stdout or "ZeroDrive" in mount_proc.stdout
+    is_mounted = (
+        ".zerodrive-mount" in mount_proc.stdout
+        or "ZeroDrive" in mount_proc.stdout
+        or "/zerodrive" in mount_proc.stdout
+        or (MOUNT_DIR in mount_proc.stdout and MOUNT_DIR != "/")
+    )
 
     # Daemon RC stats
     rc_stats = run_rc_post("core/stats", timeout=0.8)
@@ -303,9 +324,11 @@ def cmd_status(args):
     print(c("\n⚡ ZeroDrive System Status", COLOR_BOLD + COLOR_CYAN))
     print(c("═" * 54, COLOR_DIM))
     mount_str = c("✓ Connected & Mounted", COLOR_GREEN) if is_mounted else c("✗ Not Mounted", COLOR_RED)
-    print(f"  {c('Finder Mount:', COLOR_BOLD):<24} {mount_str}")
+    mount_label = "Finder Mount:" if sys.platform.startswith("darwin") else "Vault Mount:"
+    print(f"  {c(mount_label, COLOR_BOLD):<24} {mount_str}")
     print(f"  {c('Mount Path:', COLOR_BOLD):<24} {MOUNT_DIR}")
-    print(f"  {c('Mac SSD Free:', COLOR_BOLD):<24} {c(f'{free_gb:.1f} GiB available', COLOR_GREEN)} ({total_gb:.0f} GB total)")
+    free_label = "Mac SSD Free:" if sys.platform.startswith("darwin") else "Disk Free:"
+    print(f"  {c(free_label, COLOR_BOLD):<24} {c(f'{free_gb:.1f} GiB available', COLOR_GREEN)} ({total_gb:.0f} GB total)")
 
     if daemon_online:
         print(f"  {c('Local VFS Cache:', COLOR_BOLD):<24} {format_bytes(cache_bytes)} ({cache_files:,} cached files)")
@@ -964,9 +987,14 @@ def cmd_doctor(args):
     root_items = [x.strip() for x in res.stdout.splitlines() if x.strip()] if vault_ok else []
     checks["cloudVault"] = {"ok": vault_ok, "remote": get_vault_remote_base(), "rootItemsCount": len(root_items)}
 
-    # 4. Local Finder Mount
+    # 4. Local Mount
     mount_proc = subprocess.run(["mount"], capture_output=True, text=True)
-    is_mounted = ".zerodrive-mount" in mount_proc.stdout or "ZeroDrive" in mount_proc.stdout
+    is_mounted = (
+        ".zerodrive-mount" in mount_proc.stdout
+        or "ZeroDrive" in mount_proc.stdout
+        or "/zerodrive" in mount_proc.stdout
+        or (MOUNT_DIR in mount_proc.stdout and MOUNT_DIR != "/")
+    )
     checks["finderMount"] = {"ok": is_mounted, "mountDir": MOUNT_DIR}
 
     if getattr(args, "json", False):
@@ -979,7 +1007,9 @@ def cmd_doctor(args):
     print(f"  {c('2. OAuth & App Icon:', COLOR_BOLD):<24} {c('✓ Active (https://api.zerodrive.dev/app-icon.png)', COLOR_GREEN) if hosted_ok else c('✗ Check worker', COLOR_YELLOW)}")
     print(f"  {c('3. Cloud R2 Vault:', COLOR_BOLD):<24} {c(f'✓ Connected ({len(root_items)} root collections/files)', COLOR_GREEN) if vault_ok else c('✗ R2 connection error', COLOR_RED)}")
     print(f"  {c('4. Storage Engine:', COLOR_BOLD):<24} {c('✓ Ready', COLOR_GREEN) if engine_ok else c('✗ Missing config file', COLOR_RED)}")
-    print(f"  {c('5. Finder Mount:', COLOR_BOLD):<24} {c('✓ Mounted at ~/ZeroDrive/My Drive', COLOR_GREEN) if is_mounted else c('• Unmounted (Cloud & MCP still 100% active)', COLOR_YELLOW)}")
+    mount_label = "Finder Mount:" if sys.platform.startswith("darwin") else "Vault Mount:"
+    mount_desc = f"✓ Mounted at {MOUNT_DIR}" if is_mounted else "• Unmounted (Cloud & MCP still 100% active)"
+    print(f"  {c(f'5. {mount_label}', COLOR_BOLD):<24} {c(mount_desc, COLOR_GREEN if is_mounted else COLOR_YELLOW)}")
     print(c("─" * 58, COLOR_DIM))
     print(c("  Supported File Types & Agent Tools:", COLOR_BOLD))
     print("    • Text, Markdown & Code  → write_file, read_file, edit_file, grep_vault")
