@@ -178,8 +178,8 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--config=\(MultiCloudCombineBuilder.shared.configPath.path)",
             "--addr=127.0.0.1:\(nfsPort)",
             "--default-time=\(defaultTimeStr)",
-            "--nfs-cache-type=disk",
-            "--nfs-cache-dir=\(nfsHandleCacheDir.path)",
+            "--nfs-cache-type=memory",
+            "--nfs-cache-handle-limit=200000",
             "--vfs-cache-mode=full",
             "--cache-dir=\(cacheDir.path)",
             "--vfs-cache-max-size=\(meta.spoolCapGB)G",
@@ -228,7 +228,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             }
 
             if nfsReady {
-                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async"
+                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async,soft,intr,timeo=30,retrans=2"
                 await runCommand("/sbin/mount_nfs", [
                     "-o", nfsMountOptions,
                     "localhost:/",
@@ -429,7 +429,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     private func ensureUserSymlink() {
         let fm = FileManager.default
-        if let dest = try? fm.destinationOfSymbolicLink(atPath: userSymlinkURL.path), dest == mountPoint.path {
+        let myDriveTarget = nfsMountRoot.appendingPathComponent("My Drive")
+        let destinationURL = fm.fileExists(atPath: myDriveTarget.path) ? myDriveTarget : mountPoint
+        if let dest = try? fm.destinationOfSymbolicLink(atPath: userSymlinkURL.path), dest == destinationURL.path {
             return
         }
         // Replace ~/ZeroDrive if it is an empty leftover mount directory or broken symlink
@@ -446,7 +448,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             }
         }
         if !fm.fileExists(atPath: userSymlinkURL.path) {
-            try? fm.createSymbolicLink(at: userSymlinkURL, withDestinationURL: mountPoint)
+            try? fm.createSymbolicLink(at: userSymlinkURL, withDestinationURL: destinationURL)
         }
     }
 

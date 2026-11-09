@@ -15,28 +15,11 @@ public final class RAMTreeIndexer: ObservableObject {
         startBackgroundAutoRefresh()
     }
 
-    /// Refreshes top-level VFS directory instantly, then pre-warms active collections in background
+    /// Refreshes top-level VFS directory instantly in milliseconds without locking VFS mutex with recursive walks
     public func prewarmAll() async {
         isIndexing = true
         _ = await RcloneRCClient.shared.refreshVFSTree(dir: "My Drive", recursive: false)
         self.isIndexing = false
-
-        Task.detached(priority: .utility) {
-            let activeCollections = [
-                "My Drive/MAIN",
-                "My Drive/Course",
-                "My Drive/_BUSINESS",
-                "My Drive/_LIBRARY",
-                "My Drive/_SKILLS",
-                "My Drive/_SORT",
-                "My Drive/_Retakes",
-                "My Drive/_CAPTURES",
-                "My Drive/CLOUD-MAIN"
-            ]
-            for col in activeCollections {
-                _ = await RcloneRCClient.shared.refreshVFSTree(dir: col, recursive: true)
-            }
-        }
     }
 
     public func search(query: String) -> [CloudNode] {
