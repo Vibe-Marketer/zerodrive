@@ -725,39 +725,215 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
     return Response.redirect(`zerodrive://auth?token=${sessionToken}&email=${encodeURIComponent(email)}`, 302);
   }
 
-  // Return clean branded HTML page confirming login
+  // Return Apple-grade branded HTML page confirming login
   const mcpUrl = `https://api.zerodrive.dev/mcp?key=${sessionToken}`;
   const html = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>ZeroDrive — Authenticated</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/png" href="/app-icon.png">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0c; color: #f5f5f7; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
-    .card { background: #16161a; border: 1px solid #2a2a32; border-radius: 20px; padding: 40px; max-width: 480px; width: 100%; text-align: center; box-shadow: 0 24px 48px rgba(0,0,0,0.6); }
-    .logo { height: 38px; margin-bottom: 24px; display: inline-block; }
-    h1 { font-size: 24px; font-weight: 700; margin: 0 0 8px; color: #fff; letter-spacing: -0.5px; }
-    p { color: #8e8e93; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
-    .badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(48, 209, 88, 0.15); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-bottom: 24px; }
-    .box { background: #0d0d10; border: 1px solid #26262e; padding: 14px; border-radius: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #64d2ff; word-break: break-all; text-align: left; margin-bottom: 24px; }
-    .box label { display: block; color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-family: -apple-system, sans-serif; }
-    .footer { font-size: 13px; color: #666; margin: 0; }
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at 50% 18%, rgba(245, 166, 35, 0.14) 0%, transparent 60%), #08080a;
+      color: #f5f5f7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(18, 18, 24, 0.88);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border-radius: 24px;
+      padding: 44px 36px 36px;
+      max-width: 520px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 32px 72px -16px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.04);
+    }
+    .icon-wrap {
+      margin-bottom: 20px;
+      display: inline-block;
+      position: relative;
+    }
+    .icon-wrap::after {
+      content: "";
+      position: absolute;
+      inset: -8px;
+      background: radial-gradient(circle, rgba(245, 166, 35, 0.3) 0%, transparent 70%);
+      border-radius: 28px;
+      z-index: -1;
+      filter: blur(10px);
+    }
+    .app-icon {
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      display: block;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+    }
+    .brand-title {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.6px;
+      color: #ffffff;
+      margin: 0 0 6px;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: rgba(52, 199, 89, 0.12);
+      color: #32d74b;
+      border: 1px solid rgba(52, 199, 89, 0.25);
+      padding: 5px 14px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 18px;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      background: #32d74b;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #32d74b;
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.55; transform: scale(0.9); }
+    }
+    .subtitle {
+      color: #98989f;
+      font-size: 14px;
+      line-height: 1.5;
+      margin: 0 0 28px;
+      padding: 0 12px;
+    }
+    .endpoint-card {
+      background: #0d0d12;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 16px 18px;
+      text-align: left;
+      margin-bottom: 24px;
+      position: relative;
+    }
+    .endpoint-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .endpoint-label {
+      color: #787882;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+    }
+    .copy-btn {
+      background: #1c1c24;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #f5f5f7;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .copy-btn:hover {
+      background: #282834;
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .copy-btn:active {
+      transform: scale(0.97);
+    }
+    .copy-btn.copied {
+      background: rgba(52, 199, 89, 0.15);
+      border-color: rgba(52, 199, 89, 0.4);
+      color: #32d74b;
+    }
+    .endpoint-value {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: #64d2ff;
+      word-break: break-all;
+      line-height: 1.5;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .footer-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      align-items: center;
+    }
+    .hint {
+      color: #636366;
+      font-size: 13px;
+      margin: 0;
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <img src="/logo.png" class="logo" alt="ZeroDrive">
-    <div class="badge">● Connected: ${xmlEscape(email)}</div>
-    <h1>ZeroDrive Authenticated</h1>
-    <p>Your Google account has been verified. Your vault (<code>${xmlEscape(userPrefix)}</code>) is ready for your apps and AI agents.</p>
-    <div class="box">
-      <label>Your Agent MCP Endpoint</label>
-      ${xmlEscape(mcpUrl)}
+    <div class="icon-wrap">
+      <img src="/app-icon.png" class="app-icon" alt="ZeroDrive">
     </div>
-    <p class="footer">You can safely close this window and return to your agent.</p>
+    <div class="brand-title">ZeroDrive Authenticated</div>
+    <div class="status-badge">
+      <span class="dot"></span>
+      <span>${xmlEscape(email)}</span>
+    </div>
+    <p class="subtitle">Your Cloud Vault is authenticated and ready 24/7/365 for your Mac, web apps, and AI agents.</p>
+    
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="endpoint-label">Hosted Agent MCP Endpoint</span>
+        <button class="copy-btn" id="copyBtn" onclick="copyMcpUrl()">
+          <svg id="copyIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          <span id="copyText">Copy URL</span>
+        </button>
+      </div>
+      <div class="endpoint-value" id="mcpUrlText">${xmlEscape(mcpUrl)}</div>
+    </div>
+
+    <div class="footer-actions">
+      <p class="hint">Your session key is active. You can safely close this tab.</p>
+    </div>
   </div>
+
+  <script>
+    function copyMcpUrl() {
+      const text = document.getElementById("mcpUrlText").innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById("copyBtn");
+        const copyText = document.getElementById("copyText");
+        btn.classList.add("copied");
+        copyText.innerText = "Copied!";
+        setTimeout(() => {
+          btn.classList.remove("copied");
+          copyText.innerText = "Copy URL";
+        }, 2200);
+      });
+    }
+  </script>
 </body>
 </html>`;
 
