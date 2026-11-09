@@ -878,11 +878,46 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
       border-radius: 8px;
       border: 1px solid rgba(255, 255, 255, 0.04);
     }
-    .footer-actions {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+    .primary-btn {
+      background: #ffffff;
+      color: #000000;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 12px 28px;
+      border-radius: 9999px;
+      text-decoration: none;
+      display: inline-flex;
       align-items: center;
+      gap: 8px;
+      transition: all 0.15s ease;
+      box-shadow: 0 4px 14px rgba(255, 255, 255, 0.2);
+    }
+    .primary-btn:hover {
+      background: #e8e8ed;
+      transform: translateY(-1px);
+    }
+    .primary-btn:active {
+      transform: translateY(0);
+    }
+    .details-toggle {
+      margin-top: 24px;
+      text-align: left;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 18px;
+    }
+    .details-toggle summary {
+      color: #787882;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s ease;
+    }
+    .details-toggle summary:hover {
+      color: #b0b0b8;
+    }
+    .details-content {
+      margin-top: 14px;
     }
     .hint {
       color: #636366;
@@ -901,22 +936,32 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
       <span class="dot"></span>
       <span>${xmlEscape(email)}</span>
     </div>
-    <p class="subtitle">Your Cloud Vault is authenticated and ready 24/7/365 for your Mac, web apps, and AI agents.</p>
+    <p class="subtitle">Your Cloud Vault is authenticated and ready 24/7/365.</p>
     
-    <div class="endpoint-card">
-      <div class="endpoint-header">
-        <span class="endpoint-label">Hosted Agent MCP Endpoint</span>
-        <button class="copy-btn" id="copyBtn" onclick="copyMcpUrl()">
-          <svg id="copyIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-          <span id="copyText">Copy URL</span>
-        </button>
-      </div>
-      <div class="endpoint-value" id="mcpUrlText">${xmlEscape(mcpUrl)}</div>
+    <div style="margin-bottom: 24px;">
+      <a href="zerodrive://open" class="primary-btn">
+        <span>Open ZeroDrive</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="M12 5l7 7-7 7"></path></svg>
+      </a>
     </div>
 
-    <div class="footer-actions">
-      <p class="hint">Your session key is active. You can safely close this tab.</p>
-    </div>
+    <p class="hint">You're completely connected. You can safely close this window.</p>
+
+    <details class="details-toggle">
+      <summary>Developer & Agent Settings (Optional)</summary>
+      <div class="details-content">
+        <div class="endpoint-card">
+          <div class="endpoint-header">
+            <span class="endpoint-label">Hosted Agent MCP Endpoint</span>
+            <button class="copy-btn" id="copyBtn" onclick="copyMcpUrl()">
+              <svg id="copyIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              <span id="copyText">Copy URL</span>
+            </button>
+          </div>
+          <div class="endpoint-value" id="mcpUrlText">${xmlEscape(mcpUrl)}</div>
+        </div>
+      </div>
+    </details>
   </div>
 
   <script>
