@@ -227,4 +227,43 @@ public actor ZeroDriveAPIClient {
             throw NSError(domain: "ZeroDriveAPI", code: 502, userInfo: [NSLocalizedDescriptionKey: "Delete failed for \(cleanPath)"])
         }
     }
+
+    public func fetchActivities(limit: Int = 100) async throws -> [RemoteActivityRecord] {
+        let request = try makeRequest(endpoint: "v1/activity", queryParams: ["limit": String(limit)])
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 502
+            throw NSError(domain: "ZeroDriveAPI", code: code, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch activities (HTTP \(code))"])
+        }
+
+        struct ActivityResponse: Codable {
+            let ok: Bool
+            let count: Int?
+            let activities: [RemoteActivityRecord]
+        }
+
+        let decoded = try JSONDecoder().decode(ActivityResponse.self, from: data)
+        return decoded.activities
+    }
+}
+
+public struct RemoteActivityRecord: Codable, Sendable {
+    public let id: String
+    public let timestamp: String
+    public let action: String
+    public let path: String?
+    public let source: String?
+    public let destination: String?
+    public let size: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case timestamp
+        case action
+        case path
+        case source
+        case destination
+        case size
+    }
 }
