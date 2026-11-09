@@ -57,7 +57,7 @@ ZeroDrive separates **interactive virtual filesystem browsing** from **high-thro
 
 | Syntax Pattern | Classified As | Target Resolution |
 | :--- | :--- | :--- |
-| `primary_vault:<path>` or `<remote>:<path>` | **REMOTE** | Used as an explicit rclone remote string. |
+| `primary_vault:<path>` or `<remote>:<path>` | **REMOTE** | Used as an explicit remote vault string. |
 | `vault:<path>` or `zd://<path>` | **REMOTE** | Resolved to `primary_vault:<tenant-prefix>/<clean-path>`. |
 | `~/...`, `./...`, `../...` | **LOCAL** | Resolved to absolute local filesystem path. |
 | `/Users/...`, `/tmp/...`, `/Volumes/...` | **LOCAL** | Known local system paths are resolved to local paths. |
@@ -69,19 +69,19 @@ ZeroDrive separates **interactive virtual filesystem browsing** from **high-thro
 ## 3. Copy & Move Semantics
 
 ### Copy (`zd cp <src> <dst>`)
-- **File to Directory:** When the destination ends with a slash (`/`) or is an existing local directory, `zd` uses `rclone copy` to place the file inside the target folder without altering its filename.
+- **File to Directory:** When the destination ends with a slash (`/`) or is an existing local directory, `zd` copies the file inside the target folder without altering its filename.
   ```bash
   # Upload single file into cloud folder
   zd cp ~/Desktop/report.pdf Course/
   # Download single file into local folder
   zd cp Course/report.pdf ~/Downloads/
   ```
-- **File to File (Rename):** When the destination does not end with a slash and is not an existing directory, `zd` uses `rclone copyto` to copy to that exact target filename.
+- **File to File (Rename):** When the destination does not end with a slash and is not an existing directory, `zd` copies to that exact target filename.
   ```bash
   # Cloud-to-cloud file duplicate
   zd cp Course/report.pdf Course/report-backup.pdf
   ```
-- **Folder to Folder:** Transfers all contents using 16 concurrent workers and 32 checkers.
+- **Folder to Folder:** Transfers all contents using parallel multi-stream workers.
   ```bash
   zd cp ~/Desktop/Project/ Course/Project/
   ```
@@ -93,7 +93,7 @@ ZeroDrive separates **interactive virtual filesystem browsing** from **high-thro
   1. `zd` executes the transfer and verifies the process exit code.
   2. It attempts a bottom-up empty directory prune (`os.rmdir()`).
   3. **Data Protection Guard:** If any files remain in the source folder (such as untransferred files, excluded files, or permission errors), `zd` **aborts folder removal and refuses to create a symlink**, leaving remaining source files untouched.
-  4. Only when the directory is completely emptied does it remove the empty shell, create the symlink `ln -s ~/ZeroDrive/"My Drive"/<dst> <src>`, and log it to `~/.config/rclone/zerodrive-symlinks.json`.
+  4. Only when the directory is completely emptied does it remove the empty shell, create the symlink `ln -s ~/ZeroDrive/"My Drive"/<dst> <src>`, and log it to `~/.config/zerodrive/zerodrive-symlinks.json`.
 
 ---
 
@@ -133,11 +133,11 @@ Reads file contents directly.
   - `--head N`: Streams first $N$ lines, closes pipe, and terminates child process without hanging.
   - `--tail N`: Uses a bounded FIFO queue (`collections.deque(maxlen=N)`) so memory usage is strictly limited to $N$ lines, regardless of file size.
 - **Byte Ranges:**
-  - `--bytes OFFSET-END`: Passes `--offset` and `--count` directly to rclone for true S3 byte-range streaming.
+  - `--bytes OFFSET-END`: Uses byte-offset and count streaming for true S3 byte-range reads.
 - **Failure Behavior:** If the file does not exist, outputs an error to `stderr` and exits with code 1.
 
 ### `zd find <pattern> [path] [--json]`
-Performs server-side wildcard matching via rclone `--include` glob filter.
+Performs server-side wildcard matching across cloud file keys.
 - **Syntax:** `zd find "*.mov" Course`
 - **Options:**
   - Standard: lists matching paths up to 100 entries.
@@ -175,12 +175,20 @@ Audits local folder shortcuts created by ZeroDrive moves.
 - **Verification:** Inspects filesystem to verify whether each shortcut's local path is an active symlink (`os.path.islink()`).
 - **Options:** `--json` outputs array of entries including `"isLink": true/false`.
 
-### `zd raw <command...>`
-Passes arguments directly through to the underlying rclone binary with pre-bound credentials.
+### `zd doctor [--json]`
+Runs a live health check verifying:
+1. **Hosted MCP Server & API:** Connectivity to `https://api.zerodrive.dev/mcp` and `/v1/health`.
+2. **OAuth & App Icon:** Discovery metadata and icon availability.
+3. **Cloud Vault:** R2 connection and root collection count.
+4. **Storage Engine:** Core binary and configuration files.
+5. **Finder Mount:** Status of `~/ZeroDrive/My Drive`.
+
+### `zd engine <command...>` (alias `zd raw`)
+Passes arguments directly through to the underlying storage engine with pre-bound credentials.
 - **Return Code:** Strictly propagates the underlying engine's exit code to the caller.
 
 ### `zd version [--json]`
-Displays CLI version, storage backend, tenant prefix, and rclone engine path.
+Displays CLI version, storage backend, tenant prefix, and storage engine status.
 
 ---
 
@@ -193,16 +201,17 @@ The CLI follows standard POSIX exit code conventions:
 | `0` | Success. |
 | `1` | Operational or transfer error (source not found, transfer failure, network error). |
 | `2` | Command-line argument syntax error (unknown subcommand, invalid option). |
-| `N > 2` | Direct engine exit code passed through from `zd raw`. |
+| `N > 2` | Direct engine exit code passed through from `zd engine` / `zd raw`. |
 
 ---
 
 ## 6. Runtime Configuration & State Files
 
-All runtime telemetry files live in `~/.config/rclone/`:
+All runtime configuration and telemetry files live in `~/.config/zerodrive/` (with automatic fallback to `~/.config/rclone/`):
 
-1. **`zerodrive-vault.json`:** Active tenant prefix, quota, and storage preset.
-2. **`migration-telemetry.json`:** Local bulk migration metrics.
-3. **`remote-migration-telemetry.json`:** Remote migration metrics streamed from `naegele-mm`.
-4. **`zerodrive-symlinks.json`:** Array of active local symlink mappings (`localPath`, `targetMountPath`, `folderName`, `createdTimestamp`).
-5. **`migration-ledger.json`:** Permanent historical log of completed folder migrations.
+1. **`vault.conf`:** Storage backend configuration, endpoints, and credentials.
+2. **`zerodrive-vault.json`:** Active tenant prefix, quota, and storage preset.
+3. **`migration-telemetry.json`:** Local bulk migration metrics.
+4. **`remote-migration-telemetry.json`:** Remote migration metrics streamed from `naegele-mm`.
+5. **`zerodrive-symlinks.json`:** Array of active local symlink mappings (`localPath`, `targetMountPath`, `folderName`, `createdTimestamp`).
+6. **`migration-ledger.json`:** Permanent historical log of completed folder migrations.

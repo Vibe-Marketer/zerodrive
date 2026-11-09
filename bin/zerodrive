@@ -20,18 +20,35 @@ from pathlib import Path
 
 VERSION = "1.0.1"
 DEFAULT_BUCKET_PREFIX = "zerodrive-vault-prod/usr_andrew_8bc7fb477f"
-SETTINGS_PATH = os.path.expanduser("~/.config/rclone/zerodrive-vault.json")
-RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
-SYMLINKS_PATH = os.path.expanduser("~/.config/rclone/zerodrive-symlinks.json")
-LOCAL_TELEMETRY = os.path.expanduser("~/.config/rclone/migration-telemetry.json")
-REMOTE_TELEMETRY = os.path.expanduser("~/.config/rclone/remote-migration-telemetry.json")
+
+# ZeroDrive Configuration & State (Primary: ~/.config/zerodrive/, Fallback: ~/.config/rclone/)
+CONFIG_DIR = os.path.expanduser("~/.config/zerodrive")
+LEGACY_DIR = os.path.expanduser("~/.config/rclone")
+
+def get_config_path(filename, default_legacy_name=None):
+    p = os.path.join(CONFIG_DIR, filename)
+    if os.path.exists(p):
+        return p
+    legacy_file = default_legacy_name or filename
+    lp = os.path.join(LEGACY_DIR, legacy_file)
+    if os.path.exists(lp):
+        return lp
+    return p
+
+SETTINGS_PATH = get_config_path("zerodrive-vault.json")
+CONFIG_FILE = get_config_path("vault.conf", "rclone.conf")
+SYMLINKS_PATH = get_config_path("zerodrive-symlinks.json")
+LOCAL_TELEMETRY = get_config_path("migration-telemetry.json")
+REMOTE_TELEMETRY = get_config_path("remote-migration-telemetry.json")
 MOUNT_DIR = os.path.expanduser("~/ZeroDrive/My Drive")
 RC_URL = "http://127.0.0.1:55729"
 
-# Locate rclone engine binary
-RCLONE_BIN = "/Applications/ZeroDrive.app/Contents/Resources/rclone"
-if not os.path.exists(RCLONE_BIN):
-    RCLONE_BIN = shutil.which("rclone") or "/opt/homebrew/bin/rclone"
+# Locate ZeroDrive Storage Engine core binary
+STORAGE_ENGINE_BIN = "/Applications/ZeroDrive.app/Contents/Resources/zerodrive-engine"
+if not os.path.exists(STORAGE_ENGINE_BIN):
+    STORAGE_ENGINE_BIN = "/Applications/ZeroDrive.app/Contents/Resources/rclone"
+if not os.path.exists(STORAGE_ENGINE_BIN):
+    STORAGE_ENGINE_BIN = shutil.which("zerodrive-engine") or shutil.which("rclone") or "/opt/homebrew/bin/rclone"
 
 # ANSI Colors
 COLOR_RESET = "\033[0m"
@@ -189,11 +206,13 @@ def run_rc_post(endpoint, payload=None, timeout=3.0):
     except Exception as e:
         return None
 
-def exec_rclone(args, capture_output=True, text=True):
-    cmd = [RCLONE_BIN] + args + [f"--config={RCLONE_CONF}"]
+def exec_engine(args, capture_output=True, text=True):
+    cmd = [STORAGE_ENGINE_BIN] + args + [f"--config={CONFIG_FILE}"]
     if capture_output:
         return subprocess.run(cmd, capture_output=True, text=text)
     return subprocess.run(cmd)
+
+exec_rclone = exec_engine
 
 # --- COMMAND IMPLEMENTATIONS ---
 
@@ -481,7 +500,7 @@ def cmd_cat(args):
 
     # Launch streaming child process (binary for --bytes, text for line slicing)
     proc = subprocess.Popen(
-        [RCLONE_BIN] + cmd_args + [f"--config={RCLONE_CONF}"],
+        [STORAGE_ENGINE_BIN] + cmd_args + [f"--config={CONFIG_FILE}"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=not is_binary,
@@ -884,11 +903,12 @@ def cmd_symlinks(args):
     return 0
 
 def cmd_raw(args):
-    """zd raw <command...>: Direct pass-through to rclone engine with propagated exit code"""
-    if not args.rclone_args:
-        print("Usage: zd raw <rclone_command> [args...]", file=sys.stderr)
+    """zd engine <command...>: Direct pass-through to storage engine with propagated exit code"""
+    raw_args = getattr(args, "engine_args", None) or getattr(args, "rclone_args", None) or []
+    if not raw_args:
+        print("Usage: zd engine <command> [args...]", file=sys.stderr)
         return 1
-    res = exec_rclone(args.rclone_args, capture_output=False)
+    res = exec_engine(raw_args, capture_output=False)
     return res.returncode
 
 def cmd_version(args):
@@ -898,13 +918,15 @@ def cmd_version(args):
             "backend": "Cloudflare R2",
             "vaultPrefix": load_vault_prefix(),
             "mountDir": MOUNT_DIR,
-            "engineBin": RCLONE_BIN
+            "engineBin": STORAGE_ENGINE_BIN,
+            "configFile": CONFIG_FILE
         }, indent=2))
         return 0
     print(f"ZeroDrive CLI v{VERSION}")
     print(f"Storage Backend: Cloudflare R2 via {load_vault_prefix()}")
     print(f"Local Mount:     {MOUNT_DIR}")
-    print(f"Engine Core:     {RCLONE_BIN}")
+    print(f"Storage Engine:  ZeroDrive Core Engine (Active)")
+    print(f"Config:          {CONFIG_FILE}")
     return 0
 
 def cmd_mcp(args):
@@ -918,7 +940,7 @@ def cmd_mcp(args):
         return 1
 
 def cmd_doctor(args):
-    """zd doctor: Full health check of local mount, rclone config, R2 cloud vault, and hosted MCP server"""
+    """zd doctor: Full health check of local mount, config, R2 cloud vault, and hosted MCP server"""
     checks = {}
     # 1. Hosted MCP & API Health
     hosted_ok = False
@@ -932,12 +954,12 @@ def cmd_doctor(args):
         hosted_info = {"error": str(e)}
     checks["hostedMcpApi"] = {"ok": hosted_ok, "endpoint": "https://api.zerodrive.dev/mcp", "details": hosted_info}
 
-    # 2. Rclone binary & config
-    rclone_ok = os.path.exists(RCLONE_BIN) and os.path.exists(RCLONE_CONF)
-    checks["localEngine"] = {"ok": rclone_ok, "rcloneBin": RCLONE_BIN, "rcloneConf": RCLONE_CONF}
+    # 2. Storage Engine binary & config
+    engine_ok = os.path.exists(STORAGE_ENGINE_BIN) and os.path.exists(CONFIG_FILE)
+    checks["localEngine"] = {"ok": engine_ok, "engineBin": STORAGE_ENGINE_BIN, "configFile": CONFIG_FILE}
 
     # 3. Cloud Vault R2 listing check
-    res = exec_rclone(["lsf", get_vault_remote_base(), "--max-depth", "1"])
+    res = exec_engine(["lsf", get_vault_remote_base(), "--max-depth", "1"])
     vault_ok = res.returncode == 0
     root_items = [x.strip() for x in res.stdout.splitlines() if x.strip()] if vault_ok else []
     checks["cloudVault"] = {"ok": vault_ok, "remote": get_vault_remote_base(), "rootItemsCount": len(root_items)}
@@ -956,11 +978,17 @@ def cmd_doctor(args):
     print(f"  {c('1. Hosted 24/7 MCP:', COLOR_BOLD):<24} {c('✓ Online (https://api.zerodrive.dev/mcp)', COLOR_GREEN) if hosted_ok else c('✗ Unreachable', COLOR_RED)}")
     print(f"  {c('2. OAuth & App Icon:', COLOR_BOLD):<24} {c('✓ Active (https://api.zerodrive.dev/app-icon.png)', COLOR_GREEN) if hosted_ok else c('✗ Check worker', COLOR_YELLOW)}")
     print(f"  {c('3. Cloud R2 Vault:', COLOR_BOLD):<24} {c(f'✓ Connected ({len(root_items)} root collections/files)', COLOR_GREEN) if vault_ok else c('✗ R2 connection error', COLOR_RED)}")
-    print(f"  {c('4. Local Engine:', COLOR_BOLD):<24} {c('✓ Ready', COLOR_GREEN) if rclone_ok else c('✗ Missing rclone config', COLOR_RED)}")
+    print(f"  {c('4. Storage Engine:', COLOR_BOLD):<24} {c('✓ Ready', COLOR_GREEN) if engine_ok else c('✗ Missing config file', COLOR_RED)}")
     print(f"  {c('5. Finder Mount:', COLOR_BOLD):<24} {c('✓ Mounted at ~/ZeroDrive/My Drive', COLOR_GREEN) if is_mounted else c('• Unmounted (Cloud & MCP still 100% active)', COLOR_YELLOW)}")
     print(c("─" * 58, COLOR_DIM))
     print(c("  Supported File Types & Agent Tools:", COLOR_BOLD))
     print("    • Text, Markdown & Code  → write_file, read_file, edit_file, grep_vault")
+    print("    • Screenshots & PDFs     → upload_binary_file, create_upload_urls, read_file")
+    print("    • Videos (.mp4/.mov)     → create_upload_urls (streams up to 5GB) or zd cp")
+    print("    • ZIPs & Archives (.zip) → create_upload_urls, upload_binary_file, or zd cp")
+    print("    • Agent Skills (_SKILLS) → save_skill (_SKILLS/<verb-noun-name>/SKILL.md)")
+    print(c("═" * 58, COLOR_DIM) + "\n")
+    return 0 if (hosted_ok and vault_ok) else 1
     print("    • Screenshots & PDFs     → upload_binary_file, create_upload_urls, read_file")
     print("    • Videos (.mp4/.mov)     → create_upload_urls (streams up to 5GB) or zd cp")
     print("    • ZIPs & Archives (.zip) → create_upload_urls, upload_binary_file, or zd cp")
@@ -1051,9 +1079,9 @@ def build_parser():
     # mcp
     p_mcp = subparsers.add_parser("mcp", parents=[base_subparser], help="Start ZeroDrive Model Context Protocol (MCP) server for AI agents")
 
-    # raw
-    p_raw = subparsers.add_parser("raw", parents=[base_subparser], help="Direct pass-through to underlying rclone engine")
-    p_raw.add_argument("rclone_args", nargs=argparse.REMAINDER, help="Arguments passed directly to rclone")
+    # engine / raw
+    p_engine = subparsers.add_parser("engine", aliases=["raw"], parents=[base_subparser], help="Direct pass-through to underlying storage engine")
+    p_engine.add_argument("engine_args", nargs=argparse.REMAINDER, help="Arguments passed directly to storage engine")
 
     # version
     p_ver = subparsers.add_parser("version", parents=[base_subparser], help="Show ZeroDrive CLI version and system info")
@@ -1099,6 +1127,7 @@ def main():
             "doctor": cmd_doctor,
             "check": cmd_doctor,
             "mcp": cmd_mcp,
+            "engine": cmd_raw,
             "raw": cmd_raw,
             "version": cmd_version,
         }
