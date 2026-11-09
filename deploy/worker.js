@@ -207,6 +207,31 @@ function parseRangeHeader(rangeHeader, totalSize) {
   return { offset: start, length: end - start + 1, start, end };
 }
 
+function matchesIfNoneMatch(ifNoneMatchHeader, currentEtag) {
+  if (!ifNoneMatchHeader || !currentEtag) return false;
+  const rawHeader = ifNoneMatchHeader.trim();
+  if (rawHeader === "*") return true;
+  const cleanCurrent = currentEtag.replace(/^W\//i, "").replace(/^"+|"+$/g, "").trim();
+  const tags = rawHeader.split(",").map((t) => t.trim().replace(/^W\//i, "").replace(/^"+|"+$/g, ""));
+  return tags.includes(cleanCurrent);
+}
+
+function matchesIfRange(ifRangeHeader, currentEtag, uploadedDate) {
+  if (!ifRangeHeader) return true;
+  const cleanIfRange = ifRangeHeader.trim().replace(/^W\//i, "").replace(/^"+|"+$/g, "");
+  const cleanCurrent = (currentEtag || "").replace(/^W\//i, "").replace(/^"+|"+$/g, "");
+  if (cleanIfRange === cleanCurrent) return true;
+
+  const dateVal = new Date(ifRangeHeader);
+  if (!isNaN(dateVal.getTime()) && uploadedDate) {
+    const uploadedMs = uploadedDate instanceof Date ? uploadedDate.getTime() : new Date(uploadedDate).getTime();
+    if (!isNaN(uploadedMs)) {
+      return Math.floor(uploadedMs / 1000) <= Math.floor(dateVal.getTime() / 1000);
+    }
+  }
+  return false;
+}
+
 async function handleS3Proxy(request, env, url) {
   const tenantId = extractTenantFromAuth(request);
   // Path after /s3/ -> e.g. /s3/zerodrive-vault-prod/usr_alice/video.mov
@@ -287,26 +312,56 @@ async function handleS3Proxy(request, env, url) {
     if (!headObj) {
       return new Response(null, { status: 404 });
     }
+    const etag = headObj.httpEtag || `"${headObj.etag}"`;
+    const lastModified = headObj.uploaded ? headObj.uploaded.toUTCString() : new Date().toUTCString();
+    const headers = {
+      "Content-Length": String(headObj.size),
+      ETag: etag,
+      "Last-Modified": lastModified,
+      "Accept-Ranges": "bytes",
+      "Content-Type": headObj.httpMetadata?.contentType || "application/octet-stream",
+      "Cache-Control": "public, max-age=604800, s-maxage=604800, stale-while-revalidate=86400",
+      "CDN-Cache-Control": "public, max-age=604800, stale-while-revalidate=86400",
+      "Cache-Tag": `zerodrive-s3,${encodeURIComponent(r2Key)}`
+    };
+    if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) {
+      return new Response(null, { status: 304, headers });
+    }
     return new Response(null, {
       status: 200,
-      headers: {
-        "Content-Length": String(headObj.size),
-        ETag: headObj.httpEtag || `"${headObj.etag}"`,
-        "Last-Modified": headObj.uploaded.toUTCString(),
-        "Accept-Ranges": "bytes",
-        "Content-Type": headObj.httpMetadata?.contentType || "application/octet-stream",
-      },
+      headers,
     });
   }
 
   // 3. Object-level GET (with HTTP Byte-Range support for <450ms TTFB 0-byte RAM streaming)
   if (method === "GET") {
+    const headObj = await env.VAULT_BUCKET.head(r2Key);
+    if (!headObj) {
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`,
+        { status: 404, headers: { "Content-Type": "application/xml" } }
+      );
+    }
+    const etag = headObj.httpEtag || `"${headObj.etag}"`;
+    const lastModified = headObj.uploaded ? headObj.uploaded.toUTCString() : new Date().toUTCString();
+    const contentType = headObj.httpMetadata?.contentType || "application/octet-stream";
+    const cacheHeaders = {
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "public, max-age=604800, s-maxage=604800, stale-while-revalidate=86400",
+      "CDN-Cache-Control": "public, max-age=604800, stale-while-revalidate=86400",
+      "Cache-Tag": `zerodrive-s3,${encodeURIComponent(r2Key)}`,
+      ETag: etag,
+      "Last-Modified": lastModified,
+      "Content-Type": contentType,
+    };
+
+    if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) {
+      return new Response(null, { status: 304, headers: cacheHeaders });
+    }
+
     const rangeHeader = request.headers.get("Range");
-    if (rangeHeader) {
-      const headObj = await env.VAULT_BUCKET.head(r2Key);
-      if (!headObj) {
-        return new Response("Not Found", { status: 404 });
-      }
+    const ifRange = request.headers.get("If-Range");
+    if (rangeHeader && matchesIfRange(ifRange, etag, headObj.uploaded)) {
       const parsedRange = parseRangeHeader(rangeHeader, headObj.size);
       if (parsedRange) {
         const obj = await env.VAULT_BUCKET.get(r2Key, {
@@ -316,12 +371,9 @@ async function handleS3Proxy(request, env, url) {
         return new Response(obj.body, {
           status: 206,
           headers: {
+            ...cacheHeaders,
             "Content-Length": String(parsedRange.length),
             "Content-Range": `bytes ${parsedRange.start}-${parsedRange.end}/${headObj.size}`,
-            "Accept-Ranges": "bytes",
-            ETag: obj.httpEtag || `"${obj.etag}"`,
-            "Last-Modified": obj.uploaded.toUTCString(),
-            "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream",
           },
         });
       }
@@ -337,11 +389,8 @@ async function handleS3Proxy(request, env, url) {
     return new Response(obj.body, {
       status: 200,
       headers: {
+        ...cacheHeaders,
         "Content-Length": String(obj.size),
-        "Accept-Ranges": "bytes",
-        ETag: obj.httpEtag || `"${obj.etag}"`,
-        "Last-Modified": obj.uploaded.toUTCString(),
-        "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream",
       },
     });
   }
@@ -2720,6 +2769,50 @@ function handleSseEvents(request, env, userPrefix, corsHeaders, url) {
   });
 }
 
+// Active Multipart Upload Sessions cache (fast local isolate resolution)
+const mpuMetaCache = new Map();
+
+async function resolveMultipartUpload(env, userPrefix, uploadId, body = {}, url = null) {
+  let rawUploadId = uploadId || body.upload_id || (url && url.searchParams.get("upload_id")) || "";
+  let targetPath = (body.path || (url && url.searchParams.get("path")) || "").replace(/^\/+/, "");
+  let targetKey = body.key || (url && url.searchParams.get("key")) || "";
+
+  if (rawUploadId && rawUploadId.includes("::")) {
+    const [uId, enc] = rawUploadId.split("::");
+    rawUploadId = uId;
+    if (!targetPath && enc) {
+      try {
+        targetPath = decodeURIComponent(atob(enc));
+      } catch {}
+    }
+  }
+
+  if (!targetKey && targetPath) {
+    targetKey = `${userPrefix}/${targetPath}`;
+  }
+
+  // Check in-memory cache
+  if ((!targetKey || !targetPath) && rawUploadId && mpuMetaCache.has(rawUploadId)) {
+    const cached = mpuMetaCache.get(rawUploadId);
+    targetKey = targetKey || cached.key;
+    targetPath = targetPath || cached.path;
+  }
+
+  // Fallback to R2 system metadata storage (multi-isolate pop resiliency)
+  if ((!targetKey || !targetPath) && rawUploadId) {
+    try {
+      const obj = await env.VAULT_BUCKET.get(`${userPrefix}/_SYSTEM/multipart/${rawUploadId}.json`);
+      if (obj) {
+        const meta = await obj.json();
+        targetKey = targetKey || meta.key;
+        targetPath = targetPath || meta.path;
+      }
+    } catch {}
+  }
+
+  return { uploadId: rawUploadId, key: targetKey, path: targetPath };
+}
+
 async function handleRestV1Request(request, env, url, corsHeaders) {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -3422,6 +3515,220 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       expires_in_seconds: 86400,
       supports_range: true
     }, 200, corsHeaders);
+  }
+
+  // 11b. POST /v1/files/multipart/create - Initiate S3/R2 multipart upload for massive files (GBs+)
+  if (pathname === "/v1/files/multipart/create" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { body = {}; }
+    const rawPath = body.path || url.searchParams.get("path") || "";
+    if (!rawPath) {
+      return errorResponse("Missing parameter 'path'", 400, corsHeaders);
+    }
+    const subpath = String(rawPath).replace(/^\/+/, "");
+    const fullKey = `${userPrefix}/${subpath}`;
+    const mimeType = body.mime_type || body.content_type || guessMimeType(subpath);
+
+    const options = {
+      httpMetadata: {
+        contentType: mimeType
+      }
+    };
+    if (body.custom_metadata && typeof body.custom_metadata === "object") {
+      options.customMetadata = body.custom_metadata;
+    }
+
+    try {
+      const mp = await env.VAULT_BUCKET.createMultipartUpload(fullKey, options);
+      mpuMetaCache.set(mp.uploadId, { key: fullKey, path: subpath, mimeType });
+      try {
+        await env.VAULT_BUCKET.put(
+          `${userPrefix}/_SYSTEM/multipart/${mp.uploadId}.json`,
+          JSON.stringify({ upload_id: mp.uploadId, key: fullKey, path: subpath, mimeType, created: new Date().toISOString() }),
+          { httpMetadata: { contentType: "application/json" } }
+        );
+      } catch {}
+
+      return jsonResponse({
+        ok: true,
+        upload_id: mp.uploadId,
+        key: fullKey,
+        path: subpath
+      }, 201, corsHeaders);
+    } catch (err) {
+      return errorResponse(`Failed to create multipart upload: ${err.message}`, 500, corsHeaders);
+    }
+  }
+
+  // 11c. POST /v1/files/multipart/part - Upload a chunk part (or return signed part upload URL)
+  if (pathname === "/v1/files/multipart/part" && request.method === "POST") {
+    const isJson = request.headers.get("content-type")?.includes("application/json");
+    let body = {};
+    if (isJson) {
+      try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+    }
+
+    const resolved = await resolveMultipartUpload(env, userPrefix, body.upload_id, body, url);
+    if (!resolved.uploadId || !resolved.key) {
+      return errorResponse("Missing or invalid upload_id or path", 400, corsHeaders);
+    }
+
+    const rawPartNum = body.part_number !== undefined
+      ? body.part_number
+      : (body.partNumber !== undefined ? body.partNumber : url.searchParams.get("part_number") || url.searchParams.get("partNumber"));
+    const partNumber = parseInt(rawPartNum, 10);
+    if (isNaN(partNumber) || partNumber < 1 || partNumber > 10000) {
+      return errorResponse("part_number must be an integer between 1 and 10000", 400, corsHeaders);
+    }
+
+    // Optional: Return signed upload part URL if requested
+    if (body.signed_url || body.get_signed_url || (isJson && body.content === undefined && body.content_base64 === undefined && (body.url_only || body.get_url))) {
+      const secret = env.GOOGLE_CLIENT_SECRET || "zd_secret";
+      const partToken = await createAuthCode(secret, {
+        op: "upload_part",
+        key: resolved.key,
+        path: resolved.path,
+        upload_id: resolved.uploadId,
+        part_number: partNumber
+      }, 3600);
+      const partUrl = `${CANONICAL_ORIGIN}/vault/upload-part?token=${encodeURIComponent(partToken)}&partNumber=${partNumber}&uploadId=${encodeURIComponent(resolved.uploadId)}`;
+      return jsonResponse({
+        ok: true,
+        part_number: partNumber,
+        upload_id: resolved.uploadId,
+        upload_url: partUrl,
+        method: "PUT",
+        expires_in_seconds: 3600
+      }, 200, corsHeaders);
+    }
+
+    let chunkData;
+    if (isJson) {
+      if (body.content_base64) {
+        chunkData = base64ToBytes(body.content_base64);
+      } else if (body.content !== undefined) {
+        if (body.is_base64 || body.encoding === "base64") {
+          chunkData = base64ToBytes(body.content);
+        } else if (typeof body.content === "string") {
+          chunkData = new TextEncoder().encode(body.content);
+        } else {
+          chunkData = body.content;
+        }
+      } else {
+        return errorResponse("Missing part 'content' or 'content_base64'", 400, corsHeaders);
+      }
+    } else {
+      chunkData = request.body;
+      if (!chunkData) {
+        return errorResponse("Missing request body for part upload", 400, corsHeaders);
+      }
+    }
+
+    try {
+      const mp = env.VAULT_BUCKET.resumeMultipartUpload(resolved.key, resolved.uploadId);
+      const part = await mp.uploadPart(partNumber, chunkData);
+      const cleanEtag = (part.etag || "").replace(/^"+|"+$/g, "");
+      return jsonResponse({
+        ok: true,
+        part_number: partNumber,
+        etag: cleanEtag
+      }, 200, corsHeaders);
+    } catch (err) {
+      return errorResponse(`Failed to upload part #${partNumber}: ${err.message}`, 500, corsHeaders);
+    }
+  }
+
+  // 11d. POST /v1/files/multipart/complete - Complete multipart upload, stitch parts, log & broadcast
+  if (pathname === "/v1/files/multipart/complete" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { return errorResponse("Invalid JSON payload", 400, corsHeaders); }
+
+    const resolved = await resolveMultipartUpload(env, userPrefix, body.upload_id, body, url);
+    if (!resolved.uploadId || !resolved.key) {
+      return errorResponse("Missing or invalid upload_id or path", 400, corsHeaders);
+    }
+
+    const rawParts = Array.isArray(body.parts) ? body.parts : [];
+    if (rawParts.length === 0) {
+      return errorResponse("Provide non-empty 'parts' array with part_number and etag", 400, corsHeaders);
+    }
+
+    const parts = rawParts.map(p => ({
+      partNumber: parseInt(p.part_number !== undefined ? p.part_number : p.partNumber, 10),
+      etag: String(p.etag || "").replace(/^"+|"+$/g, "")
+    })).sort((a, b) => a.partNumber - b.partNumber);
+
+    try {
+      const mp = env.VAULT_BUCKET.resumeMultipartUpload(resolved.key, resolved.uploadId);
+      let completed;
+      try {
+        completed = await mp.complete(parts);
+      } catch (e1) {
+        completed = await mp.complete(
+          parts.map(p => ({ partNumber: p.partNumber, etag: `"${p.etag}"` }))
+        );
+      }
+
+      mpuMetaCache.delete(resolved.uploadId);
+      try { await env.VAULT_BUCKET.delete(`${userPrefix}/_SYSTEM/multipart/${resolved.uploadId}.json`); } catch {}
+
+      const cleanEtag = (completed.httpEtag || completed.etag || "").replace(/^"+|"+$/g, "");
+      const finalSize = completed.size || 0;
+      const finalPath = resolved.path || resolved.key.replace(new RegExp(`^${userPrefix}/`), "");
+
+      await logActivity(env, userPrefix, "write_file", {
+        path: finalPath,
+        size: finalSize,
+        etag: cleanEtag,
+        multipart: true,
+        parts_count: parts.length
+      });
+
+      broadcastVaultEvent(userPrefix, {
+        event: "change",
+        action: "write",
+        path: finalPath,
+        size: finalSize,
+        etag: cleanEtag,
+        timestamp: new Date().toISOString()
+      });
+
+      return jsonResponse({
+        ok: true,
+        path: finalPath,
+        size: finalSize,
+        etag: cleanEtag
+      }, 200, corsHeaders);
+    } catch (err) {
+      return errorResponse(`Failed to complete multipart upload: ${err.message}`, 500, corsHeaders);
+    }
+  }
+
+  // 11e. POST /v1/files/multipart/abort - Abort multipart upload session
+  if (pathname === "/v1/files/multipart/abort" && request.method === "POST") {
+    let body = {};
+    try { body = await request.json(); } catch { body = {}; }
+
+    const resolved = await resolveMultipartUpload(env, userPrefix, body.upload_id, body, url);
+    if (!resolved.uploadId || !resolved.key) {
+      return errorResponse("Missing or invalid upload_id or path", 400, corsHeaders);
+    }
+
+    try {
+      const mp = env.VAULT_BUCKET.resumeMultipartUpload(resolved.key, resolved.uploadId);
+      await mp.abort();
+      mpuMetaCache.delete(resolved.uploadId);
+      try { await env.VAULT_BUCKET.delete(`${userPrefix}/_SYSTEM/multipart/${resolved.uploadId}.json`); } catch {}
+
+      return jsonResponse({
+        ok: true,
+        upload_id: resolved.uploadId,
+        aborted: true,
+        path: resolved.path || resolved.key.replace(new RegExp(`^${userPrefix}/`), "")
+      }, 200, corsHeaders);
+    } catch (err) {
+      return errorResponse(`Failed to abort multipart upload: ${err.message}`, 500, corsHeaders);
+    }
   }
 
   // 12. GET /v1/size - Folder size and item count
