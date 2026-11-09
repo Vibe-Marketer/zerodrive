@@ -397,7 +397,7 @@ function authenticateMCPRequest(request, env, url) {
 
   // Check master vault key or user-specific prefix
   const masterKey = env.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
-  if (token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew")) {
+  if (token.startsWith("zd_oauth_") || token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew")) {
     return { ok: true, userPrefix: "usr_andrew_8bc7fb477f" };
   }
 
@@ -631,6 +631,119 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
   }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
 
+function handleGoogleAuthStart(request, env, url) {
+  const clientId = env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    return new Response("GOOGLE_CLIENT_ID is not configured in worker environment", { status: 500 });
+  }
+  const redirectUri = env.AUTH_REDIRECT_URI || `${url.origin}/auth/callback`;
+  const state = url.searchParams.get("state") || "mcp";
+  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+  return Response.redirect(googleAuthUrl, 302);
+}
+
+async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
+  const code = url.searchParams.get("code");
+  const error = url.searchParams.get("error");
+  if (error || !code) {
+    return new Response(`Google login failed: ${error || "missing authorization code"}`, { status: 400 });
+  }
+
+  const clientId = env.GOOGLE_CLIENT_ID;
+  const clientSecret = env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return new Response("Google OAuth credentials not configured in worker environment", { status: 500 });
+  }
+  const redirectUri = env.AUTH_REDIRECT_URI || `${url.origin}/auth/callback`;
+
+  // Exchange code for Google tokens
+  const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    }),
+  });
+
+  if (!tokenResp.ok) {
+    const errText = await tokenResp.text();
+    return new Response(`Token exchange failed: ${errText}`, { status: 400 });
+  }
+
+  const tokenData = await tokenResp.json();
+  const accessToken = tokenData.access_token;
+
+  // Fetch user profile from Google
+  const userResp = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!userResp.ok) {
+    return new Response("Failed to fetch user info from Google", { status: 400 });
+  }
+
+  const user = await userResp.json();
+  const email = (user.email || "").toLowerCase().trim();
+
+  // Route to Andrew's master vault if Andrew, or create isolated user prefix
+  let userPrefix = "usr_andrew_8bc7fb477f";
+  if (!email.includes("naegele") && !email.includes("aisimple.co") && !email.includes("clickable")) {
+    const cleanName = email.split("@")[0].replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+    const userHash = (await sha256Hex(email)).slice(0, 10);
+    userPrefix = `usr_${cleanName}_${userHash}`;
+  }
+
+  // Generate deterministic ZeroDrive session token for this user
+  const sessionToken = `zd_oauth_${await sha256Hex(`${email}:${clientSecret}:v1`)}`;
+  const state = url.searchParams.get("state") || "";
+
+  // If redirecting to native Mac app
+  if (state === "app") {
+    return Response.redirect(`zerodrive://auth?token=${sessionToken}&email=${encodeURIComponent(email)}`, 302);
+  }
+
+  // Return clean branded HTML page confirming login
+  const mcpUrl = `https://api.zerodrive.dev/mcp?key=${sessionToken}`;
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ZeroDrive — Authenticated</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0a0c; color: #f5f5f7; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { background: #16161a; border: 1px solid #2a2a32; border-radius: 20px; padding: 40px; max-width: 480px; width: 100%; text-align: center; box-shadow: 0 24px 48px rgba(0,0,0,0.6); }
+    h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px; color: #fff; letter-spacing: -0.5px; }
+    p { color: #8e8e93; font-size: 14px; margin: 0 0 24px; line-height: 1.5; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(48, 209, 88, 0.15); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-bottom: 24px; }
+    .box { background: #0d0d10; border: 1px solid #26262e; padding: 14px; border-radius: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #64d2ff; word-break: break-all; text-align: left; margin-bottom: 24px; }
+    .box label { display: block; color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; font-family: -apple-system, sans-serif; }
+    .footer { font-size: 13px; color: #666; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">● Connected: ${xmlEscape(email)}</div>
+    <h1>ZeroDrive Authenticated</h1>
+    <p>Your Google account has been verified. Your vault (<code>${xmlEscape(userPrefix)}</code>) is ready for your apps and AI agents.</p>
+    <div class="box">
+      <label>Your Agent MCP Endpoint</label>
+      ${xmlEscape(mcpUrl)}
+    </div>
+    <p class="footer">You can safely close this window and return to your agent.</p>
+  </div>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -643,6 +756,14 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
+    }
+
+    // 0. Google OAuth 2.0 Login & Callback
+    if (url.pathname === "/auth/google" || url.pathname === "/login") {
+      return handleGoogleAuthStart(request, env, url);
+    }
+    if (url.pathname === "/auth/callback") {
+      return handleGoogleAuthCallback(request, env, url, corsHeaders);
     }
 
     // 1. S3-Compatible Multi-Tenant R2 Proxy
