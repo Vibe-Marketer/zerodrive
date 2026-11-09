@@ -558,15 +558,47 @@ function authenticateMCPRequest(request, env, url) {
   return { ok: false, error: "Invalid OAuth 2.0 token." };
 }
 
+const CANONICAL_ORIGIN = "https://api.zerodrive.dev";
+const CONNECTOR_ICON_URL = "https://api.zerodrive.dev/app-icon.png";
+const CONNECTOR_LOGO_URL = "https://api.zerodrive.dev/logo.png";
+
+async function listDirectoryComplete(env, prefix, maxPages = 50) {
+  const dirsSet = new Set();
+  const prefixesSet = new Set();
+  const files = [];
+  const objects = [];
+  let cursor;
+  let pages = 0;
+  do {
+    const listed = await env.VAULT_BUCKET.list({ prefix, delimiter: "/", limit: 1000, cursor });
+    for (const p of listed.delimitedPrefixes || []) {
+      prefixesSet.add(p);
+      const folderName = p.slice(prefix.length).replace(/\/$/, "");
+      if (folderName) dirsSet.add(folderName);
+    }
+    for (const o of listed.objects || []) {
+      objects.push(o);
+      const fileName = o.key.slice(prefix.length);
+      if (fileName && !fileName.includes("/")) {
+        files.push({ name: fileName, size: o.size, modified: o.uploaded.toISOString(), key: o.key });
+      }
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+    pages++;
+  } while (cursor && pages < maxPages);
+
+  return {
+    dirs: Array.from(dirsSet).sort(),
+    files,
+    delimitedPrefixes: Array.from(prefixesSet).sort(),
+    objects,
+  };
+}
+
 async function buildDirectoryTree(env, userPrefix, baseSubpath, maxDepth, currentDepth = 1, indent = "") {
   const prefix = baseSubpath ? `${userPrefix}/${baseSubpath}/` : `${userPrefix}/`;
-  const listed = await env.VAULT_BUCKET.list({ prefix, delimiter: "/", limit: 250 });
+  const { dirs, files } = await listDirectoryComplete(env, prefix);
   const lines = [];
-
-  const dirs = (listed.delimitedPrefixes || []).map(p => p.slice(prefix.length).replace(/\/$/, "")).filter(Boolean);
-  const files = (listed.objects || [])
-    .map(o => ({ name: o.key.slice(prefix.length), size: o.size }))
-    .filter(f => f.name && !f.name.includes("/"));
 
   for (const dir of dirs) {
     lines.push(`${indent}📁 ${dir}/`);
@@ -596,7 +628,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
 
   if (method === "initialize") {
     const requestedVersion = params?.protocolVersion || "2025-03-26";
-    const supportedVersions = ["2024-11-05", "2025-03-26", "2025-06-18"];
+    const supportedVersions = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
     const protocolVersion = supportedVersions.includes(requestedVersion) ? requestedVersion : "2025-03-26";
     return {
       jsonrpc: "2.0",
@@ -608,7 +640,21 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
           resources: { subscribe: false, listChanged: false },
           prompts: { listChanged: false }
         },
-        serverInfo: { name: "ZeroDrive", version: "1.1.0" },
+        serverInfo: {
+          name: "ZeroDrive",
+          title: "ZeroDrive",
+          version: "1.1.0",
+          icon: CONNECTOR_ICON_URL,
+          logo_url: CONNECTOR_ICON_URL,
+          websiteUrl: "https://zerodrive.dev",
+          icons: [
+            {
+              src: CONNECTOR_ICON_URL,
+              mimeType: "image/png",
+              sizes: ["256x256", "120x120"]
+            }
+          ]
+        },
         instructions: "ZeroDrive Cloud Vault. Start by calling get_file_tree or reading ROUTER.md to see the vault structure. Use search_filenames to locate files by name, grep_vault to search inside file contents, read_file to inspect files, and write_file / edit_file / move_file to create and update files."
       }
     };
@@ -688,11 +734,9 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
         const recursive = !!args.recursive;
 
-        const listed = await env.VAULT_BUCKET.list({
-          prefix,
-          delimiter: recursive ? undefined : "/",
-          limit: 1000
-        });
+        const listed = recursive
+          ? await env.VAULT_BUCKET.list({ prefix, limit: 1000 })
+          : await listDirectoryComplete(env, prefix);
 
         const items = [];
         for (const p of listed.delimitedPrefixes || []) {
@@ -890,10 +934,20 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
         const maxResults = Math.min(Math.max(parseInt(args.max_results || 30, 10), 1), 100);
 
         const textExtensions = /\.(md|txt|json|jsonl|yaml|yml|csv|tsv|js|ts|jsx|tsx|py|sh|swift|html|css|xml|toml|ini|conf|env|sql)$/i;
-        const listed = await env.VAULT_BUCKET.list({ prefix, limit: 500 });
-        const candidateKeys = (listed.objects || [])
-          .filter(o => o.size > 0 && o.size <= 512 * 1024 && textExtensions.test(o.key))
-          .slice(0, 80);
+        const directListed = await listDirectoryComplete(env, prefix, 4);
+        const recursiveListed = await env.VAULT_BUCKET.list({ prefix, limit: 800 });
+
+        const seenKeys = new Set();
+        const candidateKeys = [];
+        for (const o of [...(directListed.objects || []), ...(recursiveListed.objects || [])]) {
+          if (seenKeys.has(o.key)) continue;
+          seenKeys.add(o.key);
+          if (o.key.includes("/.runitback/") || o.key.includes("/node_modules/") || o.key.includes("/.git/")) continue;
+          if (o.size > 0 && o.size <= 512 * 1024 && textExtensions.test(o.key)) {
+            candidateKeys.push(o);
+            if (candidateKeys.length >= 100) break;
+          }
+        }
 
         const results = [];
         for (const objMeta of candidateKeys) {
@@ -984,7 +1038,7 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
   if (!auth.ok) {
     // Only redirect if a human explicitly opens /mcp in a browser tab
     if (isBrowserNavigation) {
-      return Response.redirect(`${url.origin}/login`, 302);
+      return Response.redirect(`${CANONICAL_ORIGIN}/login`, 302);
     }
 
     return new Response(
@@ -996,11 +1050,14 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
           message: "Authentication required. Connect via ZeroDrive OAuth 2.0.",
           data: {
             auth_flow: "oauth2",
-            login_url: `${url.origin}/login`,
-            authorization_endpoint: `${url.origin}/oauth/authorize`,
-            token_endpoint: `${url.origin}/oauth/token`,
-            registration_endpoint: `${url.origin}/oauth/register`,
-            discovery: `${url.origin}/.well-known/oauth-authorization-server`
+            name: "ZeroDrive",
+            icon: CONNECTOR_ICON_URL,
+            logo_uri: CONNECTOR_ICON_URL,
+            login_url: `${CANONICAL_ORIGIN}/login`,
+            authorization_endpoint: `${CANONICAL_ORIGIN}/oauth/authorize`,
+            token_endpoint: `${CANONICAL_ORIGIN}/oauth/token`,
+            registration_endpoint: `${CANONICAL_ORIGIN}/oauth/register`,
+            discovery: `${CANONICAL_ORIGIN}/.well-known/oauth-authorization-server`
           }
         },
       }),
@@ -1009,7 +1066,7 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
         headers: {
           ...corsHeaders,
           "Content-Type": "application/json",
-          "WWW-Authenticate": `Bearer realm="ZeroDrive", resource_metadata="${url.origin}/.well-known/oauth-protected-resource", authorization_uri="${url.origin}/oauth/authorize", token_uri="${url.origin}/oauth/token"`,
+          "WWW-Authenticate": `Bearer realm="ZeroDrive", resource_metadata="${CANONICAL_ORIGIN}/.well-known/oauth-protected-resource", authorization_uri="${CANONICAL_ORIGIN}/oauth/authorize", token_uri="${CANONICAL_ORIGIN}/oauth/token"`,
         },
       }
     );
@@ -1027,7 +1084,10 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
     }
     return new Response(JSON.stringify({
       status: "online",
+      name: "ZeroDrive",
       server: "ZeroDrive Hosted MCP Server",
+      icon: CONNECTOR_ICON_URL,
+      logo_url: CONNECTOR_ICON_URL,
       protocol: "2025-03-26",
       authenticatedAs: auth.userPrefix,
       tools: MCP_TOOLS.map(t => t.name)
@@ -1082,7 +1142,7 @@ function handleGoogleAuthStart(request, env, url) {
   if (!clientId) {
     return new Response("GOOGLE_CLIENT_ID is not configured in worker environment", { status: 500 });
   }
-  const redirectUri = env.AUTH_REDIRECT_URI || `${url.origin}/auth/callback`;
+  const redirectUri = env.AUTH_REDIRECT_URI || `${CANONICAL_ORIGIN}/auth/callback`;
   
   // Capture client OAuth parameters (e.g. from Muse, Claude, Cursor, ChatGPT)
   const clientRedirectUri = url.searchParams.get("redirect_uri") || "";
@@ -1105,25 +1165,42 @@ function handleGoogleAuthStart(request, env, url) {
 }
 
 function handleOAuthProtectedResource(url, corsHeaders) {
-  const origin = url.origin;
+  const origin = CANONICAL_ORIGIN;
   return new Response(JSON.stringify({
     resource: `${origin}/mcp`,
+    resource_name: "ZeroDrive",
+    service_name: "ZeroDrive",
+    logo_uri: CONNECTOR_ICON_URL,
+    icon_uri: CONNECTOR_ICON_URL,
+    icon: CONNECTOR_ICON_URL,
+    icons: [
+      {
+        src: CONNECTOR_ICON_URL,
+        mimeType: "image/png",
+        sizes: ["256x256", "120x120"]
+      }
+    ],
     authorization_servers: [origin],
     scopes_supported: ["mcp", "vault:read", "vault:write"],
     bearer_methods_supported: ["header"],
+    resource_documentation: "https://zerodrive.dev"
   }, null, 2), {
     headers: { ...corsHeaders, "Content-Type": "application/json" }
   });
 }
 
 function handleOpenAPISpec(url, corsHeaders) {
-  const origin = url.origin;
+  const origin = CANONICAL_ORIGIN;
   const spec = {
     openapi: "3.1.0",
     info: {
-      title: "ZeroDrive Vault MCP API",
+      title: "ZeroDrive",
       description: "Hosted 24/7 ZeroDrive Cloud Vault MCP Server with native OAuth 2.0 authentication.",
-      version: "1.0.0"
+      version: "1.1.0",
+      "x-logo": {
+        url: CONNECTOR_ICON_URL,
+        altText: "ZeroDrive"
+      }
     },
     servers: [{ url: origin }],
     paths: {
@@ -1182,7 +1259,7 @@ function handleOpenAPISpec(url, corsHeaders) {
 }
 
 function handleAIPluginManifest(url, corsHeaders) {
-  const origin = url.origin;
+  const origin = CANONICAL_ORIGIN;
   const manifest = {
     schema_version: "v1",
     name_for_model: "zerodrive",
@@ -1201,7 +1278,7 @@ function handleAIPluginManifest(url, corsHeaders) {
       type: "openapi",
       url: `${origin}/openapi.json`
     },
-    logo_url: `${origin}/app-icon.png`,
+    logo_url: CONNECTOR_ICON_URL,
     contact_email: "naegele412@gmail.com",
     legal_info_url: "https://zerodrive.dev"
   };
@@ -1211,9 +1288,20 @@ function handleAIPluginManifest(url, corsHeaders) {
 }
 
 function handleOpenIDConfiguration(url, corsHeaders) {
-  const origin = url.origin;
+  const origin = CANONICAL_ORIGIN;
   const config = {
     issuer: origin,
+    service_name: "ZeroDrive",
+    logo_uri: CONNECTOR_ICON_URL,
+    icon_uri: CONNECTOR_ICON_URL,
+    icon: CONNECTOR_ICON_URL,
+    icons: [
+      {
+        src: CONNECTOR_ICON_URL,
+        mimeType: "image/png",
+        sizes: ["256x256", "120x120"]
+      }
+    ],
     authorization_endpoint: `${origin}/oauth/authorize`,
     token_endpoint: `${origin}/oauth/token`,
     userinfo_endpoint: `${origin}/oauth/userinfo`,
@@ -1225,6 +1313,7 @@ function handleOpenIDConfiguration(url, corsHeaders) {
     token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
     code_challenge_methods_supported: ["S256", "plain"],
     service_documentation: "https://zerodrive.dev",
+    op_policy_uri: "https://zerodrive.dev"
   };
   return new Response(JSON.stringify(config, null, 2), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1248,10 +1337,10 @@ async function handleOAuthRegister(request, env, url, corsHeaders) {
     }
   }
 
-  const clientName = body.client_name || "MCP Client";
+  const clientName = body.client_name || "ZeroDrive";
   const redirectUris = Array.isArray(body.redirect_uris) && body.redirect_uris.length > 0
     ? body.redirect_uris
-    : [`${url.origin}/auth/callback`];
+    : [`${CANONICAL_ORIGIN}/auth/callback`];
   const authMethod = body.token_endpoint_auth_method || "none";
 
   const now = Math.floor(Date.now() / 1000);
@@ -1263,6 +1352,8 @@ async function handleOAuthRegister(request, env, url, corsHeaders) {
     client_id: clientId,
     client_id_issued_at: now,
     client_name: clientName,
+    logo_uri: body.logo_uri || CONNECTOR_ICON_URL,
+    client_uri: body.client_uri || "https://zerodrive.dev",
     redirect_uris: redirectUris,
     grant_types: Array.isArray(body.grant_types) && body.grant_types.length > 0 ? body.grant_types : ["authorization_code", "refresh_token"],
     response_types: Array.isArray(body.response_types) && body.response_types.length > 0 ? body.response_types : ["code"],
@@ -1752,7 +1843,33 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // 0a. OAuth 2.0 / OpenID Connect Discovery Metadata (RFC 8414 & RFC 9728 & OIDC & OpenAPI)
+    // Force canonical domain (api.zerodrive.dev) for all non-S3 endpoints so legacy zerodrive.aisimple.co is never used for OAuth or MCP
+    if (url.hostname === "zerodrive.aisimple.co" && url.pathname !== "/s3" && !url.pathname.startsWith("/s3/")) {
+      return Response.redirect(`${CANONICAL_ORIGIN}${url.pathname}${url.search}`, 301);
+    }
+
+    // 0a. OAuth 2.0 / OpenID Connect / MCP Discovery Metadata
+    if (url.pathname === "/.well-known/mcp.json" || url.pathname === "/.well-known/mcp") {
+      return new Response(JSON.stringify({
+        name: "ZeroDrive",
+        title: "ZeroDrive",
+        description: "ZeroDrive 24/7 Cloud Vault MCP Server",
+        version: "1.1.0",
+        icon: CONNECTOR_ICON_URL,
+        logo_url: CONNECTOR_ICON_URL,
+        icons: [{ src: CONNECTOR_ICON_URL, mimeType: "image/png", sizes: ["256x256", "120x120"] }],
+        endpoint: `${CANONICAL_ORIGIN}/mcp`,
+        url: `${CANONICAL_ORIGIN}/mcp`,
+        authentication: {
+          type: "oauth2",
+          authorization_endpoint: `${CANONICAL_ORIGIN}/oauth/authorize`,
+          token_endpoint: `${CANONICAL_ORIGIN}/oauth/token`,
+          registration_endpoint: `${CANONICAL_ORIGIN}/oauth/register`
+        }
+      }, null, 2), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
     if (url.pathname === "/openapi.json" || url.pathname === "/v1/openapi.json") {
       return handleOpenAPISpec(url, corsHeaders);
     }
@@ -1862,32 +1979,42 @@ export default {
       });
     }
 
-    // 2c. Brand Logos & Favicon
+    // 2c. Brand Logos & Favicons (broadcast across all standard icon paths)
     if (url.pathname === "/logo.png" || url.pathname === "/assets/logo.png") {
       let obj = await env.VAULT_BUCKET.get("assets/logo.png");
       if (!obj) {
         obj = await env.VAULT_BUCKET.get("tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f/assets/logo.png");
       }
       if (obj) {
-        return new Response(obj.body, {
+        return new Response(request.method === "HEAD" ? null : obj.body, {
           headers: {
             ...corsHeaders,
             "Content-Type": "image/png",
+            "Content-Length": String(obj.size),
             "Cache-Control": "public, max-age=86400",
           },
         });
       }
     }
-    if (url.pathname === "/app-icon.png" || url.pathname === "/favicon.ico") {
+    if (
+      url.pathname === "/app-icon.png" ||
+      url.pathname === "/assets/app-icon.png" ||
+      url.pathname === "/icon.png" ||
+      url.pathname === "/favicon.ico" ||
+      url.pathname === "/favicon.png" ||
+      url.pathname === "/apple-touch-icon.png" ||
+      url.pathname === "/apple-touch-icon-precomposed.png"
+    ) {
       let obj = await env.VAULT_BUCKET.get("assets/app-icon.png");
       if (!obj) {
         obj = await env.VAULT_BUCKET.get("tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f/assets/app-icon.png");
       }
       if (obj) {
-        return new Response(obj.body, {
+        return new Response(request.method === "HEAD" ? null : obj.body, {
           headers: {
             ...corsHeaders,
             "Content-Type": "image/png",
+            "Content-Length": String(obj.size),
             "Cache-Control": "public, max-age=86400",
           },
         });
@@ -1899,12 +2026,16 @@ export default {
       return new Response(
         JSON.stringify({
           status: "healthy",
-          domain: "zerodrive.aisimple.co",
+          name: "ZeroDrive",
+          domain: "api.zerodrive.dev",
           targetDomain: "zerodrive.dev",
-          version: "3.0.0",
+          icon: CONNECTOR_ICON_URL,
+          logo_url: CONNECTOR_ICON_URL,
+          version: "3.1.0",
           storageEngine: "cloudflare_r2_s3_proxy",
           bucket: env.R2_BUCKET || "zerodrive-vault-prod",
-          downloadUrl: "https://zerodrive.aisimple.co/download/ZeroDrive-Installer.dmg",
+          mcpEndpoint: `${CANONICAL_ORIGIN}/mcp`,
+          downloadUrl: `${CANONICAL_ORIGIN}/download/ZeroDrive-Installer.dmg`,
         }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1927,7 +2058,7 @@ export default {
         const endpoint =
           env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.CLOUDFLARE_ACCOUNT_ID
             ? `https://${env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`
-            : `${url.origin}/s3`;
+            : `${CANONICAL_ORIGIN}/s3`;
 
         const provisionData = {
           endpoint,
@@ -1936,7 +2067,7 @@ export default {
           accessKeyId: env.R2_ACCESS_KEY_ID || `zd_r2_${cleanName}_${userHash}`,
           secretAccessKey: env.R2_SECRET_ACCESS_KEY || `zd_sec_${secretHash}`,
           quotaTB: parseFloat(env.DEFAULT_QUOTA_TB || "5.0"),
-          domain: url.hostname,
+          domain: "api.zerodrive.dev",
           provisionedAt: new Date().toISOString(),
           mode: "live_r2_s3_proxy",
         };
@@ -1958,12 +2089,24 @@ export default {
       }
     }
 
+    const accept = request.headers.get("Accept") || "";
+    if (url.pathname === "/" && accept.includes("text/html")) {
+      return new Response(
+        `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>ZeroDrive</title><link rel="icon" type="image/png" href="${CONNECTOR_ICON_URL}"><link rel="apple-touch-icon" href="${CONNECTOR_ICON_URL}"><meta property="og:title" content="ZeroDrive"><meta property="og:image" content="${CONNECTOR_ICON_URL}"></head><body style="background:#08080a;color:#fff;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;"><img src="${CONNECTOR_ICON_URL}" width="72" height="72" style="border-radius:18px;margin-bottom:16px;"><h1>ZeroDrive</h1><p style="color:#888;">24/7 Cloud Vault &amp; MCP Server</p></div></body></html>`,
+        { headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" } }
+      );
+    }
+
     return new Response(
       JSON.stringify({
-        service: "ZeroDrive Cloud Provisioner & R2 Edge Proxy",
+        name: "ZeroDrive",
+        service: "ZeroDrive Cloud Vault & Hosted MCP Server",
         status: "online",
-        health: `${url.origin}/v1/health`,
-        download: `${url.origin}/download/ZeroDrive-Installer.dmg`,
+        icon: CONNECTOR_ICON_URL,
+        logo_url: CONNECTOR_ICON_URL,
+        mcp: `${CANONICAL_ORIGIN}/mcp`,
+        health: `${CANONICAL_ORIGIN}/v1/health`,
+        download: `${CANONICAL_ORIGIN}/download/ZeroDrive-Installer.dmg`,
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },

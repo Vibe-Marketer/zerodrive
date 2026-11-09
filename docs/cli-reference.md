@@ -3,7 +3,7 @@
 **Binary Name:** `zerodrive`  
 **Terminal Symlink:** `zd -> zerodrive`  
 **Installed Locations:** `~/.local/bin/zerodrive`, `~/.local/bin/zd` (in `$PATH` on `naegele-pro` and `naegele-mm`)  
-**Storage Backend:** Cloudflare R2 (`https://zerodrive.aisimple.co/s3`) via `primary_vault`  
+**Storage Backend:** Cloudflare R2 (`https://api.zerodrive.dev/s3`) via `primary_vault`  
 **Local Mount:** Loopback NFS at `~/.zerodrive-mount` $\rightarrow$ `~/ZeroDrive/My Drive`  
 **Live Version:** `1.0.1`
 
