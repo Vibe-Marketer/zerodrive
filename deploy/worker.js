@@ -751,7 +751,7 @@ function authenticateMCPRequest(request, env, url) {
     const match = token.match(/^zd_oauth_(usr_[a-zA-Z0-9_]+?)_[a-f0-9]+$/);
     if (match && match[1]) {
       const tenant = match[1];
-      return { ok: true, userPrefix: `tenants/${tenant}/${tenant}` };
+      return { ok: true, userPrefix: `tenants/zd_r2_${tenant}/${tenant}` };
     }
   }
 
@@ -762,7 +762,7 @@ function authenticateMCPRequest(request, env, url) {
 
   if (token.startsWith("usr_")) {
     const clean = token.replace(/[^a-zA-Z0-9_]/g, "");
-    return { ok: true, userPrefix: `tenants/${clean}/${clean}` };
+    return { ok: true, userPrefix: `tenants/zd_r2_${clean}/${clean}` };
   }
 
   return { ok: false, error: "Invalid OAuth 2.0 token." };
@@ -824,6 +824,57 @@ async function buildDirectoryTree(env, userPrefix, baseSubpath, maxDepth, curren
   return lines;
 }
 
+async function ensureStarterVaultFiles(env, userPrefix) {
+  try {
+    const routerKey = `${userPrefix}/ROUTER.md`;
+    const existing = await env.VAULT_BUCKET.head(routerKey);
+    if (existing) return;
+
+    const defaultRouter = `# ZeroDrive City Map & Collection Router (\`ROUTER.md\`)
+
+Welcome to your ZeroDrive Cloud Vault. This is your master routing directory for humans and AI agents.
+
+## Top-Level Collections
+- \`MAIN/\`: Primary active files, personal knowledge base, notes, and frameworks.
+- \`_BUSINESS/\`: Business operating files, invoices, client deliverables, and financials.
+- \`_CONTENT/\`: Video production, social content, creative assets, and swipe files.
+- \`_SKILLS/\`: Reusable Agent Skills (see \`_SKILLS/SKILL.md\`).
+- \`_LIBRARY/\`: Books, playbooks, courses, and long-term reference material.
+- \`_SORT/\`: Staging folder for unclassified or incoming items.
+- \`_ARCHIVE/\`: Cold storage for completed or deprecated projects.
+`;
+
+    const defaultAgents = `# ZeroDrive Agent Operating Instructions (\`AGENTS.md\`)
+
+You are connected to the user's ZeroDrive Cloud Vault via native MCP tools.
+
+## Operating Rules
+1. **Check Before Scanning:** Read \`ROUTER.md\` or run \`get_file_tree\` before walking folders.
+2. **Text Operations:** Use \`read_file\`, \`write_file\`, \`edit_file\`, and \`grep_vault\`.
+3. **Binary, Videos & ZIPs:** Use \`create_upload_urls\` to stream multi-megabyte binary files (screenshots, PDFs, MP4/MOV videos, and ZIP archives) directly to the vault.
+4. **Saving Skills:** Use \`save_skill\` to package reusable skills into \`_SKILLS/<verb-noun-name>/SKILL.md\`.
+5. **Naming Rule:** Lowercase and hyphenated (\`payment-config.json\`, \`create-substack-articles\`). Never use grand buzzwords (forge, engine, system, matrix, ultimate).
+`;
+
+    const defaultContext = `# ZeroDrive Active Context (\`CONTEXT.md\`)
+
+- **Storage Engine:** ZeroDrive Cloud Vault (Cloudflare R2)
+- **Status:** Active & Connected
+- **Interface:** Model Context Protocol (MCP) + macOS Finder Mount (\`~/ZeroDrive/My Drive\`)
+`;
+
+    await env.VAULT_BUCKET.put(routerKey, defaultRouter, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+    await env.VAULT_BUCKET.put(`${userPrefix}/AGENTS.md`, defaultAgents, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+    await env.VAULT_BUCKET.put(`${userPrefix}/CONTEXT.md`, defaultContext, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
+    await env.VAULT_BUCKET.put(`${userPrefix}/MAIN/.gitkeep`, "", { httpMetadata: { contentType: "text/plain" } });
+    await env.VAULT_BUCKET.put(`${userPrefix}/_BUSINESS/.gitkeep`, "", { httpMetadata: { contentType: "text/plain" } });
+    await env.VAULT_BUCKET.put(`${userPrefix}/_CONTENT/.gitkeep`, "", { httpMetadata: { contentType: "text/plain" } });
+    await env.VAULT_BUCKET.put(`${userPrefix}/_SKILLS/.gitkeep`, "", { httpMetadata: { contentType: "text/plain" } });
+  } catch (err) {
+    // Non-fatal background seeding
+  }
+}
+
 async function processSingleMCPMessage(msg, env, userPrefix) {
   if (!msg || typeof msg !== "object") {
     return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
@@ -837,6 +888,7 @@ async function processSingleMCPMessage(msg, env, userPrefix) {
   }
 
   if (method === "initialize") {
+    await ensureStarterVaultFiles(env, userPrefix);
     const requestedVersion = params?.protocolVersion || "2025-03-26";
     const supportedVersions = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
     const protocolVersion = supportedVersions.includes(requestedVersion) ? requestedVersion : "2025-03-26";
@@ -2114,6 +2166,11 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
     userPrefix = `usr_${cleanName}_${userHash}`;
     sessionToken = `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
   }
+
+  const tenantPrefix = isMasterAdmin
+    ? "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f"
+    : `tenants/zd_r2_${userPrefix}/${userPrefix}`;
+  await ensureStarterVaultFiles(env, tenantPrefix);
   
   // Unpack state parameter safely
   const rawState = url.searchParams.get("state") || "";
@@ -2800,12 +2857,271 @@ export default {
       }
     }
 
+    // 5. 1-Line CLI Installer Script (curl -fsSL https://api.zerodrive.dev/install.sh | bash)
+    if (url.pathname === "/install" || url.pathname === "/install.sh") {
+      const installScript = `#!/usr/bin/env bash
+set -e
+echo "⚡ Installing ZeroDrive CLI..."
+INSTALL_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_DIR"
+
+curl -fsSL "https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive" -o "$INSTALL_DIR/zerodrive"
+chmod +x "$INSTALL_DIR/zerodrive"
+ln -sf "$INSTALL_DIR/zerodrive" "$INSTALL_DIR/zd"
+
+curl -fsSL "https://raw.githubusercontent.com/Vibe-Marketer/zerodrive/main/bin/zerodrive-mcp" -o "$INSTALL_DIR/zerodrive-mcp"
+chmod +x "$INSTALL_DIR/zerodrive-mcp"
+
+# Ensure ~/.local/bin in PATH
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  SHELL_PROFILE="$HOME/.zshrc"
+  if [[ -f "$HOME/.bashrc" && ! -f "$HOME/.zshrc" ]]; then
+    SHELL_PROFILE="$HOME/.bashrc"
+  fi
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_PROFILE"
+  echo "✓ Added $INSTALL_DIR to PATH in $SHELL_PROFILE"
+fi
+
+echo "✓ ZeroDrive CLI successfully installed to $INSTALL_DIR/zerodrive (and 'zd')!"
+echo "  Run 'zd doctor' or 'zerodrive --help' to get started."
+`;
+      return new Response(installScript, {
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/x-shellscript; charset=utf-8",
+          "Cache-Control": "public, max-age=300"
+        }
+      });
+    }
+
     const accept = request.headers.get("Accept") || "";
     if (url.pathname === "/" && accept.includes("text/html")) {
-      return new Response(
-        `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>ZeroDrive</title><link rel="icon" type="image/png" href="${CONNECTOR_ICON_URL}"><link rel="apple-touch-icon" href="${CONNECTOR_ICON_URL}"><meta property="og:title" content="ZeroDrive"><meta property="og:image" content="${CONNECTOR_ICON_URL}"></head><body style="background:#08080a;color:#fff;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;"><img src="${CONNECTOR_ICON_URL}" width="72" height="72" style="border-radius:18px;margin-bottom:16px;"><h1>ZeroDrive</h1><p style="color:#888;">24/7 Cloud Vault &amp; MCP Server</p></div></body></html>`,
-        { headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" } }
-      );
+      const landingHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ZeroDrive — The 24/7 Cloud Vault for AI Agents &amp; Mac</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="${CONNECTOR_ICON_URL}">
+  <link rel="apple-touch-icon" href="${CONNECTOR_ICON_URL}">
+  <meta property="og:title" content="ZeroDrive — 24/7 Cloud Vault">
+  <meta property="og:description" content="Unlimited cloud drive directly in Finder, terminal, and AI agents. Native OAuth 2.0 MCP server for Muse, Claude, Cursor, and ChatGPT.">
+  <meta property="og:image" content="${CONNECTOR_ICON_URL}">
+  <style>
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at 50% 12%, rgba(245, 166, 35, 0.12) 0%, transparent 60%), #08080a;
+      color: #f5f5f7;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      max-width: 840px;
+      width: 100%;
+      padding: 60px 24px;
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      font-size: 13px;
+      color: #34c759;
+      font-weight: 500;
+      margin-bottom: 24px;
+    }
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #34c759;
+      box-shadow: 0 0 10px #34c759;
+    }
+    .logo {
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    }
+    h1 {
+      font-size: 44px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin: 0 0 14px;
+      background: linear-gradient(180deg, #ffffff 0%, #b0b0ba 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .tagline {
+      font-size: 19px;
+      line-height: 1.5;
+      color: #8e8e93;
+      max-width: 620px;
+      margin: 0 auto 40px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 30px;
+      text-align: left;
+    }
+    @media (max-width: 700px) {
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 32px; }
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 26px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .card p {
+      margin: 0 0 18px;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #8e8e93;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 13px 20px;
+      background: #f5a623;
+      color: #000;
+      font-weight: 600;
+      font-size: 15px;
+      border-radius: 12px;
+      text-decoration: none;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+      cursor: pointer;
+      border: none;
+    }
+    .btn:hover { opacity: 0.92; transform: translateY(-1px); }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+    .code-box {
+      display: flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 13px;
+      color: #e5e5ea;
+      margin-top: 10px;
+      word-break: break-all;
+    }
+    .code-box span { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 10px;
+      font-weight: 500;
+    }
+    .copy-btn:hover { background: rgba(255, 255, 255, 0.2); }
+    .features {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+      font-size: 13px;
+      color: #6e6e73;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="badge"><div class="badge-dot"></div> Systems Operational • 24/7 Cloud Vault</div>
+    <img src="${CONNECTOR_ICON_URL}" alt="ZeroDrive Logo" class="logo">
+    <h1>ZeroDrive</h1>
+    <p class="tagline">The 24/7 Cloud Vault for AI Agents &amp; Mac.<br>Unlimited cloud drive in Finder, terminal, and every AI agent with zero mount latency.</p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>🤖 Connect Your AI Agent (MCP)</h3>
+        <p>1-click Google OAuth for Muse, Claude, Cursor, and ChatGPT. Supports text, code, screenshots, videos, and ZIPs.</p>
+        <div class="code-box">
+          <span id="mcp-url">${CANONICAL_ORIGIN}/mcp</span>
+          <button class="copy-btn" onclick="copyMcp()">Copy URL</button>
+        </div>
+        <p style="font-size: 12px; margin: 12px 0 0; color: #636366;">Add as MCP connector in Muse or Claude Desktop settings.</p>
+      </div>
+
+      <div class="card">
+        <h3>🍎 ZeroDrive for Mac</h3>
+        <p>Mount your cloud vault at <code>~/ZeroDrive/My Drive</code> in Finder. Stream files on-demand without filling your SSD.</p>
+        <a href="/download/ZeroDrive-Installer.dmg" class="btn">Download for Mac (.dmg)</a>
+        <p style="font-size: 12px; margin: 12px 0 0; color: #636366;">Universal binary for Apple Silicon &amp; Intel • Signed Developer ID</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 30px;">
+      <h3 style="margin-bottom: 6px;">⚡ ZeroDrive Developer CLI</h3>
+      <p style="margin-bottom: 10px;">Sub-second queries, file slicing, and high-speed transfers without mount stalls on Mac &amp; Linux.</p>
+      <div class="code-box">
+        <span id="cli-cmd">curl -fsSL ${CANONICAL_ORIGIN}/install.sh | bash</span>
+        <button class="copy-btn" onclick="copyCli()">Copy</button>
+      </div>
+    </div>
+
+    <div class="features">
+      <span>✓ Cloudflare R2 Backed</span>
+      <span>✓ Native OAuth 2.0</span>
+      <span>✓ Video &amp; ZIP Streaming</span>
+      <span>✓ Reusable Agent Skills</span>
+      <span>✓ Loopback NFS Mount</span>
+    </div>
+  </div>
+
+  <script>
+    function copyMcp() {
+      navigator.clipboard.writeText("${CANONICAL_ORIGIN}/mcp");
+      event.target.textContent = "Copied!";
+      setTimeout(() => { event.target.textContent = "Copy URL"; }, 2000);
+    }
+    function copyCli() {
+      navigator.clipboard.writeText("curl -fsSL ${CANONICAL_ORIGIN}/install.sh | bash");
+      event.target.textContent = "Copied!";
+      setTimeout(() => { event.target.textContent = "Copy"; }, 2000);
+    }
+  </script>
+</body>
+</html>`;
+      return new Response(landingHtml, {
+        headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+      });
     }
 
     return new Response(

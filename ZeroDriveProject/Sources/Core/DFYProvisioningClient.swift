@@ -14,8 +14,8 @@ public actor DFYProvisioningClient {
     public static let shared = DFYProvisioningClient()
 
     private let endpoints: [URL] = [
-        URL(string: "https://zerodrive.aisimple.co/v1/vault/provision")!,
         URL(string: "https://api.zerodrive.dev/v1/vault/provision")!,
+        URL(string: "https://zerodrive.aisimple.co/v1/vault/provision")!,
         URL(string: "http://127.0.0.1:3000/v1/vault/provision")!
     ]
 
@@ -71,7 +71,7 @@ public actor DFYProvisioningClient {
             .replacingOccurrences(of: "[^a-zA-Z0-9]", with: "_", options: .regularExpression)
             .lowercased()
         return DFYProvisionResult(
-            endpoint: "https://zerodrive.aisimple.co/s3",
+            endpoint: "https://api.zerodrive.dev/s3",
             bucket: "zerodrive-vault-prod",
             userPrefix: "usr_\(safeName)",
             accessKeyId: "zd_dfy_r2_acc_" + UUID().uuidString.prefix(12),
