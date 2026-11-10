@@ -45,3 +45,13 @@
    - **Phase 7 (Native in-app Apple ID + 2FA GUI):** Embed the iCloud login dialog natively into SwiftUI so users never see a terminal prompt.
    - **Phase 8 (Headless Linux VPS 1-line mount):** Provide the `curl ... | bash` command for AI agents on cloud VMs.
    - **Phase 12 (Developer CLI `zd`):** Create the lightweight `zd` CLI tool so AI coding agents can query file and folder sizes in milliseconds without triggering slow `du -sh` POSIX walks over the mount.
+
+---
+
+## November 10, 2026: launch offer and funnel (Claude Code, Offer Machine skill)
+
+Drafted the launch offer, funnel and pricing answers in [launch-offer/](launch-offer/01-OFFER-BLUEPRINT.md). Status: concept complete, economics provisional. Nothing priced in Stripe, built or published.
+
+**Launch blocker found in code:** `deploy/worker.js` `extractTenantFromAuth` takes the customer ID from the `Credential=` header without checking the signature, and falls back to `default_tenant`. Any outside user could reach another user's files through `/s3/`. Fix before any free or paid signup. Live endpoint was not probed.
+
+Next action: Andrew works through [the decision list](launch-offer/09-DECISION.md), starting with the tenant fix and the free-vault change.

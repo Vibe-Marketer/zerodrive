@@ -1,0 +1,39 @@
+case_id: zerodrive-launch-offer-2026-11
+date: 2026-11-10
+run_route: CREATE_FROM_ZERO
+discovery_path: PRODUCT_FIRST
+also_covers: [PRICE_AND_PACKAGE, BUILD_MONEY_MODEL]
+business_model_lane: saas_subscription
+commercial_intensity: extreme
+ideation_status: speculative_ideation
+release_status: blocked
+status: CONCEPT COMPLETE / ECONOMICS PROVISIONAL
+current_stage: 8 (money model mapped); stage 9 sell kit not started
+artifacts_written: [00-OFFER-CASE.yaml, 01-OFFER-BLUEPRINT.md, 09-DECISION.md]
+artifacts_not_written: "02, 03 (xlsx), 04 (folded into 01 section 4), 05, 06, 07, 08. Economics live in 01 section 5."
+blockers:
+  - "deploy/worker.js extractTenantFromAuth trusts Credential= without signature check; default_tenant fallback. Verified in code at HEAD, live endpoint not probed."
+  - "Free tier must change from BYOK 10 GB with MCP off to hosted 5 GB with MCP on (billing.js)."
+  - "Three non-owner unaided setups not done."
+inputs:
+  known:
+    - "Product live for owner: Mac and Windows apps, hosted MCP at api.zerodrive.dev, CLI, R2 storage at $15/TB/mo, $0 egress"
+    - "Seven tiers currently in deploy/billing.js"
+    - "Founder board Nov 10: 3 fund-if, cut ladder, free hides product, BYOK lifetime undercuts Studio"
+  andrew_supplied:
+    - "Founder price rises $10/mo every 10 founders up to $97"
+    - "Agency $497/mo, white label, reseller rights; $297 on 12 months capped at 10 TB"
+    - "Free signup + software free, VIP gets everything; 100% refund guarantee"
+    - "Bonuses: ReelFarm skill, fleet setup, the complete stack, WhatsApp first 500, launch call"
+  assumed:
+    - "Founding start price $47"
+    - "Request/Worker cost $1 per paid user per month"
+    - "Event Thu Dec 10 2026"
+  missing:
+    - free_to_paid_conversion
+    - refund_rate
+    - support_hours_per_agency
+    - cost_per_free_vault_from_ads
+    - request_cost_per_free_user
+    - named_clients_for_8_9_figure_claim
+    - which_sources_besides_icloud_are_tested
