@@ -33,11 +33,12 @@ export const DEFAULT_PRICING_TIERS = {
     price_yearly: 0,
     storage_gb: 10,
     max_drives: 1,
+    max_devices: 2,
     seats: 1,
     features: [
-      "BYOK Cloudflare",
-      "10GB free storage",
-      "1 Connected Drive",
+      "BYOK Cloudflare (10GB free)",
+      "1 Vault Container",
+      "2 Machine Slots (1 Mac + 1 VPS/Cloud Agent)",
       "Community support"
     ],
     flags: {
@@ -52,21 +53,51 @@ export const DEFAULT_PRICING_TIERS = {
       seats: 1
     }
   },
-  pro: {
-    id: "pro",
-    name: "Pro",
-    aliases: ["professional"],
-    price_monthly: 19.99,
-    price_yearly: 199.00,
-    storage_gb: 500,
+  builder: {
+    id: "builder",
+    name: "Builder",
+    aliases: ["starter_dfy"],
+    price_monthly: 19.00,
+    price_yearly: 97.00,
+    storage_gb: 256,
     max_drives: 1,
+    max_devices: 2,
     seats: 1,
     features: [
-      "500GB DFY R2 storage",
-      "1 Drive",
-      "Personal MCP token",
-      "Automatic multi-device sync",
-      "Priority bandwidth"
+      "256GB DFY R2 Storage",
+      "1 Vault Container",
+      "2 Machine Slots",
+      "Zero-setup desktop offload",
+      "Personal MCP access"
+    ],
+    flags: {
+      byok: false,
+      dfy_r2: true,
+      mcp_token: true,
+      fleet_rendering: false,
+      agent_skill_registry: false,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: false,
+      seats: 1
+    }
+  },
+  creator: {
+    id: "creator",
+    name: "Creator",
+    aliases: ["pro", "professional"],
+    price_monthly: 29.00,
+    price_yearly: 197.00,
+    storage_gb: 512,
+    max_drives: 2,
+    max_devices: 4,
+    seats: 1,
+    features: [
+      "512GB DFY R2 Storage",
+      "2 Vaults (Work + Personal)",
+      "4 Machine Slots",
+      "Cloud-to-cloud migration",
+      "Personal MCP token"
     ],
     flags: {
       byok: false,
@@ -82,19 +113,21 @@ export const DEFAULT_PRICING_TIERS = {
   },
   studio: {
     id: "studio",
-    name: "Studio / Builder",
-    aliases: ["builder", "studio_builder"],
-    price_monthly: 39.00,
-    price_yearly: 390.00,
-    storage_gb: 2048, // 2TB
-    max_drives: 3,
+    name: "Studio",
+    aliases: ["studio_builder", "pro_studio"],
+    price_monthly: 49.00,
+    price_yearly: 397.00,
+    storage_gb: 1024, // 1TB
+    max_drives: 4,
+    max_devices: -1, // Unlimited
     seats: 1,
     features: [
-      "2TB DFY R2 storage",
-      "Up to 3 Drives",
+      "1TB DFY R2 Storage",
+      "4 Vaults",
+      "Unlimited Machine Slots",
       "Multi-node fleet rendering",
       "Agent skill registry",
-      "Personal MCP token"
+      "Priority bandwidth & MCP token"
     ],
     flags: {
       byok: false,
@@ -108,23 +141,51 @@ export const DEFAULT_PRICING_TIERS = {
       seats: 1
     }
   },
-  team: {
-    id: "team",
-    name: "Team / Agency",
-    aliases: ["agency", "team_agency"],
-    price_monthly: 79.00,
-    price_yearly: 790.00,
-    storage_gb: 5120, // 5TB
-    max_drives: -1, // Unlimited
-    seats: 3,
+  studio_max: {
+    id: "studio_max",
+    name: "Studio Max",
+    aliases: ["max", "studio-max"],
+    price_monthly: 99.00,
+    price_yearly: 897.00,
+    storage_gb: 3072, // 3TB
+    max_drives: 8,
+    max_devices: -1, // Unlimited
+    seats: 1,
     features: [
-      "5TB DFY R2 storage",
-      "3 Seats",
-      "Unlimited drives",
-      "Custom team subdomain (teamname.zerodrive.dev)",
-      "Branded MCP",
-      "Fleet rendering",
-      "Agent skill registry"
+      "3TB DFY R2 Storage",
+      "8 Vaults",
+      "Unlimited Machine Slots",
+      "Multi-project studio teams",
+      "Fleet rendering & agent registry"
+    ],
+    flags: {
+      byok: false,
+      dfy_r2: true,
+      mcp_token: true,
+      fleet_rendering: true,
+      agent_skill_registry: true,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: true,
+      seats: 1
+    }
+  },
+  agency: {
+    id: "agency",
+    name: "Agency Partner",
+    aliases: ["team", "team_agency", "partner"],
+    price_monthly: 497.00,
+    price_yearly: 4970.00,
+    storage_gb: 10240, // 10TB
+    max_drives: -1, // Unlimited
+    max_devices: -1, // Unlimited
+    seats: 5,
+    features: [
+      "10TB DFY R2 Storage (+$25/TB add-on)",
+      "Unlimited Client Vaults + Sub-Accounts",
+      "White-label custom domain (drive.agency.com)",
+      "Branded team MCP portals",
+      "Unlimited machine slots & 5 included seats"
     ],
     flags: {
       byok: false,
@@ -135,7 +196,37 @@ export const DEFAULT_PRICING_TIERS = {
       custom_subdomain: true,
       branded_mcp: true,
       unlimited_drives: true,
-      seats: 3
+      seats: 5
+    }
+  },
+  byok_lifetime: {
+    id: "byok_lifetime",
+    name: "BYOK Lifetime",
+    aliases: ["lifetime", "founder", "founder_pass"],
+    price_monthly: 197.00,
+    price_yearly: 197.00,
+    is_one_time: true,
+    storage_gb: 0, // Unlimited (Bring Own Cloudflare/AWS/B2 Bucket)
+    max_drives: -1,
+    max_devices: -1,
+    seats: 1,
+    features: [
+      "Unlimited Storage (Bring Own Cloudflare/AWS/B2 Bucket)",
+      "Single-User Lifetime Software License ($0 COGS)",
+      "Unlimited Machine Slots",
+      "All updates included",
+      "Full local MCP server access"
+    ],
+    flags: {
+      byok: true,
+      dfy_r2: false,
+      mcp_token: true,
+      fleet_rendering: true,
+      agent_skill_registry: true,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: true,
+      seats: 1
     }
   }
 };
@@ -191,18 +282,34 @@ export function getPricingTiers(env = {}) {
     }
   }
 
-  // 2. Check granular environment variable overrides (e.g. TIER_PRO_MONTHLY_PRICE, TIER_PRO_STORAGE_GB)
-  if (env?.TIER_PRO_MONTHLY_PRICE) result.pro.price_monthly = parseFloat(env.TIER_PRO_MONTHLY_PRICE);
-  if (env?.TIER_PRO_YEARLY_PRICE) result.pro.price_yearly = parseFloat(env.TIER_PRO_YEARLY_PRICE);
-  if (env?.TIER_PRO_STORAGE_GB) result.pro.storage_gb = parseInt(env.TIER_PRO_STORAGE_GB, 10);
+  // 2. Check granular environment variable overrides
+  if (env?.TIER_BUILDER_MONTHLY_PRICE && result.builder) result.builder.price_monthly = parseFloat(env.TIER_BUILDER_MONTHLY_PRICE);
+  if (env?.TIER_BUILDER_YEARLY_PRICE && result.builder) result.builder.price_yearly = parseFloat(env.TIER_BUILDER_YEARLY_PRICE);
+  if (env?.TIER_BUILDER_STORAGE_GB && result.builder) result.builder.storage_gb = parseInt(env.TIER_BUILDER_STORAGE_GB, 10);
 
-  if (env?.TIER_STUDIO_MONTHLY_PRICE) result.studio.price_monthly = parseFloat(env.TIER_STUDIO_MONTHLY_PRICE);
-  if (env?.TIER_STUDIO_YEARLY_PRICE) result.studio.price_yearly = parseFloat(env.TIER_STUDIO_YEARLY_PRICE);
-  if (env?.TIER_STUDIO_STORAGE_GB) result.studio.storage_gb = parseInt(env.TIER_STUDIO_STORAGE_GB, 10);
+  if (env?.TIER_CREATOR_MONTHLY_PRICE && result.creator) result.creator.price_monthly = parseFloat(env.TIER_CREATOR_MONTHLY_PRICE);
+  if (env?.TIER_CREATOR_YEARLY_PRICE && result.creator) result.creator.price_yearly = parseFloat(env.TIER_CREATOR_YEARLY_PRICE);
+  if (env?.TIER_CREATOR_STORAGE_GB && result.creator) result.creator.storage_gb = parseInt(env.TIER_CREATOR_STORAGE_GB, 10);
 
-  if (env?.TIER_TEAM_MONTHLY_PRICE) result.team.price_monthly = parseFloat(env.TIER_TEAM_MONTHLY_PRICE);
-  if (env?.TIER_TEAM_YEARLY_PRICE) result.team.price_yearly = parseFloat(env.TIER_TEAM_YEARLY_PRICE);
-  if (env?.TIER_TEAM_STORAGE_GB) result.team.storage_gb = parseInt(env.TIER_TEAM_STORAGE_GB, 10);
+  if (env?.TIER_PRO_MONTHLY_PRICE && result.creator) result.creator.price_monthly = parseFloat(env.TIER_PRO_MONTHLY_PRICE);
+  if (env?.TIER_PRO_YEARLY_PRICE && result.creator) result.creator.price_yearly = parseFloat(env.TIER_PRO_YEARLY_PRICE);
+  if (env?.TIER_PRO_STORAGE_GB && result.creator) result.creator.storage_gb = parseInt(env.TIER_PRO_STORAGE_GB, 10);
+
+  if (env?.TIER_STUDIO_MONTHLY_PRICE && result.studio) result.studio.price_monthly = parseFloat(env.TIER_STUDIO_MONTHLY_PRICE);
+  if (env?.TIER_STUDIO_YEARLY_PRICE && result.studio) result.studio.price_yearly = parseFloat(env.TIER_STUDIO_YEARLY_PRICE);
+  if (env?.TIER_STUDIO_STORAGE_GB && result.studio) result.studio.storage_gb = parseInt(env.TIER_STUDIO_STORAGE_GB, 10);
+
+  if (env?.TIER_STUDIO_MAX_MONTHLY_PRICE && result.studio_max) result.studio_max.price_monthly = parseFloat(env.TIER_STUDIO_MAX_MONTHLY_PRICE);
+  if (env?.TIER_STUDIO_MAX_YEARLY_PRICE && result.studio_max) result.studio_max.price_yearly = parseFloat(env.TIER_STUDIO_MAX_YEARLY_PRICE);
+  if (env?.TIER_STUDIO_MAX_STORAGE_GB && result.studio_max) result.studio_max.storage_gb = parseInt(env.TIER_STUDIO_MAX_STORAGE_GB, 10);
+
+  if (env?.TIER_AGENCY_MONTHLY_PRICE && result.agency) result.agency.price_monthly = parseFloat(env.TIER_AGENCY_MONTHLY_PRICE);
+  if (env?.TIER_AGENCY_YEARLY_PRICE && result.agency) result.agency.price_yearly = parseFloat(env.TIER_AGENCY_YEARLY_PRICE);
+  if (env?.TIER_AGENCY_STORAGE_GB && result.agency) result.agency.storage_gb = parseInt(env.TIER_AGENCY_STORAGE_GB, 10);
+
+  if (env?.TIER_TEAM_MONTHLY_PRICE && result.agency) result.agency.price_monthly = parseFloat(env.TIER_TEAM_MONTHLY_PRICE);
+  if (env?.TIER_TEAM_YEARLY_PRICE && result.agency) result.agency.price_yearly = parseFloat(env.TIER_TEAM_YEARLY_PRICE);
+  if (env?.TIER_TEAM_STORAGE_GB && result.agency) result.agency.storage_gb = parseInt(env.TIER_TEAM_STORAGE_GB, 10);
 
   // 3. Apply runtime in-memory overrides
   for (const [key, updates] of inMemoryTierOverrides.entries()) {
@@ -219,7 +326,8 @@ export function getPricingTiers(env = {}) {
  */
 export function getTier(env = {}, tierId) {
   const tiers = getPricingTiers(env);
-  if (!tierId) return tiers.pro;
+  const defaultTier = tiers.builder || tiers.creator || Object.values(tiers)[0];
+  if (!tierId) return defaultTier;
   const clean = String(tierId).trim().toLowerCase();
 
   if (tiers[clean]) return tiers[clean];
@@ -231,7 +339,7 @@ export function getTier(env = {}, tierId) {
     }
   }
 
-  return tiers.pro;
+  return defaultTier;
 }
 
 /**
@@ -625,6 +733,7 @@ export async function handleStripeWebhook(request, env = {}) {
       user_prefix: userPrefix,
       quota_gb: tier.storage_gb,
       max_drives: tier.max_drives,
+      max_devices: tier.max_devices !== undefined ? tier.max_devices : tier.max_drives,
       seats: tier.seats || 1,
       features: tier.features,
       flags: tier.flags,
@@ -684,6 +793,7 @@ export async function handleStripeWebhook(request, env = {}) {
         license.tier_name = newTier.name;
         license.quota_gb = newTier.storage_gb;
         license.max_drives = newTier.max_drives;
+        license.max_devices = newTier.max_devices !== undefined ? newTier.max_devices : newTier.max_drives;
         license.features = newTier.features;
         license.flags = newTier.flags;
       }
@@ -852,14 +962,18 @@ export async function activateLicenseKey(env = {}, {
     };
   }
 
-  // Check max device / drive limit (-1 indicates unlimited)
-  if (license.max_drives !== -1 && license.activated_machines.length >= license.max_drives) {
+  // Check max device / slot limit (-1 indicates unlimited)
+  const deviceLimit = (license.max_devices !== undefined && license.max_devices !== null)
+    ? license.max_devices
+    : license.max_drives;
+
+  if (deviceLimit !== -1 && license.activated_machines.length >= deviceLimit) {
     return {
       valid: true,
       activated: false,
-      error: `Drive limit reached for ${license.tier_name} tier (max ${license.max_drives} drive${license.max_drives === 1 ? "" : "s"}). Upgrade tier to add more machines.`,
+      error: `Machine slot limit reached for ${license.tier_name} tier (max ${deviceLimit} machine slot${deviceLimit === 1 ? "" : "s"}). Upgrade tier to add more machines.`,
       tier: license.tier,
-      max_drives: license.max_drives,
+      max_devices: deviceLimit,
       active_devices: license.activated_machines.length
     };
   }

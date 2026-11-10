@@ -124,85 +124,109 @@ console.log("========================================================\n");
 // -------------------------------------------------------------
 console.log("--- Section 1: Configurable Pricing Registry & Overrides ---");
 
-await test("All 4 default tiers exist with correct prices, quotas, and feature flags", () => {
+await test("All configured tiers exist with correct prices, quotas, and feature flags", () => {
   const tiers = getPricingTiers({});
 
-  // 1. Free Starter
+  // 1. Free Starter ($0)
   assert.equal(tiers.free.id, "free");
   assert.equal(tiers.free.price_monthly, 0);
   assert.equal(tiers.free.price_yearly, 0);
   assert.equal(tiers.free.storage_gb, 10);
+  assert.equal(tiers.free.max_drives, 1);
   assert.equal(tiers.free.flags.byok, true);
   assert.equal(tiers.free.flags.dfy_r2, false);
 
-  // 2. Pro
-  assert.equal(tiers.pro.id, "pro");
-  assert.equal(tiers.pro.price_monthly, 19.99);
-  assert.equal(tiers.pro.price_yearly, 199.00);
-  assert.equal(tiers.pro.storage_gb, 500);
-  assert.equal(tiers.pro.max_drives, 1);
-  assert.equal(tiers.pro.flags.dfy_r2, true);
-  assert.equal(tiers.pro.flags.mcp_token, true);
+  // 2. Builder ($19/mo, $97/yr)
+  assert.equal(tiers.builder.id, "builder");
+  assert.equal(tiers.builder.price_monthly, 19.00);
+  assert.equal(tiers.builder.price_yearly, 97.00);
+  assert.equal(tiers.builder.storage_gb, 256);
+  assert.equal(tiers.builder.max_drives, 1);
+  assert.equal(tiers.builder.flags.dfy_r2, true);
+  assert.equal(tiers.builder.flags.mcp_token, true);
 
-  // 3. Studio / Builder
+  // 3. Creator ($29/mo, $197/yr)
+  assert.equal(tiers.creator.id, "creator");
+  assert.equal(tiers.creator.price_monthly, 29.00);
+  assert.equal(tiers.creator.price_yearly, 197.00);
+  assert.equal(tiers.creator.storage_gb, 512);
+  assert.equal(tiers.creator.max_drives, 2);
+  assert.equal(tiers.creator.flags.dfy_r2, true);
+  assert.equal(tiers.creator.flags.mcp_token, true);
+
+  // 4. Studio ($49/mo, $397/yr)
   assert.equal(tiers.studio.id, "studio");
-  assert.equal(tiers.studio.price_monthly, 39.00);
-  assert.equal(tiers.studio.price_yearly, 390.00);
-  assert.equal(tiers.studio.storage_gb, 2048);
-  assert.equal(tiers.studio.max_drives, 3);
+  assert.equal(tiers.studio.price_monthly, 49.00);
+  assert.equal(tiers.studio.price_yearly, 397.00);
+  assert.equal(tiers.studio.storage_gb, 1024);
+  assert.equal(tiers.studio.max_drives, 4);
   assert.equal(tiers.studio.flags.fleet_rendering, true);
   assert.equal(tiers.studio.flags.agent_skill_registry, true);
 
-  // 4. Team / Agency
-  assert.equal(tiers.team.id, "team");
-  assert.equal(tiers.team.price_monthly, 79.00);
-  assert.equal(tiers.team.price_yearly, 790.00);
-  assert.equal(tiers.team.storage_gb, 5120);
-  assert.equal(tiers.team.seats, 3);
-  assert.equal(tiers.team.flags.custom_subdomain, true);
-  assert.equal(tiers.team.flags.branded_mcp, true);
-  assert.equal(tiers.team.flags.unlimited_drives, true);
+  // 5. Studio Max ($99/mo, $897/yr)
+  assert.equal(tiers.studio_max.id, "studio_max");
+  assert.equal(tiers.studio_max.price_monthly, 99.00);
+  assert.equal(tiers.studio_max.price_yearly, 897.00);
+  assert.equal(tiers.studio_max.storage_gb, 3072);
+  assert.equal(tiers.studio_max.max_drives, 8);
+
+  // 6. Agency Partner ($497/mo, $4,970/yr)
+  assert.equal(tiers.agency.id, "agency");
+  assert.equal(tiers.agency.price_monthly, 497.00);
+  assert.equal(tiers.agency.price_yearly, 4970.00);
+  assert.equal(tiers.agency.storage_gb, 10240);
+  assert.equal(tiers.agency.seats, 5);
+  assert.equal(tiers.agency.flags.custom_subdomain, true);
+  assert.equal(tiers.agency.flags.branded_mcp, true);
+  assert.equal(tiers.agency.flags.unlimited_drives, true);
+
+  // 7. BYOK Lifetime ($197)
+  assert.equal(tiers.byok_lifetime.id, "byok_lifetime");
+  assert.equal(tiers.byok_lifetime.price_monthly, 197.00);
+  assert.equal(tiers.byok_lifetime.flags.byok, true);
 });
 
-await test("Resolves tiers case-insensitively and by aliases (builder -> studio, agency -> team)", () => {
-  assert.equal(getTier({}, "PRO").id, "pro");
-  assert.equal(getTier({}, "builder").id, "studio");
-  assert.equal(getTier({}, "studio_builder").id, "studio");
-  assert.equal(getTier({}, "agency").id, "team");
-  assert.equal(getTier({}, "team_agency").id, "team");
+await test("Resolves tiers case-insensitively and by aliases (pro -> creator, team -> agency)", () => {
+  assert.equal(getTier({}, "PRO").id, "creator");
+  assert.equal(getTier({}, "builder").id, "builder");
+  assert.equal(getTier({}, "studio").id, "studio");
+  assert.equal(getTier({}, "studio_max").id, "studio_max");
+  assert.equal(getTier({}, "max").id, "studio_max");
+  assert.equal(getTier({}, "agency").id, "agency");
+  assert.equal(getTier({}, "team").id, "agency");
   assert.equal(getTier({}, "starter").id, "free");
-  assert.equal(getTier({}, "unknown_tier").id, "pro"); // default fallback
+  assert.equal(getTier({}, "lifetime").id, "byok_lifetime");
+  assert.equal(getTier({}, "founder").id, "byok_lifetime");
 });
 
 await test("Dynamic tier override via environment variable PRICING_TIERS_OVERRIDE", () => {
   const envOverride = {
     PRICING_TIERS_OVERRIDE: JSON.stringify({
-      pro: { price_monthly: 24.99, storage_gb: 750 }
+      creator: { price_monthly: 35.00, storage_gb: 750 }
     })
   };
   const tiers = getPricingTiers(envOverride);
-  assert.equal(tiers.pro.price_monthly, 24.99);
-  assert.equal(tiers.pro.storage_gb, 750);
-  // Default values preserved where not overridden
-  assert.equal(tiers.pro.price_yearly, 199.00);
+  assert.equal(tiers.creator.price_monthly, 35.00);
+  assert.equal(tiers.creator.storage_gb, 750);
+  assert.equal(tiers.creator.price_yearly, 197.00);
 });
 
 await test("Dynamic tier override via granular environment variables", () => {
   const envGranular = {
-    TIER_STUDIO_MONTHLY_PRICE: "49.00",
-    TIER_STUDIO_STORAGE_GB: "3000"
+    TIER_STUDIO_MONTHLY_PRICE: "59.00",
+    TIER_STUDIO_STORAGE_GB: "2048"
   };
   const tiers = getPricingTiers(envGranular);
-  assert.equal(tiers.studio.price_monthly, 49.00);
-  assert.equal(tiers.studio.storage_gb, 3000);
+  assert.equal(tiers.studio.price_monthly, 59.00);
+  assert.equal(tiers.studio.storage_gb, 2048);
 });
 
 await test("Dynamic tier override via admin API helper (setDynamicPricingOverride)", () => {
   clearBillingCache();
-  setDynamicPricingOverride("team", { price_monthly: 89.00, seats: 5 });
+  setDynamicPricingOverride("agency", { price_monthly: 597.00, seats: 10 });
   const tiers = getPricingTiers({});
-  assert.equal(tiers.team.price_monthly, 89.00);
-  assert.equal(tiers.team.seats, 5);
+  assert.equal(tiers.agency.price_monthly, 597.00);
+  assert.equal(tiers.agency.seats, 10);
   clearBillingCache(); // Reset
 });
 
@@ -213,16 +237,16 @@ console.log("\n--- Section 2: Stripe Checkout & Customer Portal Sessions ---");
 
 await test("createCheckoutSession provides mock session URL when STRIPE_SECRET_KEY is absent", async () => {
   const session = await createCheckoutSession({}, {
-    tierId: "pro",
+    tierId: "builder",
     billingCycle: "monthly",
     customerEmail: "alice@zerodrive.dev"
   });
 
   assert.equal(session.mock, true);
   assert.ok(session.id.startsWith("cs_mock_"));
-  assert.ok(session.url.includes("https://checkout.stripe.com/mock/pro"));
-  assert.equal(session.amount, 19.99);
-  assert.equal(session.tierId, "pro");
+  assert.ok(session.url.includes("https://checkout.stripe.com/mock/builder"));
+  assert.equal(session.amount, 19.00);
+  assert.equal(session.tierId, "builder");
   assert.equal(session.customerEmail, "alice@zerodrive.dev");
 });
 
@@ -244,7 +268,7 @@ await test("createCheckoutSession respects yearly billing cycle amount", async (
     customerEmail: "studio@zerodrive.dev"
   });
 
-  assert.equal(session.amount, 390.00);
+  assert.equal(session.amount, 397.00);
   assert.equal(session.billingCycle, "yearly");
 });
 
@@ -326,7 +350,7 @@ await test("checkout.session.completed provisions vault prefix, assigns quota, g
     subscription: testSubscriptionId,
     customer_details: { email: "bob@zerodrive.dev" },
     metadata: {
-      tier_id: "pro",
+      tier_id: "builder",
       billing_cycle: "monthly"
     }
   };
@@ -355,10 +379,10 @@ await test("checkout.session.completed provisions vault prefix, assigns quota, g
   const data = await res.json();
   assert.equal(data.success, true);
   assert.equal(data.event, "checkout.session.completed");
-  assert.equal(data.tier, "pro");
-  assert.equal(data.quota_gb, 500);
+  assert.equal(data.tier, "builder");
+  assert.equal(data.quota_gb, 256);
   assert.equal(data.customer_email, "bob@zerodrive.dev");
-  assert.ok(data.license_key.startsWith("zd_live_pro_"));
+  assert.ok(data.license_key.startsWith("zd_live_builder_"));
   assert.ok(data.user_prefix.startsWith("tenants/usr_bob_"));
 
   testLicenseKey = data.license_key;
@@ -371,7 +395,7 @@ await test("checkout.session.completed provisions vault prefix, assigns quota, g
   assert.ok(licenseFile !== null);
   const licenseJson = JSON.parse(await licenseFile.text());
   assert.equal(licenseJson.status, "active");
-  assert.equal(licenseJson.quota_gb, 500);
+  assert.equal(licenseJson.quota_gb, 256);
 });
 
 await test("customer.subscription.updated upgrades tier and quota dynamically", async () => {
@@ -380,7 +404,7 @@ await test("customer.subscription.updated upgrades tier and quota dynamically", 
     customer: testCustomerId,
     status: "active",
     metadata: {
-      tier_id: "studio" // Upgrade from Pro to Studio
+      tier_id: "studio" // Upgrade from Builder to Studio
     }
   };
 
@@ -408,14 +432,14 @@ await test("customer.subscription.updated upgrades tier and quota dynamically", 
   const data = await res.json();
   assert.equal(data.success, true);
   assert.equal(data.tier, "studio");
-  assert.equal(data.quota_gb, 2048); // Studio has 2TB quota
+  assert.equal(data.quota_gb, 1024); // Studio has 1TB quota
 
   // Verify license key now reflects Studio tier and quota
   const verified = await verifyLicenseKey(testEnv, testLicenseKey);
   assert.equal(verified.valid, true);
   assert.equal(verified.tier, "studio");
-  assert.equal(verified.quota_gb, 2048);
-  assert.equal(verified.max_drives, 3);
+  assert.equal(verified.quota_gb, 1024);
+  assert.equal(verified.max_drives, 4);
 });
 
 await test("customer.subscription.deleted marks license cancelled", async () => {
@@ -460,19 +484,19 @@ await test("customer.subscription.deleted marks license cancelled", async () => 
 // -------------------------------------------------------------
 console.log("\n--- Section 4: Dynamic Machine Licensing & Device Activation ---");
 
-let proLicenseKey = null;
+let builderLicenseKey = null;
 
-await test("Pro license supports 1 device activation, rejects 2nd device", async () => {
-  // Provision a new Pro license
+await test("Builder license supports 2 machine slots (1 Mac + 1 VPS), rejects 3rd machine", async () => {
+  // Provision a new Builder license
   const checkoutPayload = JSON.stringify({
-    id: "evt_new_pro",
+    id: "evt_new_builder",
     type: "checkout.session.completed",
     data: {
       object: {
         customer: "cus_alice_dev",
         subscription: "sub_alice_dev",
         customer_details: { email: "alice.device@zerodrive.dev" },
-        metadata: { tier_id: "pro" }
+        metadata: { tier_id: "builder" }
       }
     }
   });
@@ -489,11 +513,11 @@ await test("Pro license supports 1 device activation, rejects 2nd device", async
   });
   const provRes = await handleStripeWebhook(provReq, testEnv);
   const provData = await provRes.json();
-  proLicenseKey = provData.license_key;
+  builderLicenseKey = provData.license_key;
 
   // 1st machine activation (e.g. MacBook Pro M3)
   const act1 = await activateLicenseKey(testEnv, {
-    licenseKey: proLicenseKey,
+    licenseKey: builderLicenseKey,
     machineId: "mac-serial-A1B2C3D4",
     machineName: "Alice's MacBook Pro M3",
     os: "macos"
@@ -501,33 +525,43 @@ await test("Pro license supports 1 device activation, rejects 2nd device", async
 
   assert.equal(act1.valid, true);
   assert.equal(act1.activated, true);
-  assert.equal(act1.tier, "pro");
-  assert.equal(act1.drives_allowed, 1);
+  assert.equal(act1.tier, "builder");
   assert.equal(act1.active_devices, 1);
 
   // Re-activating the SAME machine succeeds idempotently
   const actSame = await activateLicenseKey(testEnv, {
-    licenseKey: proLicenseKey,
+    licenseKey: builderLicenseKey,
     machineId: "mac-serial-A1B2C3D4"
   });
   assert.equal(actSame.valid, true);
   assert.equal(actSame.already_active, true);
   assert.equal(actSame.active_devices, 1);
 
-  // 2nd machine activation (e.g. Windows PC) is REJECTED on Pro tier (limit 1)
+  // 2nd machine activation (e.g. 1 VPS / Cloud Agent) succeeds
   const act2 = await activateLicenseKey(testEnv, {
-    licenseKey: proLicenseKey,
+    licenseKey: builderLicenseKey,
+    machineId: "vps-hetzner-agent-node",
+    machineName: "Alice's 24/7 VPS Agent",
+    os: "linux"
+  });
+  assert.equal(act2.valid, true);
+  assert.equal(act2.activated, true);
+  assert.equal(act2.active_devices, 2);
+
+  // 3rd machine activation is REJECTED on Builder tier (limit 2 slots)
+  const act3 = await activateLicenseKey(testEnv, {
+    licenseKey: builderLicenseKey,
     machineId: "win-serial-998877",
     machineName: "Alice's Desktop PC",
     os: "windows"
   });
-  assert.equal(act2.valid, true); // key is valid
-  assert.equal(act2.activated, false); // but device limit reached
-  assert.ok(act2.error.includes("Drive limit reached"));
+  assert.equal(act3.valid, true); // key is valid
+  assert.equal(act3.activated, false); // but device limit reached
+  assert.ok(act3.error.includes("limit reached"));
 });
 
-await test("Studio license allows up to 3 devices", async () => {
-  // Upgrade the license to Studio tier
+await test("Creator license allows up to 4 machine slots", async () => {
+  // Upgrade the license to Creator tier
   const updatePayload = JSON.stringify({
     id: "evt_upgrade_alice",
     type: "customer.subscription.updated",
@@ -536,7 +570,7 @@ await test("Studio license allows up to 3 devices", async () => {
         id: "sub_alice_dev",
         customer: "cus_alice_dev",
         status: "active",
-        metadata: { tier_id: "studio" }
+        metadata: { tier_id: "creator" }
       }
     }
   });
@@ -552,35 +586,35 @@ await test("Studio license allows up to 3 devices", async () => {
   });
   await handleStripeWebhook(upReq, testEnv);
 
-  // Now 2nd device activation succeeds!
-  const act2 = await activateLicenseKey(testEnv, {
-    licenseKey: proLicenseKey,
+  // Now 3rd device activation succeeds!
+  const act3 = await activateLicenseKey(testEnv, {
+    licenseKey: builderLicenseKey,
     machineId: "win-serial-998877",
     machineName: "Alice's Desktop PC",
     os: "windows"
   });
-  assert.equal(act2.activated, true);
-  assert.equal(act2.active_devices, 2);
-
-  // 3rd device activation succeeds
-  const act3 = await activateLicenseKey(testEnv, {
-    licenseKey: proLicenseKey,
-    machineId: "linux-server-render-node",
-    machineName: "Ubuntu Render Box",
-    os: "linux"
-  });
   assert.equal(act3.activated, true);
   assert.equal(act3.active_devices, 3);
 
-  // 4th device activation exceeds Studio limit (3)
+  // 4th device activation succeeds
   const act4 = await activateLicenseKey(testEnv, {
-    licenseKey: proLicenseKey,
+    licenseKey: builderLicenseKey,
+    machineId: "mac-mini-m4-render",
+    machineName: "Mac Mini M4",
+    os: "macos"
+  });
+  assert.equal(act4.activated, true);
+  assert.equal(act4.active_devices, 4);
+
+  // 5th device activation exceeds Creator limit (4)
+  const act5 = await activateLicenseKey(testEnv, {
+    licenseKey: builderLicenseKey,
     machineId: "tablet-surfacebook",
     machineName: "Surface Book",
     os: "windows"
   });
-  assert.equal(act4.activated, false);
-  assert.ok(act4.error.includes("Drive limit reached"));
+  assert.equal(act5.activated, false);
+  assert.ok(act5.error.includes("limit reached"));
 });
 
 // -------------------------------------------------------------
@@ -596,10 +630,13 @@ await test("GET /v1/billing/tiers returns live pricing and feature flags", async
   const data = await res.json();
   assert.equal(data.ok, true);
   assert.ok(data.tiers.free !== undefined);
-  assert.ok(data.tiers.pro !== undefined);
+  assert.ok(data.tiers.builder !== undefined);
+  assert.ok(data.tiers.creator !== undefined);
   assert.ok(data.tiers.studio !== undefined);
-  assert.ok(data.tiers.team !== undefined);
-  assert.equal(data.count, 4);
+  assert.ok(data.tiers.studio_max !== undefined);
+  assert.ok(data.tiers.agency !== undefined);
+  assert.ok(data.tiers.byok_lifetime !== undefined);
+  assert.equal(data.count, 7);
 });
 
 await test("POST /v1/billing/checkout returns checkout session", async () => {
@@ -607,7 +644,7 @@ await test("POST /v1/billing/checkout returns checkout session", async () => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      tierId: "pro",
+      tierId: "builder",
       billingCycle: "monthly",
       customerEmail: "charlie@zerodrive.dev"
     })
@@ -619,7 +656,7 @@ await test("POST /v1/billing/checkout returns checkout session", async () => {
   const data = await res.json();
   assert.equal(data.ok, true);
   assert.ok(data.session.url.includes("checkout.stripe.com"));
-  assert.equal(data.session.tierId, "pro");
+  assert.equal(data.session.tierId, "builder");
 });
 
 await test("GET /v1/billing/portal returns portal session URL", async () => {
@@ -647,7 +684,7 @@ await test("POST /v1/billing/webhook provisions active license via Worker router
         customer: "cus_dave_444",
         subscription: "sub_dave_444",
         customer_details: { email: "dave@zerodrive.dev" },
-        metadata: { tier_id: "team" }
+        metadata: { tier_id: "agency" }
       }
     }
   });
@@ -669,9 +706,9 @@ await test("POST /v1/billing/webhook provisions active license via Worker router
 
   const data = await res.json();
   assert.equal(data.success, true);
-  assert.equal(data.tier, "team");
-  assert.equal(data.quota_gb, 5120);
-  assert.ok(data.license_key.startsWith("zd_live_team_"));
+  assert.equal(data.tier, "agency");
+  assert.equal(data.quota_gb, 10240);
+  assert.ok(data.license_key.startsWith("zd_live_agency_"));
   liveWorkerLicenseKey = data.license_key;
 });
 
@@ -686,8 +723,8 @@ await test("GET /v1/license/verify?key=... returns valid tier and quota metadata
   const data = await res.json();
   assert.equal(data.ok, true);
   assert.equal(data.valid, true);
-  assert.equal(data.tier, "team");
-  assert.equal(data.quota_gb, 5120);
+  assert.equal(data.tier, "agency");
+  assert.equal(data.quota_gb, 10240);
   assert.ok(data.user_prefix.startsWith("tenants/usr_dave_"));
 });
 
@@ -723,9 +760,9 @@ await test("POST /v1/license/activate activates client machine ID via REST endpo
   assert.equal(data.ok, true);
   assert.equal(data.activated, true);
   assert.equal(data.machine_id, "mac-studio-m2-ultra-uuid");
-  assert.equal(data.tier, "team");
-  assert.equal(data.quota_gb, 5120);
-  assert.equal(data.drives_allowed, -1); // Unlimited drives on Team tier!
+  assert.equal(data.tier, "agency");
+  assert.equal(data.quota_gb, 10240);
+  assert.equal(data.drives_allowed, -1); // Unlimited drives on Agency tier!
 });
 
 console.log("\n========================================================");

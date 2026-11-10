@@ -147,14 +147,17 @@ When a free user upgrades to a paid plan, they must not experience broken paths,
 ### 3. High-Ticket Pricing & The Math to $1,000,000 ARR
 Low-ticket pricing (`$9.99/mo`) is a commodity trap for desktop utility software. High-value vibe coders, creative studios, and AI builders pay for reliability, infinite local SSD freedom, and multi-device agent workflows.
 
-| Tier | Retail Price | Included Storage | Wholesale COGS (R2) | Gross Margin | Paid Users Needed for $1M ARR |
+| Tier | Retail Price | Included Storage | Vaults & Machines | Wholesale COGS (R2) | Gross Margin |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Free Starter** | **`$0`** (BYOK Cloudflare) | 10 GB (via User CF) | `$0.00/mo` | **100%** | N/A (Acquisition Wedge) |
-| **ZeroDrive Pro** | **`$19.99 / mo`** (`$199/yr`) | 500 GB DFY Storage | `~$4.50/mo` | **77.5%** | **4,168 users** |
-| **ZeroDrive Studio / Builder** | **`$39.00 / mo`** (`$390/yr`) | 2 TB DFY Storage | `~$18.00/mo` | **53.8%** | **2,136 users** |
-| **ZeroDrive Team / Agency** | **`$79.00 / mo`** (`$790/yr`) | 5 TB DFY Storage + 3 Seats | `~$45.00/mo` | **43.0%** | **1,054 users** |
+| **Free Starter** | **`$0`** (BYOK) | **10 GB** (User Cloudflare) | **1 Vault** • 2 Slots (1 Mac + 1 VPS) | `$0.00/mo` | **100%** |
+| **Builder** | **`$19 / mo`** (`$97/yr`) | **256 GB** Done-For-You | **1 Vault** • 2 Slots | `~$2.30/mo` | **87.9%** |
+| **Creator** | **`$29 / mo`** (`$197/yr`) | **512 GB** Done-For-You | **2 Vaults** • 4 Slots | `~$4.60/mo` | **84.1%** |
+| **Studio** | **`$49 / mo`** (`$397/yr`) | **1 TB** Done-For-You | **4 Vaults** • Unlimited Slots | `~$9.20/mo` | **81.2%** |
+| **Studio Max** | **`$99 / mo`** (`$897/yr`) | **3 TB** Done-For-You | **8 Vaults** • Unlimited Slots | `~$27.60/mo` | **72.1%** |
+| **Agency Partner** | **`$497 / mo`** (`$4,970/yr`) | **10 TB** (+$25/TB add-on) | **Unlimited Client Vaults + Sub-Accounts** • White-label domain & branded MCP | `~$150.00/mo` | **69.8%** (`$347/mo` net profit) |
+| **BYOK Lifetime** | **`$197`** (Single-User) | **Unlimited** (Bring Own Bucket) | **1 User** • Unlimited Personal Slots | **`$0.00/mo`** | **100% software margin** |
 
-*Key Takeaway:* At `$39/mo`, reaching **$1,000,000 ARR requires only ~2,136 active subscribers** instead of 8,300+ at `$10/mo`.
+*Key Takeaway:* Reaching **$1,000,000 ARR requires only ~200 Agency partners or ~1,700 Studio subscribers**, making this an exceptionally high-margin SaaS/infrastructure business.
 
 
 ### 4. Faster Cloudflare-Native Export & Migration Tools (Beyond Custom Scripts)

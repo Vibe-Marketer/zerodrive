@@ -3,10 +3,13 @@ main = "worker.js"
 compatibility_date = "2024-01-01"
 account_id = "e9319ad5ca87e4768e7a79f1339ec8c8"
 
-routes = [
-  { pattern = "api.zerodrive.dev", custom_domain = true },
-  { pattern = "zerodrive.aisimple.co", custom_domain = true }
-]
+[[routes]]
+pattern = "api.zerodrive.dev"
+custom_domain = true
+
+[[routes]]
+pattern = "zerodrive.aisimple.co"
+custom_domain = true
 
 [[r2_buckets]]
 binding = "VAULT_BUCKET"
