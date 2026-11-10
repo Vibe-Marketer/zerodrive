@@ -107,7 +107,7 @@ public struct FabricDriveMigrationCard: View {
                             Image(systemName: "checkmark.shield.fill")
                                 .foregroundStyle(.green)
                                 .font(.caption2)
-                            Text("Verifies in R2 Before Deleting")
+                            Text("Verifies in ZeroDrive Before Deleting")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

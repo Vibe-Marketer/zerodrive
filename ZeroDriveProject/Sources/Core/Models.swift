@@ -21,7 +21,7 @@ public enum CloudPreset: String, Codable, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
     public var displayName: String {
         switch self {
-        case .cloudflareR2: return "Cloudflare R2 (Zero Egress)"
+        case .cloudflareR2: return "ZeroDrive Cloud Storage"
         case .backblazeB2: return "Backblaze B2 (High Durability)"
         case .awsS3: return "AWS S3 / S3-Compatible"
         }

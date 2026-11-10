@@ -358,7 +358,7 @@ public final class TurboMigrationManager: ObservableObject {
                 icon: "icloud.and.arrow.up.fill",
                 isOnline: true,
                 statusBadge: icloudActive ? "Active Stream (0 Disk)" : "Connected • Ready",
-                subtitle: "Direct Apple CloudKit HTTP stream -> Cloudflare R2 Vault (bypasses Finder/bird)",
+                subtitle: "Direct Apple CloudKit HTTP stream -> ZeroDrive Cloud Vault (bypasses Finder/bird)",
                 activeActivity: icloudActive ? "\(telemetry.statusMessage) at \(String(format: "%.1f MB/s", telemetry.speedMBps))" : ""
             ))
         }
@@ -371,7 +371,7 @@ public final class TurboMigrationManager: ObservableObject {
         let vaultSizeStr = vaultBytes > 0 ? ByteCountFormatter.string(fromByteCount: vaultBytes, countStyle: .file) : "148+ GB"
         nodes.append(ConnectedNodeStatus(
             id: "cloudflare-r2",
-            name: "ZeroDrive Cloud Vault (Cloudflare R2)",
+            name: "ZeroDrive Cloud Vault",
             kind: "vault",
             icon: "externaldrive.fill.badge.icloud",
             isOnline: true,

@@ -307,7 +307,7 @@ public struct MainStudioWindow: View {
                     HStack(spacing: 8) {
                         Image(systemName: "icloud.and.arrow.up.fill")
                             .foregroundStyle(Color.accentColor)
-                        Text("Stream directly from Apple's iCloud servers into your ZeroDrive R2 Vault")
+                        Text("Stream directly from Apple's iCloud servers into your ZeroDrive Vault")
                             .font(.subheadline.weight(.medium))
                     }
 

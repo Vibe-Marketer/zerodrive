@@ -81,7 +81,7 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             mode: .dfyManaged,
             preset: .cloudflareR2,
             bucketAndPrefix: defaultBucketPath,
-            displayLabel: "ZeroDrive Managed R2 Vault",
+            displayLabel: "ZeroDrive Cloud Vault",
             quotaTB: 5.0,
             spoolCapGB: 50,
             minFreeSpaceGB: 15,
@@ -127,7 +127,7 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             mode: .dfyManaged,
             preset: .cloudflareR2,
             bucketAndPrefix: bucketPath,
-            displayLabel: "ZeroDrive Managed R2 Vault (\(result.bucket))",
+            displayLabel: "ZeroDrive Cloud Vault",
             quotaTB: result.quotaTB,
             spoolCapGB: spoolCapGB
         )

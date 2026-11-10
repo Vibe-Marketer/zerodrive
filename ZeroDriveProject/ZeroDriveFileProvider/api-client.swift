@@ -182,10 +182,7 @@ public actor ZeroDriveAPIClient {
         var request = try makeRequest(endpoint: "vault/upload", method: "POST", queryParams: ["path": cleanPath])
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
 
-        let fileData = try Data(contentsOf: sourceURL)
-        request.httpBody = fileData
-
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: sourceURL)
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             throw NSError(domain: "ZeroDriveAPI", code: 502, userInfo: [NSLocalizedDescriptionKey: "Upload failed for \(cleanPath)"])
         }
