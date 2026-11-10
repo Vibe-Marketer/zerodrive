@@ -67,6 +67,7 @@ swiftc -O \
   -framework Charts \
   -framework AVFoundation \
   -framework IOKit \
+  -framework CryptoKit \
   -framework FileProvider \
   -o "${ARM64_BIN}" \
   ${SWIFT_FILES}
@@ -80,6 +81,7 @@ swiftc -O \
   -framework Charts \
   -framework AVFoundation \
   -framework IOKit \
+  -framework CryptoKit \
   -framework FileProvider \
   -o "${X86_64_BIN}" \
   ${SWIFT_FILES}

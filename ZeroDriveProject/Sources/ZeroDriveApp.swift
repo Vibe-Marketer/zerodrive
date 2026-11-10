@@ -34,35 +34,20 @@ struct ZeroDriveApp: App {
                 .environmentObject(spoolManager)
                 .frame(width: 480, height: 360)
         }
-
-        MenuBarExtra {
-            MenuBarPopoverView()
-                .environmentObject(lifecycleController)
-                .environmentObject(supervisor)
-                .environmentObject(spoolManager)
-                .environmentObject(indexer)
-        } label: {
-            HStack(spacing: 4) {
-                let isBusy = turbo.telemetry.isRunning || spoolManager.dirtyFileCount > 0
-                Image(systemName: isBusy ? "arrow.up.icloud.fill" : (supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill"))
-                if turbo.telemetry.isRunning && turbo.telemetry.speedMBps > 0.1 {
-                    Text(String(format: "↑ %.1f MB/s", turbo.telemetry.speedMBps))
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                } else if spoolManager.dirtyFileCount > 0 && spoolManager.telemetry.uploadSpeedMBps > 0.05 {
-                    Text(String(format: "↑ %.1f MB/s", spoolManager.telemetry.uploadSpeedMBps))
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                }
-            }
-        }
-        .menuBarExtraStyle(.window)
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem?
+    private var popover: NSPopover?
+    private var statusTimer: Timer?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
+
+        setupStatusItem()
 
         RcloneDaemonSupervisor.shared.registerSystemPowerNotifications()
         RcloneDaemonSupervisor.shared.installFinderWorkflowsAndEnableExtension()
@@ -80,6 +65,151 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await ManageFileProvider.shared.registerDomainIfNeeded()
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
         }
+    }
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem = item
+
+        if let button = item.button {
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+            let image = NSImage(systemSymbolName: "externaldrive.fill.badge.checkmark", accessibilityDescription: "ZeroDrive")?.withSymbolConfiguration(symbolConfig)
+            image?.isTemplate = true
+            button.image = image
+            button.imagePosition = .imageLeft
+            button.toolTip = "ZeroDrive: Cloud Vault"
+            button.target = self
+            button.action = #selector(handleStatusItemClick(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+
+        let pop = NSPopover()
+        pop.behavior = .transient
+        pop.animates = true
+        let popoverContent = MenuBarPopoverView()
+            .environmentObject(AppLifecycleController.shared)
+            .environmentObject(RcloneDaemonSupervisor.shared)
+            .environmentObject(SpoolAndGuardManager.shared)
+            .environmentObject(RAMTreeIndexer.shared)
+        pop.contentViewController = NSHostingController(rootView: popoverContent)
+        self.popover = pop
+
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateStatusItem()
+            }
+        }
+    }
+
+    @MainActor
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let turbo = TurboMigrationManager.shared
+        let spool = SpoolAndGuardManager.shared
+        let supervisor = RcloneDaemonSupervisor.shared
+
+        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+
+        if turbo.telemetry.isRunning {
+            let img = NSImage(systemSymbolName: "arrow.up.icloud.fill", accessibilityDescription: "ZeroDrive Transferring")?.withSymbolConfiguration(symbolConfig)
+            img?.isTemplate = true
+            button.image = img
+            if turbo.telemetry.speedMBps > 0.1 {
+                button.title = String(format: " ↑ %.1f MB/s", turbo.telemetry.speedMBps)
+            } else {
+                button.title = " ↑"
+            }
+        } else if spool.dirtyFileCount > 0 {
+            let img = NSImage(systemSymbolName: "arrow.up.icloud.fill", accessibilityDescription: "ZeroDrive Syncing")?.withSymbolConfiguration(symbolConfig)
+            img?.isTemplate = true
+            button.image = img
+            if spool.telemetry.uploadSpeedMBps > 0.05 {
+                button.title = String(format: " ↑ %.1f MB/s", spool.telemetry.uploadSpeedMBps)
+            } else {
+                button.title = " ↑ \(spool.dirtyFileCount)"
+            }
+        } else {
+            let imgName = supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill"
+            let img = NSImage(systemSymbolName: imgName, accessibilityDescription: "ZeroDrive")?.withSymbolConfiguration(symbolConfig)
+            img?.isTemplate = true
+            button.image = img
+            button.title = ""
+        }
+    }
+
+    @objc private func handleStatusItemClick(_ sender: AnyObject?) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp {
+            let menu = NSMenu()
+
+            let dashItem = NSMenuItem(title: "Open Dashboard", action: #selector(openDashboardFromMenu), keyEquivalent: "o")
+            dashItem.target = self
+            menu.addItem(dashItem)
+
+            let searchItem = NSMenuItem(title: "Global Search…", action: #selector(openSearchFromMenu), keyEquivalent: "s")
+            searchItem.target = self
+            menu.addItem(searchItem)
+
+            let finderItem = NSMenuItem(title: "Open My Drive in Finder", action: #selector(openFinderFromMenu), keyEquivalent: "f")
+            finderItem.target = self
+            menu.addItem(finderItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            let dupItem = NSMenuItem(title: "Duplicate Protection…", action: #selector(openDuplicatesFromMenu), keyEquivalent: "d")
+            dupItem.target = self
+            menu.addItem(dupItem)
+
+            let licItem = NSMenuItem(title: "Account & Licensing…", action: #selector(openLicensingFromMenu), keyEquivalent: "l")
+            licItem.target = self
+            menu.addItem(licItem)
+
+            menu.addItem(NSMenuItem.separator())
+
+            let quitItem = NSMenuItem(title: "Quit ZeroDrive", action: #selector(quitFromMenu), keyEquivalent: "q")
+            quitItem.target = self
+            menu.addItem(quitItem)
+
+            statusItem?.menu = menu
+            statusItem?.button?.performClick(nil)
+            statusItem?.menu = nil
+        } else {
+            guard let button = statusItem?.button, let popover = popover else { return }
+            if popover.isShown {
+                popover.performClose(sender)
+            } else {
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
+            }
+        }
+    }
+
+    @objc private func openDashboardFromMenu() {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openSearchFromMenu() {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openFinderFromMenu() {
+        RcloneDaemonSupervisor.shared.openInFinder(RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive"))
+    }
+
+    @objc private func openDuplicatesFromMenu() {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openLicensingFromMenu() {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func quitFromMenu() {
+        NSApp.terminate(nil)
     }
 
     private func setupTerminationSignalTrap() {

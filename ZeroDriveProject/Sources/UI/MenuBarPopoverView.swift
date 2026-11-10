@@ -161,26 +161,55 @@ public struct MenuBarPopoverView: View {
             .background(Color.secondary.opacity(0.05))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            // MARK: - 5. Primary Action Button
-            Button {
-                chooseFolderToMove()
-            } label: {
-                HStack {
-                    Image(systemName: "folder.badge.plus")
-                    Text("Move Folder or Files to Cloud…")
-                        .fontWeight(.medium)
-                    Spacer()
+            // MARK: - 5. Primary Action Buttons (Move vs Copy)
+            VStack(spacing: 6) {
+                Button {
+                    chooseFolderToMove()
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.up.forward.circle.fill")
+                            .foregroundStyle(Color.accentColor)
+                        Text("Move to ZeroDrive (Free Mac Space)…")
+                            .fontWeight(.medium)
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
                 }
-                .padding(.vertical, 4)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+
+                Button {
+                    chooseFolderToCopy()
+                } label: {
+                    HStack {
+                        Image(systemName: "doc.badge.plus")
+                            .foregroundStyle(Color.purple)
+                        Text("Copy to ZeroDrive (Keep on Mac)…")
+                            .fontWeight(.medium)
+                        Spacer()
+                    }
+                    .padding(.vertical, 3)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
+
+            // MARK: - Duplicate Shield Indicator
+            HStack(spacing: 6) {
+                Image(systemName: "shield.checkerboard")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                Text("Duplicate Shield Active • Zero duplicate waste")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 2)
 
             Divider()
 
             // MARK: - 6. Footer
             HStack {
-                Button("Open ZeroDrive Window") {
+                Button("Open Dashboard") {
                     lifecycleController.setStudioWindowVisible(true)
                     NSApp.activate(ignoringOtherApps: true)
                 }
@@ -197,7 +226,7 @@ public struct MenuBarPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: 310)
+        .frame(width: 320)
     }
 
     private var formattedCloudVaultSize: String {
@@ -223,12 +252,32 @@ public struct MenuBarPopoverView: View {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.title = "Select Folder or Files to Move to ZeroDrive"
-        panel.prompt = "Move to Cloud"
+        panel.prompt = "Move & Free Space"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK, !panel.urls.isEmpty {
             TurboMigrationManager.shared.startDirectMove(urls: panel.urls)
+        }
+    }
+
+    private func chooseFolderToCopy() {
+        lifecycleController.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.title = "Select Folder or Files to Copy to ZeroDrive"
+        panel.prompt = "Copy to Cloud"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK, !panel.urls.isEmpty {
+            TurboMigrationManager.shared.startTransfer(
+                urls: panel.urls,
+                destinationSubfolder: "",
+                isCopy: true,
+                leaveSymlink: false,
+                symlinkPaths: []
+            )
         }
     }
 }

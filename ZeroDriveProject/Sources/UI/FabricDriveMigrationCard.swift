@@ -468,8 +468,16 @@ public struct FabricDriveMigrationCard: View {
                         Button(role: .destructive) {
                             clearCurrentSelection()
                         } label: {
-                            Text("Clear Selection")
+                            Text("Clear")
                         }
+                        .controlSize(.regular)
+
+                        Button {
+                            reviewAndCopyCurrentSelection()
+                        } label: {
+                            Label("Copy (Keep on Mac)…", systemImage: "doc.badge.plus")
+                        }
+                        .buttonStyle(.bordered)
                         .controlSize(.regular)
                     }
 
@@ -483,10 +491,10 @@ public struct FabricDriveMigrationCard: View {
                         Label(
                             hasSelection
                                 ? (selectedItemURLs.count > 1
-                                    ? "Review & Move \(selectedItemURLs.count) Selected Items…"
-                                    : "Review & Move \"\(selectedItemName)\"…")
+                                    ? "Move \(selectedItemURLs.count) Items & Free Space…"
+                                    : "Move & Free Space…")
                                 : "Select Folders or Files to Move…",
-                            systemImage: hasSelection ? "arrow.up.right.circle.fill" : "folder.badge.plus"
+                            systemImage: hasSelection ? "arrow.up.forward.circle.fill" : "folder.badge.plus"
                         )
                     }
                     .buttonStyle(.borderedProminent)
@@ -725,6 +733,20 @@ public struct FabricDriveMigrationCard: View {
             isCopy: false,
             leaveSymlink: !selectedSymlinkPaths.isEmpty,
             symlinkPaths: selectedSymlinkPaths
+        )
+    }
+
+    private func reviewAndCopyCurrentSelection() {
+        guard !selectedItemURLs.isEmpty else {
+            openFinderFilePicker()
+            return
+        }
+        pendingTransfer = PendingTransferItem(
+            urls: selectedItemURLs,
+            destinationFolder: customDestinationSubfolder,
+            isCopy: true,
+            leaveSymlink: false,
+            symlinkPaths: []
         )
     }
 

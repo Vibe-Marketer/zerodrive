@@ -395,7 +395,32 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         for provider in ExternalCloudProvider.allCases {
             sections.removeValue(forKey: provider.sectionName)
         }
-        let upstreams = ["\"My Drive=primary_vault:\(primaryBucket)\""]
+        let cleanBucket = primaryBucket.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        var upstreams = ["\"My Drive=primary_vault:\(cleanBucket)\""]
+        let drives = ManageDrives.loadSavedDrives()
+        for d in drives where !d.isDefault {
+            let secondaryPath = "\(cleanBucket)/drives/\(d.id)"
+            upstreams.append("\"\(d.name)=primary_vault:\(secondaryPath)\"")
+        }
+        sections["ZeroDriveUnified"] = [
+            "type = combine",
+            "upstreams = \(upstreams.joined(separator: " "))"
+        ]
+        try writeConfigSections(sections)
+    }
+
+    /// Rebuilds the ZeroDriveUnified combine remote including all secondary/custom drives
+    public func rebuildWithDrives(_ drives: [DriveItem]) throws {
+        var sections = parseConfigSections()
+        let meta = loadVaultMetadata()
+        let cleanBucket = meta.bucketAndPrefix.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+
+        var upstreams = ["\"My Drive=primary_vault:\(cleanBucket)\""]
+        for d in drives where !d.isDefault {
+            let secondaryPath = "\(cleanBucket)/drives/\(d.id)"
+            upstreams.append("\"\(d.name)=primary_vault:\(secondaryPath)\"")
+        }
+
         sections["ZeroDriveUnified"] = [
             "type = combine",
             "upstreams = \(upstreams.joined(separator: " "))"
@@ -414,7 +439,13 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             sections.removeValue(forKey: provider.sectionName)
         }
 
-        let upstreams = ["\"My Drive=primary_vault:\(primaryBucketPath)\""]
+        let cleanBucket = primaryBucketPath.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        var upstreams = ["\"My Drive=primary_vault:\(cleanBucket)\""]
+        let drives = ManageDrives.loadSavedDrives()
+        for d in drives where !d.isDefault {
+            let secondaryPath = "\(cleanBucket)/drives/\(d.id)"
+            upstreams.append("\"\(d.name)=primary_vault:\(secondaryPath)\"")
+        }
 
         sections["ZeroDriveUnified"] = [
             "type = combine",

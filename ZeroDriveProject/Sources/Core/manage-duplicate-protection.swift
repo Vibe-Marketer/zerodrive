@@ -146,7 +146,7 @@ public final class ManageDuplicateProtection: ObservableObject {
                 return
             }
 
-            for case let fileURL as URL in enumerator {
+            while let fileURL = enumerator.nextObject() as? URL {
                 guard let res = try? fileURL.resourceValues(forKeys: Set(keys)),
                       res.isDirectory == false,
                       let size = res.fileSize,
@@ -188,9 +188,11 @@ public final class ManageDuplicateProtection: ObservableObject {
                     }
 
                     if candidateProcessed % 20 == 0 {
+                        let currentProcessed = candidateProcessed
+                        let currentProgress = progress
                         await MainActor.run {
-                            self.scanProgress = progress
-                            self.statusMessage = "Inspecting cryptographic hashes (\(candidateProcessed)/\(totalCandidates))…"
+                            self.scanProgress = currentProgress
+                            self.statusMessage = "Inspecting cryptographic hashes (\(currentProcessed)/\(totalCandidates))…"
                         }
                     }
                 }
@@ -214,19 +216,24 @@ public final class ManageDuplicateProtection: ObservableObject {
                 }
             }
 
+            let finalGroups = groups
+            let finalDuplicates = duplicateCount
+            let finalWasted = wasted
+            let finalScanned = scannedCount
+
             await MainActor.run {
-                self.duplicateGroups = groups
-                self.totalDuplicateFiles = duplicateCount
-                self.totalWastedBytes = wasted
-                self.totalFilesScanned = scannedCount
+                self.duplicateGroups = finalGroups
+                self.totalDuplicateFiles = finalDuplicates
+                self.totalWastedBytes = finalWasted
+                self.totalFilesScanned = finalScanned
                 self.lastScanDate = Date()
                 self.isScanning = false
                 self.scanProgress = 1.0
-                if duplicateCount == 0 {
-                    self.statusMessage = "Shield Active • 0 duplicates found in \(scannedCount) files"
+                if finalDuplicates == 0 {
+                    self.statusMessage = "Shield Active • 0 duplicates found in \(finalScanned) files"
                 } else {
-                    let formattedWasted = ByteCountFormatter.string(fromByteCount: wasted, countStyle: .file)
-                    self.statusMessage = "Found \(duplicateCount) duplicate files (\(formattedWasted) wasted)"
+                    let formattedWasted = ByteCountFormatter.string(fromByteCount: finalWasted, countStyle: .file)
+                    self.statusMessage = "Found \(finalDuplicates) duplicate files (\(formattedWasted) wasted)"
                 }
                 self.savePersistedStats()
             }
@@ -257,14 +264,17 @@ public final class ManageDuplicateProtection: ObservableObject {
                 }
             }
 
+            let finalReclaimed = reclaimed
+            let finalDeleted = deletedCount
+
             await MainActor.run {
-                self.totalSpaceReclaimed += reclaimed
+                self.totalSpaceReclaimed += finalReclaimed
                 self.totalDuplicateFiles = 0
                 self.totalWastedBytes = 0
                 self.duplicateGroups = []
                 self.isCleaning = false
-                let formatted = ByteCountFormatter.string(fromByteCount: reclaimed, countStyle: .file)
-                self.statusMessage = "Cleaned \(deletedCount) duplicates • Reclaimed \(formatted)"
+                let formatted = ByteCountFormatter.string(fromByteCount: finalReclaimed, countStyle: .file)
+                self.statusMessage = "Cleaned \(finalDeleted) duplicates • Reclaimed \(formatted)"
                 self.savePersistedStats()
             }
         }

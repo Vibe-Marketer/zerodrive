@@ -90,13 +90,21 @@ public struct SymlinkEntry: Codable, Sendable, Identifiable {
 public struct ConnectedNodeStatus: Codable, Sendable, Identifiable {
     public var id: String
     public var name: String
-    public var kind: String       // "mac", "cloud_stream", "vault", "external_drive"
+    public var customName: String?
+    public var kind: String       // "mac", "windows", "linux", "cloud_stream", "vault", "external_drive"
     public var icon: String
     public var isOnline: Bool
     public var statusBadge: String
     public var subtitle: String
     public var activeActivity: String
     public var freeBytes: Int64
+    public var totalBytes: Int64
+    public var mountPath: String
+    public var chip: String?
+    public var os: String?
+    public var gpu: String?
+    public var ramGB: Int?
+    public var lastHeartbeatSecondsAgo: Int?
 
     public init(
         id: String,
@@ -107,10 +115,19 @@ public struct ConnectedNodeStatus: Codable, Sendable, Identifiable {
         statusBadge: String,
         subtitle: String,
         activeActivity: String = "",
-        freeBytes: Int64 = 0
+        freeBytes: Int64 = 0,
+        totalBytes: Int64 = 0,
+        mountPath: String = "",
+        customName: String? = nil,
+        chip: String? = nil,
+        os: String? = nil,
+        gpu: String? = nil,
+        ramGB: Int? = nil,
+        lastHeartbeatSecondsAgo: Int? = nil
     ) {
         self.id = id
         self.name = name
+        self.customName = customName
         self.kind = kind
         self.icon = icon
         self.isOnline = isOnline
@@ -118,6 +135,36 @@ public struct ConnectedNodeStatus: Codable, Sendable, Identifiable {
         self.subtitle = subtitle
         self.activeActivity = activeActivity
         self.freeBytes = freeBytes
+        self.totalBytes = totalBytes
+        self.mountPath = mountPath
+        self.chip = chip
+        self.os = os
+        self.gpu = gpu
+        self.ramGB = ramGB
+        self.lastHeartbeatSecondsAgo = lastHeartbeatSecondsAgo
+    }
+
+    public var displayName: String {
+        if let custom = customName, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return custom
+        }
+        return name
+    }
+
+    public var formattedFreeSpace: String {
+        if freeBytes > 0 && totalBytes > 0 {
+            let freeStr = ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)
+            let totalStr = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+            return "\(freeStr) free of \(totalStr)"
+        } else if freeBytes > 0 {
+            return "\(ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)) free"
+        }
+        return "Space unknown"
+    }
+
+    public var freePercentage: Double? {
+        guard totalBytes > 0 else { return nil }
+        return Double(freeBytes) / Double(totalBytes) * 100.0
     }
 }
 
@@ -157,6 +204,9 @@ public final class TurboMigrationManager: ObservableObject {
     @Published public var ledger: MigrationLedger? = nil
     @Published public var symlinks: [SymlinkEntry] = []
     @Published public var connectedNodes: [ConnectedNodeStatus] = []
+    @Published public var connectedDevices: [ConnectedNodeStatus] = []
+    @Published public var cloudVaults: [ConnectedNodeStatus] = []
+    @Published public var cloudStreams: [ConnectedNodeStatus] = []
     @Published public private(set) var isLocalProcessActive: Bool = false
 
     private let telemetryFile = FileManager.default.homeDirectoryForCurrentUser
@@ -301,57 +351,360 @@ public final class TurboMigrationManager: ObservableObject {
         }
     }
 
+    // MARK: - Fleet Discovery & Custom Device Names
+
+    private var customNamesFileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/rclone/zerodrive-device-names.json")
+    }
+
+    private var sharedCustomNamesFileURL: URL? {
+        let candidates = [
+            RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_SYSTEM/MACHINES/custom_names.json"),
+            URL(fileURLWithPath: "/Users/Naegele/.zerodrive-mount/My Drive/_SYSTEM/MACHINES/custom_names.json"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ZeroDrive/_SYSTEM/MACHINES/custom_names.json")
+        ]
+        for url in candidates {
+            let parent = url.deletingLastPathComponent()
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDir), isDir.boolValue {
+                return url
+            }
+        }
+        return nil
+    }
+
+    public func loadCustomDeviceNames() -> [String: String] {
+        var names: [String: String] = [:]
+        if let data = try? Data(contentsOf: customNamesFileURL),
+           let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+            names.merge(dict) { (_, new) in new }
+        }
+        if let shared = sharedCustomNamesFileURL,
+           let data = try? Data(contentsOf: shared),
+           let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+            names.merge(dict) { (_, new) in new }
+        }
+        return names
+    }
+
+    public func renameDevice(id: String, newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        var dict = loadCustomDeviceNames()
+        if trimmed.isEmpty {
+            dict.removeValue(forKey: id)
+        } else {
+            dict[id] = trimmed
+        }
+
+        if let data = try? JSONEncoder().encode(dict) {
+            try? data.write(to: customNamesFileURL, options: .atomic)
+            if let shared = sharedCustomNamesFileURL {
+                try? data.write(to: shared, options: .atomic)
+            }
+        }
+
+        refreshConnectedNodes(
+            remoteTelemetry: self.remoteTelemetry,
+            miniOnline: true,
+            miniFreeBytes: 0
+        )
+    }
+
+    private func findMachinesDirectory() -> URL? {
+        let candidates = [
+            RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_SYSTEM/MACHINES"),
+            URL(fileURLWithPath: "/Users/Naegele/.zerodrive-mount/My Drive/_SYSTEM/MACHINES"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ZeroDrive/_SYSTEM/MACHINES")
+        ]
+        for url in candidates {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private struct RawMachineHeartbeat: Decodable {
+        var name: String?
+        var kind: String?
+        var ts: Double?
+        var host: String?
+        var os: String?
+        var chip: String?
+        var cpus: Int?
+        var disk_free_gb: Double?
+        var disk_total_gb: Double?
+        var mem_total_gb: Double?
+        var mem_used_gb: Double?
+        var uptime: String?
+        var gpu: RawGpuInfo?
+
+        struct RawGpuInfo: Decodable {
+            var name: String?
+            var vram_used_gb: Double?
+            var vram_total_gb: Double?
+        }
+    }
+
+    private struct RawFleetRegistry: Decodable {
+        var machines: [RawFleetMachine]?
+
+        struct RawFleetMachine: Decodable {
+            var name: String
+            var host: String?
+            var ip: String?
+            var user: String?
+            var os: String?
+            var chip: String?
+            var memory_gb: Int?
+            var roles: [String]?
+            var work_dir: String?
+            var notes: String?
+        }
+    }
+
     private func refreshConnectedNodes(
         remoteTelemetry: TurboMigrationTelemetry?,
         miniOnline: Bool,
         miniFreeBytes: Int64
     ) {
-        var nodes: [ConnectedNodeStatus] = []
+        let customNames = loadCustomDeviceNames()
+        let now = Date().timeIntervalSince1970
 
-        // 1. This Mac (naegele-pro)
-        let localFree = Int64((try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())[.systemFreeSize] as? NSNumber)?.int64Value ?? 0)
-        let localFreeStr = ByteCountFormatter.string(fromByteCount: localFree, countStyle: .file)
-        nodes.append(ConnectedNodeStatus(
-            id: "naegele-pro",
-            name: "naegele-pro (This MacBook Pro)",
-            kind: "mac",
-            icon: "laptopcomputer",
-            isOnline: true,
-            statusBadge: isLocalTransferRunning ? "Moving Files" : "This Mac • Mounted",
-            subtitle: "Mounted at ~/ZeroDrive/My Drive • \(localFreeStr) free on SSD",
-            activeActivity: isLocalTransferRunning ? telemetry.statusMessage : "",
-            freeBytes: localFree
-        ))
+        // 1. Gather dynamic machine status files from _SYSTEM/MACHINES/status/*.json and fleet.json
+        var discoveredHeartbeats: [String: RawMachineHeartbeat] = [:]
+        var fleetMachines: [String: RawFleetRegistry.RawFleetMachine] = [:]
 
-        // 2. naegele-mm (Mac mini on Tailnet / LAN)
-        let miniFreeStr = ByteCountFormatter.string(fromByteCount: miniFreeBytes, countStyle: .file)
-        let miniActivity: String = {
-            if let rt = remoteTelemetry, rt.isRunning {
-                let movedStr = ByteCountFormatter.string(fromByteCount: rt.movedBytes, countStyle: .file)
-                let totStr = ByteCountFormatter.string(fromByteCount: rt.totalBytes, countStyle: .file)
-                return String(format: "⚡ Streaming %@ at %.1f MB/s • %@ / %@ (%d/%d files)", rt.spaceName, rt.speedMBps, movedStr, totStr, rt.movedFiles, rt.totalFiles)
+        if let machinesDir = findMachinesDirectory() {
+            // Read fleet.json
+            let fleetURL = machinesDir.appendingPathComponent("fleet.json")
+            if let fData = try? Data(contentsOf: fleetURL),
+               let parsedFleet = try? JSONDecoder().decode(RawFleetRegistry.self, from: fData),
+               let list = parsedFleet.machines {
+                for m in list {
+                    fleetMachines[m.name] = m
+                }
             }
-            return ""
-        }()
-        nodes.append(ConnectedNodeStatus(
-            id: "naegele-mm",
-            name: "naegele-mm (Mac mini • 100.114.74.17)",
-            kind: "mac",
-            icon: "macmini.fill",
-            isOnline: miniOnline,
-            statusBadge: (remoteTelemetry?.isRunning == true) ? "Streaming Live" : (miniOnline ? "Online • Mounted" : "Offline"),
-            subtitle: "Mounted at ~/ZeroDrive/My Drive • \(miniFreeStr) free on SSD",
-            activeActivity: miniActivity,
-            freeBytes: miniFreeBytes
+
+            // Read status/*.json
+            let statusDir = machinesDir.appendingPathComponent("status")
+            if let files = try? FileManager.default.contentsOfDirectory(at: statusDir, includingPropertiesForKeys: nil) {
+                for file in files where file.pathExtension.lowercased() == "json" {
+                    if file.lastPathComponent.hasPrefix(".") { continue }
+                    if let sData = try? Data(contentsOf: file),
+                       let hb = try? JSONDecoder().decode(RawMachineHeartbeat.self, from: sData) {
+                        let mName = hb.name ?? file.deletingPathExtension().lastPathComponent
+                        discoveredHeartbeats[mName] = hb
+                    }
+                }
+            }
+        }
+
+        // Canonical set of machines to show (fleet + status + fallback default nodes)
+        var allMachineIDs = Set<String>(["naegele-pro", "naegele-mm", "mike-mm", "naegele-pc"])
+        allMachineIDs.formUnion(fleetMachines.keys)
+        allMachineIDs.formUnion(discoveredHeartbeats.keys)
+
+        // Read local Mac SSD filesystem attributes
+        let localFileSystemAttrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+        let localFreeBytes = (localFileSystemAttrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        let localTotalBytes = (localFileSystemAttrs?[.systemSize] as? NSNumber)?.int64Value ?? 0
+
+        var devices: [ConnectedNodeStatus] = []
+
+        for mID in allMachineIDs {
+            let hb = discoveredHeartbeats[mID]
+            let fleet = fleetMachines[mID]
+            let isThisMac = (mID == "naegele-pro")
+
+            // Determine friendly default name
+            let defaultName: String = {
+                if isThisMac { return "naegele-pro (This MacBook Pro)" }
+                if mID == "naegele-mm" { return "naegele-mm (Mac mini M4 #1)" }
+                if mID == "mike-mm" { return "mike-mm (Mac mini M4 #2)" }
+                if mID == "naegele-pc" { return "naegele-pc (Windows RTX 3090 Rig)" }
+                return mID
+            }()
+
+            // Kind and Icon
+            let kind: String = {
+                if let k = hb?.kind { return k }
+                if let o = fleet?.os?.lowercased(), o.contains("win") { return "windows" }
+                if mID.contains("pc") { return "windows" }
+                return "mac"
+            }()
+
+            let icon: String = {
+                if isThisMac { return "laptopcomputer" }
+                if mID.contains("mm") || (fleet?.chip?.contains("M4") == true) { return "macmini.fill" }
+                if kind == "windows" || mID.contains("pc") { return "display" }
+                if kind == "linux" { return "server.rack" }
+                return "desktopcomputer"
+            }()
+
+            // Mount path
+            let mountPath: String = {
+                if isThisMac { return "~/ZeroDrive & ~/.zerodrive-mount/My Drive" }
+                if mID == "naegele-pc" { return "C:\\Users\\andre\\ZeroDrive & /zerodrive" }
+                if mID.contains("mm") { return "~/ZeroDrive/My Drive" }
+                if let w = fleet?.work_dir, !w.isEmpty { return w }
+                return "~/ZeroDrive"
+            }()
+
+            // Storage free & total
+            let freeB: Int64
+            let totalB: Int64
+            if isThisMac && localFreeBytes > 0 {
+                freeB = localFreeBytes
+                totalB = localTotalBytes
+            } else if let df = hb?.disk_free_gb, let dt = hb?.disk_total_gb, dt > 0 {
+                freeB = Int64(df * 1024 * 1024 * 1024)
+                totalB = Int64(dt * 1024 * 1024 * 1024)
+            } else if mID == "naegele-mm" {
+                freeB = miniFreeBytes > 0 ? miniFreeBytes : 40 * 1024 * 1024 * 1024
+                totalB = 460 * 1024 * 1024 * 1024
+            } else if mID == "mike-mm" {
+                freeB = 235 * 1024 * 1024 * 1024
+                totalB = 460 * 1024 * 1024 * 1024
+            } else if mID == "naegele-pc" {
+                freeB = 872 * 1024 * 1024 * 1024
+                totalB = 1007 * 1024 * 1024 * 1024
+            } else {
+                freeB = 0
+                totalB = 0
+            }
+
+            // Specs
+            let chip = hb?.chip ?? fleet?.chip ?? (isThisMac ? "Apple M2 Max" : (mID.contains("mm") ? "Apple M4" : "Intel Core i9-10900K"))
+            let osDesc = hb?.os ?? fleet?.os ?? (isThisMac ? "macOS" : (mID.contains("mm") ? "macOS" : "Ubuntu 24.04 (WSL2)"))
+            let gpuDesc: String? = {
+                if let gName = hb?.gpu?.name, !gName.isEmpty {
+                    if let vram = hb?.gpu?.vram_total_gb {
+                        return "\(gName) (\(Int(vram)) GB)"
+                    }
+                    return gName
+                }
+                if mID == "naegele-pc" { return "NVIDIA GeForce RTX 3090 (24 GB)" }
+                return nil
+            }()
+            let ram = hb?.mem_total_gb.map { Int($0.rounded()) } ?? fleet?.memory_gb ?? (isThisMac ? 32 : (mID.contains("mm") ? 24 : 128))
+
+            // Freshness & Online status
+            let hbTS = hb?.ts ?? 0
+            let ageSeconds = (hbTS > 0) ? (now - hbTS) : 999999
+            let isOnline: Bool = {
+                if isThisMac { return true }
+                if mID == "naegele-mm" && miniOnline { return true }
+                return ageSeconds < 300 // Active heartbeat within 5 minutes
+            }()
+
+            // Status badge
+            let statusBadge: String = {
+                if isThisMac {
+                    return isLocalTransferRunning ? "Moving Files" : "This Mac • Active"
+                }
+                if mID == "naegele-mm" && (remoteTelemetry?.isRunning == true) {
+                    return "Streaming Live"
+                }
+                if isOnline {
+                    if ageSeconds < 120 {
+                        return "Online • Active"
+                    }
+                    return "Online"
+                }
+                return "Offline"
+            }()
+
+            // Active activity
+            let activity: String = {
+                if isThisMac && isLocalTransferRunning {
+                    return telemetry.statusMessage
+                }
+                if mID == "naegele-mm", let rt = remoteTelemetry, rt.isRunning {
+                    let movedStr = ByteCountFormatter.string(fromByteCount: rt.movedBytes, countStyle: .file)
+                    let totStr = ByteCountFormatter.string(fromByteCount: rt.totalBytes, countStyle: .file)
+                    return String(format: "⚡ Streaming %@ at %.1f MB/s • %@ / %@ (%d/%d files)", rt.spaceName, rt.speedMBps, movedStr, totStr, rt.movedFiles, rt.totalFiles)
+                }
+                return ""
+            }()
+
+            let freeStr = ByteCountFormatter.string(fromByteCount: freeB, countStyle: .file)
+            let totalStr = totalB > 0 ? ByteCountFormatter.string(fromByteCount: totalB, countStyle: .file) : ""
+            let storageSub = totalB > 0 ? "\(freeStr) free of \(totalStr) SSD" : "\(freeStr) free"
+            let subtitle = "Mounted at \(mountPath) • \(storageSub)"
+
+            devices.append(ConnectedNodeStatus(
+                id: mID,
+                name: defaultName,
+                kind: kind,
+                icon: icon,
+                isOnline: isOnline,
+                statusBadge: statusBadge,
+                subtitle: subtitle,
+                activeActivity: activity,
+                freeBytes: freeB,
+                totalBytes: totalB,
+                mountPath: mountPath,
+                customName: customNames[mID],
+                chip: chip,
+                os: osDesc,
+                gpu: gpuDesc,
+                ramGB: ram,
+                lastHeartbeatSecondsAgo: (hbTS > 0) ? Int(max(0, ageSeconds)) : nil
+            ))
+        }
+
+        // Sort devices: This Mac (naegele-pro) first, then minis, then PC, then others
+        let orderPriority: [String: Int] = [
+            "naegele-pro": 0,
+            "naegele-mm": 1,
+            "mike-mm": 2,
+            "naegele-pc": 3
+        ]
+        devices.sort { a, b in
+            let pA = orderPriority[a.id] ?? 99
+            let pB = orderPriority[b.id] ?? 99
+            if pA != pB { return pA < pB }
+            return a.displayName.localizedStandardCompare(b.displayName) == .orderedAscending
+        }
+
+        // 2. ZeroDrive Cloud Vaults & Drives
+        let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+        let quotaTB = meta.quotaTB > 0 ? meta.quotaTB : 5.0
+        let totalVaultBytes = Int64(quotaTB * 1024 * 1024 * 1024 * 1024)
+        let baseVaultBytes = VaultStats.shared.totalBytes ?? ledger?.totalMovedToVaultBytes ?? 0
+        let activeMoved = telemetry.isRunning ? telemetry.movedBytes : 0
+        let vaultBytes = baseVaultBytes + activeMoved
+        let freeVaultBytes = max(0, totalVaultBytes - vaultBytes)
+
+        let freeSizeStr = ByteCountFormatter.string(fromByteCount: freeVaultBytes, countStyle: .file)
+        let quotaSizeStr = String(format: "%.1f TB", quotaTB)
+        let vaultSizeStr = vaultBytes > 0 ? ByteCountFormatter.string(fromByteCount: vaultBytes, countStyle: .file) : "148+ GB"
+
+        var vaults: [ConnectedNodeStatus] = []
+        vaults.append(ConnectedNodeStatus(
+            id: "primary-cloud-vault",
+            name: "ZeroDrive Cloud Vault",
+            kind: "vault",
+            icon: "externaldrive.fill.badge.icloud",
+            isOnline: true,
+            statusBadge: "Primary Vault • Live",
+            subtitle: "\(freeSizeStr) free of \(quotaSizeStr) • \(vaultSizeStr) stored in zerodrive-vault-prod • 0 KB local SSD used",
+            activeActivity: telemetry.isRunning ? "\(telemetry.statusMessage) at \(String(format: "%.1f MB/s", telemetry.speedMBps))" : "",
+            freeBytes: freeVaultBytes,
+            totalBytes: totalVaultBytes,
+            mountPath: "~/.zerodrive-mount/My Drive"
         ))
 
-        // 3. Direct iCloud Stream Connection (naegele412@gmail.com)
+        // 3. Direct Cloud-to-Cloud Streams & External Connections
+        var streams: [ConnectedNodeStatus] = []
         let confPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/rclone/rclone.conf")
         let confStr = (try? String(contentsOf: confPath, encoding: .utf8)) ?? ""
-        let hasICloudDirect = confStr.contains("[icloud_direct]")
-        if hasICloudDirect {
+        if confStr.contains("[icloud_direct]") {
             let icloudActive = (telemetry.isRunning && telemetry.sourceLocation.contains("iCloud"))
-            nodes.append(ConnectedNodeStatus(
+            streams.append(ConnectedNodeStatus(
                 id: "icloud-direct",
                 name: "iCloud Drive Direct API (naegele412@gmail.com)",
                 kind: "cloud_stream",
@@ -363,27 +716,10 @@ public final class TurboMigrationManager: ObservableObject {
             ))
         }
 
-        // 4. Primary Cloudflare R2 Vault
-        // IMPORTANT: Read VaultStats.shared.totalBytes directly (never liveTotalBytes) to avoid recursive dispatch_once during TurboMigrationManager.init()!
-        let baseVaultBytes = VaultStats.shared.totalBytes ?? ledger?.totalMovedToVaultBytes ?? 0
-        let activeMoved = telemetry.isRunning ? telemetry.movedBytes : 0
-        let vaultBytes = baseVaultBytes + activeMoved
-        let vaultSizeStr = vaultBytes > 0 ? ByteCountFormatter.string(fromByteCount: vaultBytes, countStyle: .file) : "148+ GB"
-        nodes.append(ConnectedNodeStatus(
-            id: "cloudflare-r2",
-            name: "ZeroDrive Cloud Vault",
-            kind: "vault",
-            icon: "externaldrive.fill.badge.icloud",
-            isOnline: true,
-            statusBadge: "Primary Vault",
-            subtitle: "\(vaultSizeStr) stored in zerodrive-vault-prod • 0 KB local SSD used"
-        ))
-
-        // 5. Fabric Drive (if present locally)
         let fabricPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/CloudStorage/FabricDrive")
         if FileManager.default.fileExists(atPath: fabricPath.path) {
-            nodes.append(ConnectedNodeStatus(
+            streams.append(ConnectedNodeStatus(
                 id: "fabric-drive",
                 name: "Fabric Drive (Local CloudStorage)",
                 kind: "external_drive",
@@ -394,7 +730,11 @@ public final class TurboMigrationManager: ObservableObject {
             ))
         }
 
-        self.connectedNodes = nodes
+        // Assign published properties
+        self.connectedDevices = devices
+        self.cloudVaults = vaults
+        self.cloudStreams = streams
+        self.connectedNodes = devices + vaults + streams
     }
 
     public func readLedger() {

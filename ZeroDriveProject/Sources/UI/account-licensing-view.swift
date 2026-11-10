@@ -3,6 +3,7 @@ import AppKit
 
 public struct AccountLicensingView: View {
     @ObservedObject private var licensing = ManageLicensing.shared
+    @ObservedObject private var manageDrives = ManageDrives.shared
     @EnvironmentObject var supervisor: RcloneDaemonSupervisor
     @ObservedObject private var vaultStats = VaultStats.shared
 
@@ -10,9 +11,20 @@ public struct AccountLicensingView: View {
     @State private var inputEmail: String = ""
     @State private var isShowingKeyInput: Bool = false
     @State private var isShowingSwitchAccountSheet: Bool = false
+    @State private var isShowingAddDriveSheet: Bool = false
+    @State private var isShowingUpgradePrompt: Bool = false
+    @State private var upgradePromptReason: String = ""
+    @State private var newDriveName: String = ""
+    @State private var newDriveQuotaGB: Double = 100.0
     @State private var feedbackMessage: String = ""
+    @State private var driveActionFeedback: String = ""
 
     public init() {}
+
+    private var isFreeTier: Bool {
+        let t = licensing.license.tier.lowercased()
+        return t.contains("free") || t.contains("starter")
+    }
 
     public var body: some View {
         Form {
@@ -32,8 +44,8 @@ public struct AccountLicensingView: View {
                                     .font(.caption.bold())
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 2)
-                                    .background(Color.accentColor.opacity(0.15))
-                                    .foregroundStyle(Color.accentColor)
+                                    .background(isFreeTier ? Color.secondary.opacity(0.18) : Color.accentColor.opacity(0.15))
+                                    .foregroundStyle(isFreeTier ? Color.primary : Color.accentColor)
                                     .clipShape(Capsule())
                             }
 
@@ -43,6 +55,17 @@ public struct AccountLicensingView: View {
                         }
 
                         Spacer()
+
+                        if isFreeTier {
+                            Button {
+                                upgradePromptReason = "Upgrade to ZeroDrive Creator to unlock 512GB managed storage, multi-drive Finder isolation, and 24/7 Agent MCP access."
+                                isShowingUpgradePrompt = true
+                            } label: {
+                                Label("Upgrade to Paid", systemImage: "sparkles")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
 
                         Button("Sign Out") {
                             licensing.signOut()
@@ -55,14 +78,16 @@ public struct AccountLicensingView: View {
                     HStack(spacing: 12) {
                         statPill(
                             title: "CLOUD STORAGE QUOTA",
-                            value: String(format: "%.1f TB", licensing.license.quotaTB),
-                            subtitle: "Unlimited throughput",
+                            value: licensing.license.quotaTB < 0.1
+                                ? String(format: "%.0f GB", licensing.license.quotaTB * 1024)
+                                : String(format: "%.1f TB", licensing.license.quotaTB),
+                            subtitle: isFreeTier ? "Cloudflare R2 Free Tier" : "Unlimited throughput",
                             color: .primary
                         )
 
                         statPill(
                             title: "ACTIVATED MACHINES",
-                            value: "1 of 4 Slots",
+                            value: isFreeTier ? "1 of 2 Slots" : "1 of 4 Slots",
                             subtitle: licensing.license.machineName,
                             color: .green
                         )
@@ -70,7 +95,7 @@ public struct AccountLicensingView: View {
                         statPill(
                             title: "PROVISIONING",
                             value: licensing.license.isProvisioned ? "Operational" : "Pending",
-                            subtitle: "ZeroDrive Cloud Vault",
+                            subtitle: isFreeTier ? "BYOK Cloudflare" : "ZeroDrive Cloud Vault",
                             color: licensing.license.isProvisioned ? .green : .orange
                         )
                     }
@@ -78,7 +103,106 @@ public struct AccountLicensingView: View {
                 .padding(.vertical, 4)
             }
 
-            // MARK: - 2. Active Master License Key
+            // MARK: - 2. Multi-Drive & Sub-Vaults
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Vault Drives & Sub-Drives (\(manageDrives.drives.count))")
+                                .font(.body.weight(.semibold))
+                            Text("Provision and mount multiple independent drives into Finder (e.g. Work, Clients, Archives).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            let check = manageDrives.canAddDrive()
+                            if check.allowed {
+                                newDriveName = ""
+                                isShowingAddDriveSheet = true
+                            } else {
+                                upgradePromptReason = check.reason
+                                isShowingUpgradePrompt = true
+                            }
+                        } label: {
+                            Label("Add Drive", systemImage: "plus.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+
+                    Divider()
+
+                    ForEach(manageDrives.drives) { drive in
+                        HStack(spacing: 12) {
+                            Image(systemName: drive.isDefault ? "externaldrive.fill.badge.checkmark" : "folder.badge.gearshape")
+                                .font(.title3)
+                                .foregroundStyle(drive.isDefault ? Color.accentColor : Color.blue)
+                                .frame(width: 24)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(drive.name)
+                                        .font(.body.weight(.medium))
+                                    if drive.isDefault {
+                                        Text("PRIMARY")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1)
+                                            .background(Color.accentColor.opacity(0.14))
+                                            .foregroundStyle(Color.accentColor)
+                                            .clipShape(Capsule())
+                                    }
+                                }
+
+                                Text(drive.isDefault
+                                     ? "Root Finder Mount • Shared Cloud Storage"
+                                     : "Isolated Sub-Vault • \(Int(drive.quotaGB)) GB Quota • drives/\(drive.id)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button("Open in Finder") {
+                                let folderName = drive.isDefault ? "My Drive" : drive.name
+                                let url = supervisor.mountPoint.appendingPathComponent(folderName)
+                                supervisor.openInFinder(url)
+                            }
+                            .controlSize(.small)
+
+                            if !drive.isDefault {
+                                Button("Remove") {
+                                    Task {
+                                        do {
+                                            try await manageDrives.removeDrive(id: drive.id)
+                                            driveActionFeedback = "Drive '\(drive.name)' removed."
+                                        } catch {
+                                            driveActionFeedback = error.localizedDescription
+                                        }
+                                    }
+                                }
+                                .controlSize(.small)
+                                .foregroundStyle(.red)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+
+                    if !driveActionFeedback.isEmpty {
+                        Text(driveActionFeedback)
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("ZeroDrive Multi-Drive Isolation")
+            }
+
+            // MARK: - 3. Active Master License Key
             Section("Active Master License Key") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -135,7 +259,7 @@ public struct AccountLicensingView: View {
                 .padding(.vertical, 2)
             }
 
-            // MARK: - 3. Machine Hardware Binding
+            // MARK: - 4. Machine Hardware Binding
             Section("Device Provisioning & Hardware UUID") {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -171,7 +295,7 @@ public struct AccountLicensingView: View {
                 .padding(.vertical, 2)
             }
 
-            // MARK: - 4. 1-Click Provisioning / Switch Account
+            // MARK: - 5. Account Management
             Section("Account Management") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -196,6 +320,74 @@ public struct AccountLicensingView: View {
         .sheet(isPresented: $isShowingSwitchAccountSheet) {
             switchAccountModal
         }
+        .sheet(isPresented: $isShowingAddDriveSheet) {
+            addDriveModal
+        }
+        .sheet(isPresented: $isShowingUpgradePrompt) {
+            UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")
+        }
+    }
+
+    private var addDriveModal: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 32))
+                .foregroundStyle(Color.accentColor)
+
+            Text("Add New Drive")
+                .font(.title3.bold())
+
+            Text("Creates an isolated secondary drive in your Cloud Vault with its own dedicated folder in Finder.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Drive Name")
+                        .font(.caption.bold())
+                    TextField("e.g. Work, Clients, Archive", text: $newDriveName)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Storage Quota")
+                            .font(.caption.bold())
+                        Spacer()
+                        Text("\(Int(newDriveQuotaGB)) GB")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $newDriveQuotaGB, in: 10...1000, step: 10)
+                }
+            }
+            .frame(maxWidth: 320)
+
+            HStack {
+                Button("Cancel") {
+                    isShowingAddDriveSheet = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Create & Mount Drive") {
+                    Task {
+                        do {
+                            try await manageDrives.addDrive(name: newDriveName, quotaGB: newDriveQuotaGB)
+                            isShowingAddDriveSheet = false
+                            driveActionFeedback = "Drive '\(newDriveName)' created and mounted!"
+                        } catch {
+                            driveActionFeedback = error.localizedDescription
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(newDriveName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || manageDrives.isWorking)
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
     }
 
     private var switchAccountModal: some View {

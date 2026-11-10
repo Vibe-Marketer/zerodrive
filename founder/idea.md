@@ -1,0 +1,7 @@
+# ZeroDrive (offer ladder and pricing review)
+
+- What it is: a cloud drive built for people who work alongside AI agents and several machines. Native Finder and Windows Explorer integration (0-byte placeholders that fill in on open), files stored as plain objects in Cloudflare R2 with $0 egress, a hosted MCP server and a `zd` CLI so agents on any machine can read and write the same vault, and a "the drive is the render queue" pattern for fleets of Macs and PCs.
+- Who it is for: solo vibe coders running agents on a Mac plus a VPS; video editors and creative studios with 4K footage and several render machines; agencies that want a white-label drive with their own domain and branded MCP for clients.
+- What it sells, at what price: seven tiers. Free Starter $0 (10 GB, bring your own Cloudflare bucket). Builder $19/mo or $97/yr (256 GB hosted). Creator $29/mo or $197/yr (512 GB). Studio $49/mo or $397/yr (1 TB). Studio Max $99/mo or $897/yr (3 TB). Agency Partner $497/mo or $4,970/yr (10 TB, +$25/TB). BYOK Lifetime $197 one-time (own bucket, single user). Also considering: an agency BYOK option at $297/mo where the agency provisions its own Cloudflare account and billing.
+- Where and how: online. Download for macOS and Windows, sign up with Google, pay through Stripe. Live API and MCP at api.zerodrive.dev. Already running in production for its owner's own 4-machine fleet.
+- Budget and constraints: not stated. Solo founder building in the open; storage backend is Cloudflare R2 only by an earlier decision.
