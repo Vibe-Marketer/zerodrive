@@ -6,6 +6,43 @@ import {
   generateConflictedPath,
   evaluateConflict
 } from "./cross-platform.js";
+import {
+  handleDrivesRequest,
+  listDrives,
+  createDrive,
+  getDrive,
+  deleteDrive,
+  resolveDrivePrefix,
+  slugifyDriveName,
+  calculateDriveStats
+} from "./drives.js";
+import {
+  extractTeamFromHostname,
+  resolveTeamFromHostname,
+  getTeam,
+  createTeam,
+  generateTeamApiKey,
+  revokeTeamApiKey,
+  listTeams,
+  authenticateTeamToken,
+  isEmailAllowedForTeam,
+  sanitizeTeamPath,
+  handleTeamMCP,
+  handleTeamOAuth,
+  handleTeamsRest,
+  TEAM_MCP_TOOLS,
+  RESERVED_SUBDOMAINS
+} from "./teams.js";
+import {
+  handleBillingAndLicenseRequest,
+  getPricingTiers,
+  getTier,
+  createCheckoutSession,
+  createPortalSession,
+  handleStripeWebhook,
+  verifyLicenseKey,
+  activateLicenseKey
+} from "./billing.js";
 
 /**
  * ZeroDrive Cloudflare Worker — Production Multi-Tenant R2 S3 Proxy, Provisioner & DMG Host
@@ -2842,6 +2879,11 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
   const userPrefix = auth.userPrefix;
   const pathname = url.pathname.replace(/\/+$/, "");
 
+  // Multi-Drive Provisioning Engine (/v1/drives)
+  if (pathname === "/v1/drives" || pathname.startsWith("/v1/drives/")) {
+    return handleDrivesRequest(request, env, userPrefix, corsHeaders, url);
+  }
+
   // 0. GET /v1/events & GET /v1/activity/stream - Real-Time Server-Sent Events (SSE) Push
   if ((pathname === "/v1/events" || pathname === "/v1/activity/stream") && request.method === "GET") {
     return handleSseEvents(request, env, userPrefix, corsHeaders, url);
@@ -2866,6 +2908,8 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
   // 2a. GET /v1/files/stat - Quick metadata lookup for single item (used by Apple FileProvider and Agents)
   if (pathname === "/v1/files/stat" && request.method === "GET") {
     const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
     if (!subpath) {
       return jsonResponse({
         ok: true,
@@ -2877,7 +2921,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
         }
       }, 200, corsHeaders);
     }
-    const fullKey = `${userPrefix}/${subpath}`;
+    const fullKey = `${basePrefix}/${subpath}`;
     const headObj = await env.VAULT_BUCKET.head(fullKey);
     if (headObj) {
       const fileName = subpath.split("/").pop() || "";
@@ -2915,7 +2959,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
   // 2b. GET /v1/files - List files and directories (supports limit and cursor pagination)
   if (pathname === "/v1/files" && request.method === "GET") {
     const subpath = (url.searchParams.get("path") || "").replace(/^\/+/, "").replace(/\/+$/, "");
-    const prefix = subpath ? `${userPrefix}/${subpath}/` : `${userPrefix}/`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const prefix = subpath ? `${basePrefix}/${subpath}/` : `${basePrefix}/`;
     const recursive = url.searchParams.get("recursive") === "true";
     const cursor = url.searchParams.get("cursor") || undefined;
     const limitParam = parseInt(url.searchParams.get("limit") || "0", 10);
@@ -2942,7 +2988,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       if (folderName) {
         directories.push({
           name: folderName,
-          path: p.slice(userPrefix.length + 1).replace(/\/$/, "")
+          path: p.slice(basePrefix.length + 1).replace(/\/$/, "")
         });
       }
     }
@@ -2953,7 +2999,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       if (fileName && (!fileName.includes("/") || recursive)) {
         files.push({
           name: fileName,
-          path: o.key.slice(userPrefix.length + 1),
+          path: o.key.slice(basePrefix.length + 1),
           size: o.size,
           modified: o.uploaded.toISOString(),
           mime_type: o.httpMetadata?.contentType || guessMimeType(fileName),
@@ -2989,7 +3035,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     const lineRange = body.lines || url.searchParams.get("lines") || "";
     const encoding = body.encoding || url.searchParams.get("encoding") || "utf-8";
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || (body && (body.drive_id || body.drive)) || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     const obj = await env.VAULT_BUCKET.get(fullKey);
     if (!obj) {
       return errorResponse(`File not found: ${targetPath}`, 404, corsHeaders);
@@ -3082,7 +3130,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       targetPath = val.normalizedPath;
     }
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     let mimeType = body.content_type || guessMimeType(targetPath);
     let dataToWrite;
 
@@ -3134,7 +3184,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     });
 
     const finalPath = conflictEval.targetPath;
-    const finalKey = `${userPrefix}/${finalPath}`;
+    const finalKey = `${basePrefix}/${finalPath}`;
     const isConflicted = conflictEval.isConflict && conflictEval.action === "branch";
 
     const putObj = await env.VAULT_BUCKET.put(finalKey, dataToWrite, {
@@ -3193,7 +3243,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Fields 'path' and 'old_text' are required", 400, corsHeaders);
     }
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     const obj = await env.VAULT_BUCKET.get(fullKey);
     if (!obj) {
       return errorResponse(`File not found: ${targetPath}`, 404, corsHeaders);
@@ -3312,7 +3364,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       targetPath = val.normalizedPath;
     }
 
-    const keepKey = `${userPrefix}/${targetPath}/.keep`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const keepKey = `${basePrefix}/${targetPath}/.keep`;
     await env.VAULT_BUCKET.put(keepKey, "", {
       httpMetadata: { contentType: "application/x-empty" }
     });
@@ -3367,9 +3421,10 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
   // 8. POST /v1/files/delete or DELETE /v1/files - Delete a file
   if ((pathname === "/v1/files/delete" || pathname === "/v1/files") && (request.method === "POST" || request.method === "DELETE")) {
     let targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
+    let body = {};
     if (!targetPath) {
       try {
-        const body = await request.json();
+        body = await request.json();
         targetPath = (body.path || "").replace(/^\/+/, "");
       } catch {}
     }
@@ -3378,7 +3433,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Missing parameter 'path'", 400, corsHeaders);
     }
 
-    await env.VAULT_BUCKET.delete(`${userPrefix}/${targetPath}`);
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    await env.VAULT_BUCKET.delete(`${basePrefix}/${targetPath}`);
     await logActivity(env, userPrefix, "delete_file", { path: targetPath });
 
     broadcastVaultEvent(userPrefix, {
@@ -3496,7 +3553,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Missing parameter 'path'", 400, corsHeaders);
     }
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     const mimeType = guessMimeType(targetPath);
     try {
       const mp = await env.VAULT_BUCKET.createMultipartUpload(fullKey, {
@@ -3523,7 +3582,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Missing 'path', 'upload_id', or valid 'part_number' (1-10000)", 400, corsHeaders);
     }
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     try {
       const mp = env.VAULT_BUCKET.resumeMultipartUpload(fullKey, uploadId);
       const part = await mp.uploadPart(partNum, request.body);
@@ -3561,7 +3622,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       etag: String(p.etag || "").replace(/^"+|"+$/g, "")
     })).sort((a, b) => a.partNumber - b.partNumber);
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     try {
       const mp = env.VAULT_BUCKET.resumeMultipartUpload(fullKey, uploadId);
       const completed = await mp.complete(parts);
@@ -3598,7 +3661,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Missing 'path' or 'upload_id'", 400, corsHeaders);
     }
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     try {
       const mp = env.VAULT_BUCKET.resumeMultipartUpload(fullKey, uploadId);
       await mp.abort();
@@ -3622,7 +3687,9 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
       return errorResponse("Missing parameter 'path'", 400, corsHeaders);
     }
 
-    const fullKey = `${userPrefix}/${targetPath}`;
+    const driveId = url.searchParams.get("drive_id") || url.searchParams.get("drive") || body.drive_id || body.drive || request.headers.get("x-zerodrive-drive");
+    const basePrefix = resolveDrivePrefix(userPrefix, driveId);
+    const fullKey = `${basePrefix}/${targetPath}`;
     const headObj = await env.VAULT_BUCKET.head(fullKey);
     if (!headObj) {
       return errorResponse(`File not found: ${targetPath}`, 404, corsHeaders);
@@ -7364,6 +7431,49 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
+    // 00. Subdomain Routing: <team>.zerodrive.dev or mapped custom domains
+    const teamSubdomain = await resolveTeamFromHostname(env, url.hostname);
+    if (teamSubdomain) {
+      if (
+        url.pathname === "/mcp" ||
+        url.pathname === "/mcp/" ||
+        url.pathname === "/v1/mcp" ||
+        url.pathname === "/v1/mcp/" ||
+        (url.pathname === "/" && (request.headers.get("Mcp-Session-Id") || request.headers.get("Authorization") || request.method === "POST"))
+      ) {
+        return handleTeamMCP(request, env, url, teamSubdomain, corsHeaders);
+      }
+      if (
+        url.pathname === "/auth/team/login" ||
+        url.pathname === "/auth/team/callback" ||
+        url.pathname.startsWith("/auth/team/")
+      ) {
+        return handleTeamOAuth(request, env, url, corsHeaders);
+      }
+    }
+
+    // 00b. Team MCP Path Routing: /mcp/:teamSlug and /v1/mcp/:teamSlug
+    const teamMcpMatch = url.pathname.match(/^\/(?:v1\/)?mcp\/([a-zA-Z0-9_-]+)(?:\/.*)?$/);
+    if (teamMcpMatch) {
+      const targetTeam = teamMcpMatch[1];
+      return handleTeamMCP(request, env, url, targetTeam, corsHeaders);
+    }
+
+    // 00c. Team OAuth Routes: /auth/team/login & /auth/team/callback
+    if (url.pathname === "/auth/team/login" || url.pathname === "/auth/team/callback") {
+      return handleTeamOAuth(request, env, url, corsHeaders);
+    }
+
+    // 00d. REST API v1 Team Routes (/v1/teams and /v1/teams/*)
+    if (url.pathname === "/v1/teams" || url.pathname.startsWith("/v1/teams/")) {
+      return handleTeamsRest(request, env, url, corsHeaders);
+    }
+
+    // 00e. Stripe Billing & Dynamic Licensing Engine (/v1/billing/* and /v1/license/*)
+    if (url.pathname.startsWith("/v1/billing/") || url.pathname.startsWith("/v1/license/")) {
+      return handleBillingAndLicenseRequest(request, env, url, corsHeaders);
+    }
+
     // 0. Interactive API Documentation (/docs, /v1/docs, /api-docs)
         // 0b. Standalone Web Vault Explorer & Player (/explorer, /app)
     if (
@@ -8114,5 +8224,37 @@ export {
   validateCrossPlatformPath,
   sanitizeCrossPlatformPath,
   generateConflictedPath,
-  evaluateConflict
+  evaluateConflict,
+  handleDrivesRequest,
+  listDrives,
+  createDrive,
+  getDrive,
+  deleteDrive,
+  resolveDrivePrefix,
+  slugifyDriveName,
+  calculateDriveStats,
+  extractTeamFromHostname,
+  resolveTeamFromHostname,
+  getTeam,
+  createTeam,
+  generateTeamApiKey,
+  revokeTeamApiKey,
+  listTeams,
+  authenticateTeamToken,
+  isEmailAllowedForTeam,
+  sanitizeTeamPath,
+  handleTeamMCP,
+  handleTeamOAuth,
+  handleTeamsRest,
+  TEAM_MCP_TOOLS,
+  RESERVED_SUBDOMAINS,
+  sha256Hex,
+  getPricingTiers,
+  getTier,
+  createCheckoutSession,
+  createPortalSession,
+  handleStripeWebhook,
+  verifyLicenseKey,
+  activateLicenseKey,
+  handleBillingAndLicenseRequest
 };

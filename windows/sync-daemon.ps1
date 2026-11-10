@@ -67,6 +67,7 @@ $Global:SuppressedPaths = [System.Collections.Concurrent.ConcurrentDictionary[st
 $Global:RecentUploads = [System.Collections.Concurrent.ConcurrentDictionary[string, datetime]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $Global:Running = $true
 $Global:LastActivityId = $null
+$Global:KnownDrives = @()
 
 function Get-RelativeVaultPath {
     param([string]$LocalFullPath)
@@ -79,9 +80,57 @@ function Get-RelativeVaultPath {
 }
 
 function Get-LocalWindowsPath {
-    param([string]$VaultRelPath)
+    param(
+        [string]$VaultRelPath,
+        [string]$DriveName = ""
+    )
     $sanitized = $VaultRelPath.Replace('/', '\').TrimStart('\')
+    if (-not [string]::IsNullOrWhiteSpace($DriveName)) {
+        return [System.IO.Path]::Combine($SyncRoot, $DriveName, $sanitized)
+    }
     return [System.IO.Path]::Combine($SyncRoot, $sanitized)
+}
+
+function Resolve-LocalFileDrive {
+    param([string]$LocalFullPath)
+    $cleanRoot = $SyncRoot.TrimEnd('\')
+    if ($LocalFullPath.StartsWith($cleanRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $sub = $LocalFullPath.Substring($cleanRoot.Length).TrimStart('\', '/')
+        $parts = $sub.Split('\', 2)
+        if ($parts.Length -gt 1) {
+            $candidateDrive = $parts[0]
+            $subPath = $parts[1].Replace('\', '/')
+            foreach ($d in $Global:KnownDrives) {
+                if ($d.name -ieq $candidateDrive -or $d.id -ieq $candidateDrive) {
+                    return @{
+                        Drive = $d
+                        DriveName = $d.name
+                        DriveId = $d.id
+                        RelativePath = $subPath
+                    }
+                }
+            }
+            return @{
+                Drive = $null
+                DriveName = "Primary Drive"
+                DriveId = "primary"
+                RelativePath = $sub.Replace('\', '/')
+            }
+        } else {
+            return @{
+                Drive = $null
+                DriveName = "Primary Drive"
+                DriveId = "primary"
+                RelativePath = $sub.Replace('\', '/')
+            }
+        }
+    }
+    return @{
+        Drive = $null
+        DriveName = "Primary Drive"
+        DriveId = "primary"
+        RelativePath = $LocalFullPath.Replace('\', '/')
+    }
 }
 
 function Invoke-ZeroDriveApi {
@@ -182,10 +231,15 @@ function Set-LocalPlaceholder {
     param(
         [string]$RelativeVaultPath,
         [long]$Size,
-        [string]$ModifiedStr
+        [string]$ModifiedStr,
+        [string]$LocalPath = $null
     )
 
-    $localPath = Get-LocalWindowsPath -VaultRelPath $RelativeVaultPath
+    $localPath = if ([string]::IsNullOrWhiteSpace($LocalPath)) {
+        Get-LocalWindowsPath -VaultRelPath $RelativeVaultPath
+    } else {
+        $LocalPath
+    }
     $parent = [System.IO.Path]::GetDirectoryName($localPath)
     if (-not (Test-Path -LiteralPath $parent)) {
         New-Item -ItemType Directory -LiteralPath $parent -Force | Out-Null
@@ -394,35 +448,70 @@ function Invoke-ZeroDriveDehydration {
     }
 }
 
-# 3. Initial Tree Fetch & Placeholders
+# 3. Initial Multi-Drive Tree Fetch & Placeholders
 function Sync-InitialVaultTree {
-    Write-Host "[Sync] Enumerating remote files from ZeroDrive..." -ForegroundColor Yellow
-    $res = Invoke-ZeroDriveApi -Path "v1/files?recursive=true&limit=2000"
-    if (-not $res.ok -and -not $res.files) {
-        Write-Host "[Sync] Failed to fetch remote files: $($res.error)" -ForegroundColor Red
-        return
+    Write-Host "[Sync] Enumerating drives from ZeroDrive..." -ForegroundColor Yellow
+    $drivesRes = Invoke-ZeroDriveApi -Path "v1/drives"
+    $drives = @()
+    if ($drivesRes.ok -and $drivesRes.drives) {
+        $drives = $drivesRes.drives
+    } else {
+        $drives = @(
+            [PSCustomObject]@{
+                id = "primary"
+                name = "Primary Drive"
+                is_default = $true
+            }
+        )
     }
+    $Global:KnownDrives = $drives
+    Write-Host "[Sync] Found $($drives.Count) drive(s) configured in vault" -ForegroundColor Cyan
 
-    if ($res.directories) {
-        foreach ($d in $res.directories) {
-            if ($d.path) {
-                $dirPath = Get-LocalWindowsPath -VaultRelPath $d.path
-                if (-not (Test-Path -LiteralPath $dirPath)) {
-                    New-Item -ItemType Directory -LiteralPath $dirPath -Force | Out-Null
+    foreach ($drive in $drives) {
+        $driveName = if ($drive.name) { $drive.name } else { $drive.id }
+        $driveId = $drive.id
+        $driveLocalDir = [System.IO.Path]::Combine($SyncRoot, $driveName)
+
+        if (-not (Test-Path -LiteralPath $driveLocalDir)) {
+            New-Item -ItemType Directory -LiteralPath $driveLocalDir -Force | Out-Null
+            Write-Host "[Sync] Initialized drive folder: $driveLocalDir" -ForegroundColor Green
+        }
+
+        Write-Host "[Sync] Enumerating files for drive '$driveName' ($driveId)..." -ForegroundColor Yellow
+        $apiPath = if ($drive.is_default -or $driveId -eq "primary" -or $driveId -eq "default") {
+            "v1/files?recursive=true&limit=2000"
+        } else {
+            "v1/files?drive_id=$driveId&recursive=true&limit=2000"
+        }
+
+        $res = Invoke-ZeroDriveApi -Path $apiPath
+        if (-not $res.ok -and -not $res.files) {
+            Write-Host "[Sync] Drive '$driveName' query notice: $($res.error)" -ForegroundColor DarkGray
+            continue
+        }
+
+        if ($res.directories) {
+            foreach ($d in $res.directories) {
+                if ($d.path) {
+                    $dirPath = [System.IO.Path]::Combine($driveLocalDir, $d.path.Replace('/', '\'))
+                    if (-not (Test-Path -LiteralPath $dirPath)) {
+                        New-Item -ItemType Directory -LiteralPath $dirPath -Force | Out-Null
+                    }
                 }
             }
         }
-    }
 
-    if ($res.files) {
-        $count = 0
-        foreach ($f in $res.files) {
-            if ($f.path) {
-                Set-LocalPlaceholder -RelativeVaultPath $f.path -Size $f.size -ModifiedStr $f.modified
-                $count++
+        if ($res.files) {
+            $count = 0
+            foreach ($f in $res.files) {
+                if ($f.path -and -not $f.path.EndsWith(".keep")) {
+                    $targetLocal = [System.IO.Path]::Combine($driveLocalDir, $f.path.Replace('/', '\'))
+                    Set-LocalPlaceholder -RelativeVaultPath $f.path -Size $f.size -ModifiedStr $f.modified -LocalPath $targetLocal
+                    $count++
+                }
             }
+            Write-Host "[Sync] Drive '$driveName': Loaded $count placeholder(s)" -ForegroundColor Green
         }
-        Write-Host "[Sync] Loaded $count files into $SyncRoot" -ForegroundColor Green
     }
 }
 
@@ -440,7 +529,9 @@ function Send-LocalFileToCloud {
         if (($now - $last).TotalSeconds -lt 2) { return } # Debounce
     }
 
-    $relPath = Get-RelativeVaultPath -LocalFullPath $LocalFilePath
+    $resolved = Resolve-LocalFileDrive -LocalFullPath $LocalFilePath
+    $relPath = $resolved.RelativePath
+    $driveId = $resolved.DriveId
 
     # Exponential retry to gracefully handle ERROR_SHARING_VIOLATION / IOException
     $delays = @(150, 350, 750, 1500, 3000)
@@ -481,10 +572,14 @@ function Send-LocalFileToCloud {
         }
     }
 
-    Write-Host "[Upload] Uploading to cloud: $relPath ($($bytes.Length) bytes)..." -ForegroundColor Yellow
+    Write-Host "[Upload] Uploading to cloud ($driveId): $relPath ($($bytes.Length) bytes)..." -ForegroundColor Yellow
     try {
         $encoded = [System.Uri]::EscapeDataString($relPath)
-        $url = "$ApiBase/vault/upload?path=$encoded"
+        $url = if ($driveId -and $driveId -ne "primary" -and $driveId -ne "default") {
+            "$ApiBase/vault/upload?drive_id=$driveId&path=$encoded"
+        } else {
+            "$ApiBase/vault/upload?path=$encoded"
+        }
 
         $req = [System.Net.HttpWebRequest]::Create($url)
         $req.Method = "POST"
@@ -516,13 +611,20 @@ function Remove-RemoteFileFromCloud {
     if (Should-IgnoreFile -FilePath $LocalFilePath) { return }
     if ($Global:SuppressedPaths.ContainsKey($LocalFilePath)) { return }
 
-    $relPath = Get-RelativeVaultPath -LocalFullPath $LocalFilePath
-    Write-Host "[Delete] Removing from cloud: $relPath" -ForegroundColor DarkRed
+    $resolved = Resolve-LocalFileDrive -LocalFullPath $LocalFilePath
+    $relPath = $resolved.RelativePath
+    $driveId = $resolved.DriveId
+    Write-Host "[Delete] Removing from cloud ($driveId): $relPath" -ForegroundColor DarkRed
 
     $encoded = [System.Uri]::EscapeDataString($relPath)
-    $res = Invoke-ZeroDriveApi -Path "v1/files?path=$encoded" -Method "DELETE"
+    $deletePath = if ($driveId -and $driveId -ne "primary" -and $driveId -ne "default") {
+        "v1/files?drive_id=$driveId&path=$encoded"
+    } else {
+        "v1/files?path=$encoded"
+    }
+    $res = Invoke-ZeroDriveApi -Path $deletePath -Method "DELETE"
     if ($res.ok -or $res.deleted) {
-        Write-Host "[Delete] Cloud deleted: $relPath" -ForegroundColor Green
+        Write-Host "[Delete] Cloud deleted ($driveId): $relPath" -ForegroundColor Green
     }
 }
 
@@ -567,20 +669,24 @@ function Poll-RemoteLedgerActivity {
                 if ($act.id -eq $Global:LastActivityId) { break }
                 $actType = "$($act.action)"
                 $path = "$($act.path)"
+                $driveId = "$($act.drive_id)"
 
                 if (-not [string]::IsNullOrWhiteSpace($path)) {
+                    $matchedDrive = $Global:KnownDrives | Where-Object { $_.id -ieq $driveId } | Select-Object -First 1
+                    $driveName = if ($matchedDrive) { $matchedDrive.name } else { "Primary Drive" }
+                    $localTarget = [System.IO.Path]::Combine($SyncRoot, $driveName, $path.Replace('/', '\'))
+
                     if ($actType -match "write|upload|create") {
-                        Set-LocalPlaceholder -RelativeVaultPath $path -Size ($act.size -as [long]) -ModifiedStr $act.timestamp
+                        Set-LocalPlaceholder -RelativeVaultPath $path -Size ($act.size -as [long]) -ModifiedStr $act.timestamp -LocalPath $localTarget
                     }
                     elseif ($actType -match "delete") {
-                        $localTarget = Get-LocalWindowsPath -VaultRelPath $path
                         if (Test-Path -LiteralPath $localTarget) {
                             $Global:SuppressedPaths.TryAdd($localTarget, 1) | Out-Null
                             Remove-Item -LiteralPath $localTarget -Force -Recurse -ErrorAction SilentlyContinue
                             Start-Sleep -Milliseconds 250
                             $dummy = [byte]0
                             $Global:SuppressedPaths.TryRemove($localTarget, [ref]$dummy) | Out-Null
-                            Write-Host "[Event] Removed local file matching remote delete: $path" -ForegroundColor DarkRed
+                            Write-Host "[Event] Removed local file matching remote delete: $path ($driveName)" -ForegroundColor DarkRed
                         }
                     }
                 }

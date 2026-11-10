@@ -573,6 +573,40 @@ public actor ManageFileProvider {
         }
         return .rootContainer
     }
+
+    // MARK: - Multi-Drive Domain Management
+
+    /// Adds a new FileProvider domain for a secondary or named drive
+    public func addDriveDomain(name: String, identifier: String) async throws {
+        let domainId = NSFileProviderDomainIdentifier(identifier)
+        let domain = NSFileProviderDomain(identifier: domainId, displayName: name)
+        try await NSFileProviderManager.add(domain)
+        NSLog("[ZeroDrive] Added FileProvider domain '%@' (id: %@)", name, identifier)
+    }
+
+    /// Removes a FileProvider domain by its identifier
+    public func removeDriveDomain(identifier: String) async throws {
+        let domainId = NSFileProviderDomainIdentifier(identifier)
+        let domains = await listDriveDomains()
+        if let existing = domains.first(where: { $0.identifier == domainId }) {
+            try await NSFileProviderManager.remove(existing)
+            NSLog("[ZeroDrive] Successfully removed FileProvider domain '%@'", identifier)
+        } else {
+            let domain = NSFileProviderDomain(identifier: domainId, displayName: identifier)
+            try await NSFileProviderManager.remove(domain)
+            NSLog("[ZeroDrive] Removed FileProvider domain by identifier '%@'", identifier)
+        }
+    }
+
+    /// Lists all currently registered FileProvider domains
+    public func listDriveDomains() async -> [NSFileProviderDomain] {
+        do {
+            return try await NSFileProviderManager.domains()
+        } catch {
+            NSLog("[ZeroDrive] Error listing FileProvider domains: %@", error.localizedDescription)
+            return []
+        }
+    }
 }
 
 // MARK: - NSFileProviderManager Eviction Compatibility Extension
