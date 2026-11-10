@@ -1,15 +1,14 @@
 # Decisions for Andrew
 
-Recommended answers are in [the blueprint](01-OFFER-BLUEPRINT.md). One decision at a time, in this order.
+Plan: [blueprint](01-OFFER-BLUEPRINT.md). Settled on November 10: free stays 10 GB on the user's Cloudflare with local MCP and no API; bonuses held until ready; launch offer is Pro Max Founder Special with $10 steps per 10 founders; Agency is the other paid plan.
 
-1. **Fix tenant auth before anything else?** Recommended: yes. Not a marketing decision, but every later step depends on it.
-2. **Free vault = hosted 5 GB with MCP on** (instead of 10 GB bring-your-own-Cloudflare with MCP off)? Recommended: yes.
-3. **Founding Studio ladder $47 → $97 in $10 steps per 10 seats**, $97 public from day one? Recommended: yes, start at $47.
-4. **Cut Builder, Creator, Studio Max and BYOK Lifetime from the public page?** Recommended: yes, keep them hidden in code.
-5. **Founding Agency $297/mo, 12 months, 10 seats, by application?** Recommended: yes.
-6. **Name of the live-only reveal** (working name "The Fleet Build") and whether it is the fleet build or the full stack.
-7. **Event date** (recommended Thu Dec 10, 2026) and platform (recommended YouTube Live).
-8. **Will Andrew do 1:1 calls?** Decides whether order bump B exists.
-9. **Which clients qualify for "8–9 figure"?** Until named, the line stays a placeholder.
+Open, in order:
 
-Next work after these: the sell kit (register page, upgrade page, 7 warm-up emails, event run of show) with direct-response-copy and launch-and-funnel-emails, then claims and launch preflight.
+1. **Fix the customer-separation bug** in `deploy/worker.js` before any paid signup. Recommended: now.
+2. **Founder start price: $49 or $39?** Recommended $49. At a locked $39, a founder who fills 3 TB loses about $8 a month forever. Alternative: $39 with 2 TB.
+3. **Build one-click Connect Cloudflare** (today it asks for pasted keys). Recommended: yes, before registration opens.
+4. **Agency founding terms:** $297/mo, 12 months, 10 TB, 10 seats, by application. Recommended: yes.
+5. **Event date:** recommended Thu Dec 10, 2026, YouTube Live.
+6. **Order bump:** Concierge Move-In at $97, or none.
+
+Next work: the sell kit (register page, Founder Special page, 7 warm-up emails, event run of show), then claims check and launch preflight.

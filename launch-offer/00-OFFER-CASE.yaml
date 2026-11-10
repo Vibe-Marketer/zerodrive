@@ -13,7 +13,9 @@ artifacts_written: [00-OFFER-CASE.yaml, 01-OFFER-BLUEPRINT.md, 09-DECISION.md]
 artifacts_not_written: "02, 03 (xlsx), 04 (folded into 01 section 4), 05, 06, 07, 08. Economics live in 01 section 5."
 blockers:
   - "deploy/worker.js extractTenantFromAuth trusts Credential= without signature check; default_tenant fallback. Verified in code at HEAD, live endpoint not probed."
-  - "Free tier must change from BYOK 10 GB with MCP off to hosted 5 GB with MCP on (billing.js)."
+  - "Connect Cloudflare asks for pasted keys (OnboardingView.swift); needs one-click Cloudflare sign-in."
+  - "Free tier MCP flag is false in billing.js; local MCP must be allowed for free."
+  - "10 GB BYOK to hosted migration untested."
   - "Three non-owner unaided setups not done."
 inputs:
   known:
@@ -25,8 +27,13 @@ inputs:
     - "Agency $497/mo, white label, reseller rights; $297 on 12 months capped at 10 TB"
     - "Free signup + software free, VIP gets everything; 100% refund guarantee"
     - "Bonuses: ReelFarm skill, fleet setup, the complete stack, WhatsApp first 500, launch call"
+  decided_2026_11_10_rev2:
+    - "Free = 10 GB on user's own Cloudflare via Connect Cloudflare; switch to paid at 10 GB"
+    - "Free gets MCP, no API"
+    - "Bonuses not ready; software ships now without them"
+    - "Launch offer = Pro Max Founder Special, +$10 per 10 founders, locked; start $39 or $49 open"
+    - "Second paid plan = Agency"
   assumed:
-    - "Founding start price $47"
     - "Request/Worker cost $1 per paid user per month"
     - "Event Thu Dec 10 2026"
   missing:

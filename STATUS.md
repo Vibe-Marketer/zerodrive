@@ -55,3 +55,5 @@ Drafted the launch offer, funnel and pricing answers in [launch-offer/](launch-o
 **Launch blocker found in code:** `deploy/worker.js` `extractTenantFromAuth` takes the customer ID from the `Credential=` header without checking the signature, and falls back to `default_tenant`. Any outside user could reach another user's files through `/s3/`. Fix before any free or paid signup. Live endpoint was not probed.
 
 Next action: Andrew works through [the decision list](launch-offer/09-DECISION.md), starting with the tenant fix and the free-vault change.
+
+Revision 2 same day: Andrew kept free at 10 GB on the user's own Cloudflare (switch to paid at 10 GB, MCP yes, API no), held the bonuses until ready, and chose Pro Max as the Founder Special plus Agency. Blueprint updated. New gaps found in code: Connect Cloudflare still asks for pasted keys, and hosted MCP cannot read a user's own bucket (local MCP can). Open: $49 vs $39 start.
