@@ -321,7 +321,9 @@ public struct AccountLicensingView: View {
             switchAccountModal
         }
         .sheet(isPresented: $isShowingAddDriveSheet) {
-            addDriveModal
+            AddNewDriveSheet(isPresented: $isShowingAddDriveSheet) { createdName in
+                driveActionFeedback = "Drive '\(createdName)' provisioned and mounted!"
+            }
         }
         .sheet(isPresented: $isShowingUpgradePrompt) {
             UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")

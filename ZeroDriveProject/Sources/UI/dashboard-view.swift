@@ -228,7 +228,7 @@ public struct DashboardView: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
 
-                TextField("Quick Search files in ZeroDrive (semantic & regular)…", text: $searchManager.query)
+                TextField("Search files in ZeroDrive…", text: $searchManager.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .onChange(of: searchManager.query) { _ in

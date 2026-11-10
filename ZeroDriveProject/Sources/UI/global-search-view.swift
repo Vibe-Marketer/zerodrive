@@ -35,7 +35,7 @@ public struct GlobalSearchView: View {
                     .font(.title3)
                     .foregroundStyle(Color.accentColor)
 
-                TextField("Search ZeroDrive (e.g. 'invoice', 'screen recordings', 'tax', '.mov', 'react component')…", text: $searchManager.query)
+                TextField("Search files across ZeroDrive…", text: $searchManager.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .onSubmit {
@@ -263,10 +263,10 @@ public struct GlobalSearchView: View {
                 .font(.system(size: 42))
                 .foregroundStyle(Color.accentColor.opacity(0.8))
 
-            Text("Global Search with Semantic & Regular Matching")
+            Text("Global Search")
                 .font(.title3.bold())
 
-            Text("Search across everything in your ZeroDrive Cloud Vault instantly.\nSupports natural language concepts, file extensions, and exact filenames.")
+            Text("Search across everything in your ZeroDrive Cloud Vault instantly.\nFind files by keyword, topic, extension, or exact name.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -316,7 +316,7 @@ public struct GlobalSearchView: View {
             Text("No Files Found")
                 .font(.headline)
 
-            Text("No files matched \"\(searchManager.query)\" in \(searchManager.selectedCategory.rawValue).\nTry switching to 'Semantic Intent' mode or broadening your query.")
+            Text("No files matched \"\(searchManager.query)\" in \(searchManager.selectedCategory.rawValue).\nTry broadening your query or selecting another category.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

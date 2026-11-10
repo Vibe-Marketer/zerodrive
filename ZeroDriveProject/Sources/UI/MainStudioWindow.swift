@@ -17,6 +17,7 @@ public struct MainStudioWindow: View {
     @State private var pendingTransfer: PendingTransferItem? = nil
     @State private var renamingNode: ConnectedNodeStatus? = nil
     @State private var editingDeviceName: String = ""
+    @State private var isShowingAddDriveSheet: Bool = false
     @State private var showVersionUpdatePopup: Bool = false
 
     public init() {}
@@ -480,40 +481,73 @@ public struct MainStudioWindow: View {
                 Divider()
 
                 // Drives Breakdown List
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Configured Drives & Mounts")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-
-                    HStack(spacing: 12) {
-                        Image(systemName: "externaldrive.fill.badge.icloud")
-                            .font(.title3)
-                            .foregroundStyle(Color.accentColor)
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text("My Drive (Primary Vault)")
-                                    .font(.body.weight(.medium))
-                                Text("Active")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.green)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Color.green.opacity(0.14))
-                                    .clipShape(Capsule())
-                            }
-                            Text("Mounted at ~/.zerodrive-mount/My Drive • \(ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)) free remaining in cloud")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Configured Drives & Partitions (\(ManageDrives.shared.drives.count))")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
                         Spacer()
-
-                        Button("Open in Finder") {
-                            supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent("My Drive"))
+                        Button {
+                            isShowingAddDriveSheet = true
+                        } label: {
+                            Label("Add New Drive…", systemImage: "folder.badge.plus")
                         }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
+                    }
+
+                    ForEach(ManageDrives.shared.drives) { drive in
+                        HStack(spacing: 12) {
+                            Image(systemName: drive.isDefault ? "externaldrive.fill.badge.icloud" : "folder.badge.gearshape")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(drive.name + (drive.isDefault ? " (Primary Vault)" : ""))
+                                        .font(.body.weight(.medium))
+
+                                    Text(drive.isDefault ? "Primary" : (drive.provisioningMode == "partition" ? "Free Partition" : "Dedicated"))
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(drive.isDefault ? Color.green : Color.accentColor)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1)
+                                        .background((drive.isDefault ? Color.green : Color.accentColor).opacity(0.14))
+                                        .clipShape(Capsule())
+
+                                    if !drive.isDefault {
+                                        Text(drive.priceLabel)
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(.green)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(Color.green.opacity(0.12))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+
+                                HStack(spacing: 8) {
+                                    Text("Mounted at ~/.zerodrive-mount/\(drive.name)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+
+                                    if !drive.isDefault && !drive.targetLocation.isEmpty {
+                                        Text("• Target: \(drive.targetLocation)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+
+                            Spacer()
+
+                            Button("Open in Finder") {
+                                supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent(drive.name))
+                            }
+                            .controlSize(.small)
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
             }
@@ -648,6 +682,9 @@ public struct MainStudioWindow: View {
         .navigationTitle("Devices & Clouds")
         .sheet(item: $renamingNode) { node in
             renameSheet(for: node)
+        }
+        .sheet(isPresented: $isShowingAddDriveSheet) {
+            AddNewDriveSheet(isPresented: $isShowingAddDriveSheet)
         }
     }
 

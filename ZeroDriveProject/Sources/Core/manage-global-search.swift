@@ -2,9 +2,9 @@ import Foundation
 import AppKit
 
 public enum SearchMode: String, CaseIterable, Identifiable, Sendable {
-    case hybrid = "Hybrid (Smart)"
-    case semantic = "Semantic Intent"
-    case regular = "Regular / Filename"
+    case hybrid = "Smart Search"
+    case semantic = "Concept"
+    case regular = "Exact Name"
 
     public var id: String { rawValue }
 }
@@ -32,10 +32,10 @@ public enum FileCategory: String, CaseIterable, Identifiable, Sendable {
 }
 
 public enum SearchMatchType: String, Sendable {
-    case exact = "Exact Match"
+    case exact = "Exact"
     case prefix = "Name Match"
-    case semantic = "Semantic Concept"
-    case tag = "Category Match"
+    case semantic = "Concept"
+    case tag = "Category"
 }
 
 public struct SearchResultItem: Identifiable, Sendable {
@@ -111,6 +111,9 @@ public final class ManageGlobalSearch: ObservableObject {
     private var indexedFiles: [IndexedFileRecord] = []
     private var lastIndexDate: Date? = nil
 
+    private let cacheURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/rclone/zerodrive-search-index.json")
+
     private struct IndexedFileRecord: Sendable {
         let name: String
         let relativePath: String
@@ -122,7 +125,24 @@ public final class ManageGlobalSearch: ObservableObject {
         let tokens: Set<String>
     }
 
-    // Semantic dictionary mapping concepts to related vocabulary
+    private struct PersistedRecord: Codable {
+        let name: String
+        let relativePath: String
+        let fullPath: String
+        let sizeBytes: Int64
+        let isFolder: Bool
+        let modifiedTimeInterval: Double
+        let category: String
+        let tokens: [String]
+    }
+
+    private struct PersistedIndex: Codable {
+        let version: Int
+        let timestamp: Double
+        let records: [PersistedRecord]
+    }
+
+    // Concept dictionary mapping topics and intents to related vocabulary
     private static let semanticConceptMap: [String: Set<String>] = [
         "finance": ["invoice", "receipt", "tax", "1099", "w2", "statement", "report", "accounting", "ledger", "stripe", "payout", "revenue", "bill", "expense", "budget", "payroll"],
         "tax": ["1099", "w2", "deduction", "irs", "return", "cpa", "filing", "accounting", "statement", "schedule"],
@@ -139,9 +159,30 @@ public final class ManageGlobalSearch: ObservableObject {
     ]
 
     private init() {
+        loadCacheFromDisk()
         Task {
             await prewarmIndex()
         }
+    }
+
+    private func loadCacheFromDisk() {
+        guard let data = try? Data(contentsOf: cacheURL),
+              let persisted = try? JSONDecoder().decode(PersistedIndex.self, from: data) else {
+            return
+        }
+        self.indexedFiles = persisted.records.map { rec in
+            IndexedFileRecord(
+                name: rec.name,
+                relativePath: rec.relativePath,
+                fullURL: URL(fileURLWithPath: rec.fullPath),
+                sizeBytes: rec.sizeBytes,
+                isFolder: rec.isFolder,
+                modifiedDate: Date(timeIntervalSince1970: rec.modifiedTimeInterval),
+                category: FileCategory(rawValue: rec.category) ?? .all,
+                tokens: Set(rec.tokens)
+            )
+        }
+        self.totalIndexedCount = self.indexedFiles.count
     }
 
     /// Crawls My Drive into RAM memory for instant sub-millisecond querying
@@ -150,48 +191,123 @@ public final class ManageGlobalSearch: ObservableObject {
         isIndexing = true
 
         let mount = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
+        let cacheFile = self.cacheURL
 
         Task.detached(priority: .userInitiated) {
-            var records: [IndexedFileRecord] = []
-            let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
-
-            guard let enumerator = FileManager.default.enumerator(
-                at: mount,
-                includingPropertiesForKeys: keys,
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
-            ) else {
-                await MainActor.run {
-                    self.isIndexing = false
-                }
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: mount.path) else {
+                await MainActor.run { self.isIndexing = false }
                 return
             }
 
-            let mountPathPrefix = mount.path + "/"
+            var records: [IndexedFileRecord] = []
+            let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
+            let mountPathPrefix = mount.path.hasSuffix("/") ? mount.path : mount.path + "/"
 
-            while let fileURL = enumerator.nextObject() as? URL {
-                guard let res = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
+            // Exclude heavy noisy internal cache and build folders
+            let noisyFolders: Set<String> = [".git", "node_modules", "scroll-sequences", "__pycache__", ".obsidian", "kf", ".runitback"]
+
+            // List top-level items in My Drive
+            let topItems = (try? fm.contentsOfDirectory(at: mount, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+
+            var lastReportedCount = 0
+
+            for topItem in topItems {
+                let topName = topItem.lastPathComponent
+                if topName.hasPrefix(".") { continue }
+
+                guard let res = try? topItem.resourceValues(forKeys: Set(keys)) else { continue }
                 let isDir = res.isDirectory ?? false
                 let size = Int64(res.fileSize ?? 0)
                 let mdate = res.contentModificationDate ?? Date()
-                let name = fileURL.lastPathComponent
-                let rel = fileURL.path.replacingOccurrences(of: mountPathPrefix, with: "")
-
-                let category = Self.classifyCategory(filename: name, isDirectory: isDir)
-                let tokens = Self.tokenize(text: name + " " + rel)
+                let rel = topItem.path.replacingOccurrences(of: mountPathPrefix, with: "")
+                let category = Self.classifyCategory(filename: topName, isDirectory: isDir)
+                let tokens = Self.tokenize(text: topName + " " + rel)
 
                 records.append(IndexedFileRecord(
-                    name: name,
+                    name: topName,
                     relativePath: rel,
-                    fullURL: fileURL,
+                    fullURL: topItem,
                     sizeBytes: size,
                     isFolder: isDir,
                     modifiedDate: mdate,
                     category: category,
                     tokens: tokens
                 ))
+
+                if !isDir { continue }
+                if noisyFolders.contains(topName) { continue }
+
+                // Enumerate subfolder recursively with robust error handler
+                if let enumerator = fm.enumerator(
+                    at: topItem,
+                    includingPropertiesForKeys: keys,
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                    errorHandler: { _, _ in true }
+                ) {
+                    while let fileURL = enumerator.nextObject() as? URL {
+                        let name = fileURL.lastPathComponent
+                        if name.hasPrefix(".") { continue }
+
+                        guard let subRes = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
+                        let subIsDir = subRes.isDirectory ?? false
+                        if subIsDir && noisyFolders.contains(name) {
+                            enumerator.skipDescendants()
+                            continue
+                        }
+
+                        let subSize = Int64(subRes.fileSize ?? 0)
+                        let subDate = subRes.contentModificationDate ?? Date()
+                        let subRel = fileURL.path.replacingOccurrences(of: mountPathPrefix, with: "")
+                        let subCategory = Self.classifyCategory(filename: name, isDirectory: subIsDir)
+                        let subTokens = Self.tokenize(text: name + " " + subRel)
+
+                        records.append(IndexedFileRecord(
+                            name: name,
+                            relativePath: subRel,
+                            fullURL: fileURL,
+                            sizeBytes: subSize,
+                            isFolder: subIsDir,
+                            modifiedDate: subDate,
+                            category: subCategory,
+                            tokens: subTokens
+                        ))
+
+                        if records.count - lastReportedCount >= 500 {
+                            lastReportedCount = records.count
+                            let currentCount = records.count
+                            await MainActor.run {
+                                self.totalIndexedCount = currentCount
+                            }
+                        }
+                    }
+                }
             }
 
             let finalRecords = records
+
+            // Save to disk cache
+            let persisted = PersistedIndex(
+                version: 1,
+                timestamp: Date().timeIntervalSince1970,
+                records: finalRecords.map { r in
+                    PersistedRecord(
+                        name: r.name,
+                        relativePath: r.relativePath,
+                        fullPath: r.fullURL.path,
+                        sizeBytes: r.sizeBytes,
+                        isFolder: r.isFolder,
+                        modifiedTimeInterval: r.modifiedDate.timeIntervalSince1970,
+                        category: r.category.rawValue,
+                        tokens: Array(r.tokens)
+                    )
+                }
+            )
+
+            if let data = try? JSONEncoder().encode(persisted) {
+                try? data.write(to: cacheFile, options: .atomic)
+            }
+
             await MainActor.run {
                 self.indexedFiles = finalRecords
                 self.totalIndexedCount = finalRecords.count
@@ -303,7 +419,7 @@ public final class ManageGlobalSearch: ObservableObject {
                     if totalSemanticScore > score {
                         score = totalSemanticScore
                         matchType = .semantic
-                        reason = "Semantic match: related to '\(matchedConceptWord)'"
+                        reason = "Concept match: related to '\(matchedConceptWord)'"
                     }
                 }
             }

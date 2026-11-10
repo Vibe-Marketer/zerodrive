@@ -8,6 +8,9 @@ public struct DriveItem: Codable, Identifiable, Sendable {
     public var isDefault: Bool     // true for primary ("My Drive")
     public var status: String      // "active"
     public var createdAt: Date
+    public var provisioningMode: String // "partition" or "dedicated"
+    public var targetLocation: String   // "all_fleet", "this_mac", "naegele-pc", "mac_minis", "team_mcp"
+    public var priceLabel: String       // "Free (Included)" or "$9/mo"
 
     public init(
         id: String,
@@ -15,7 +18,10 @@ public struct DriveItem: Codable, Identifiable, Sendable {
         quotaGB: Double = 100.0,
         isDefault: Bool = false,
         status: String = "active",
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        provisioningMode: String = "partition",
+        targetLocation: String = "all_fleet",
+        priceLabel: String = "Free (Included)"
     ) {
         self.id = id
         self.name = name
@@ -23,6 +29,9 @@ public struct DriveItem: Codable, Identifiable, Sendable {
         self.isDefault = isDefault
         self.status = status
         self.createdAt = createdAt
+        self.provisioningMode = provisioningMode
+        self.targetLocation = targetLocation
+        self.priceLabel = priceLabel
     }
 }
 
@@ -63,6 +72,11 @@ public final class ManageDrives: ObservableObject {
         if let data = try? encoder.encode(drives) {
             try? data.write(to: Self.drivesFileURL, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.drivesFileURL.path)
+
+            let sharedCandidate = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_SYSTEM/MACHINES/drives.json")
+            if FileManager.default.fileExists(atPath: sharedCandidate.deletingLastPathComponent().path) {
+                try? data.write(to: sharedCandidate, options: .atomic)
+            }
         }
     }
 
@@ -86,7 +100,13 @@ public final class ManageDrives: ObservableObject {
     }
 
     /// Creates and provisions a new isolated drive
-    public func addDrive(name: String, quotaGB: Double = 100.0) async throws {
+    public func addDrive(
+        name: String,
+        quotaGB: Double = 100.0,
+        provisioningMode: String = "partition",
+        targetLocation: String = "all_fleet",
+        priceLabel: String = "Free (Included)"
+    ) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw NSError(domain: "ZeroDrive", code: 400, userInfo: [NSLocalizedDescriptionKey: "Drive name cannot be empty."])
@@ -106,13 +126,16 @@ public final class ManageDrives: ObservableObject {
         }
 
         isWorking = true
-        statusMessage = "Provisioning '\(trimmed)'…"
+        statusMessage = "Provisioning '\(trimmed)' (\(provisioningMode == "partition" ? "Free Partition" : "Dedicated Drive"))…"
 
         let newItem = DriveItem(
             id: driveId,
             name: trimmed,
             quotaGB: quotaGB,
-            isDefault: false
+            isDefault: false,
+            provisioningMode: provisioningMode,
+            targetLocation: targetLocation,
+            priceLabel: priceLabel
         )
 
         drives.append(newItem)
