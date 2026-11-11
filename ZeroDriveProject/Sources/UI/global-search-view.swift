@@ -7,6 +7,10 @@ public struct GlobalSearchView: View {
 
     @State private var hoveredItemId: String? = nil
 
+    private let popularExtensions: [String] = [
+        "pdf", "mov", "mp4", "png", "jpg", "zip", "py", "csv", "json"
+    ]
+
     public init() {}
 
     public var body: some View {
@@ -29,15 +33,15 @@ public struct GlobalSearchView: View {
 
     // MARK: - 1. Search Header Bar
     private var searchHeaderBar: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .font(.title3)
                     .foregroundStyle(Color.accentColor)
 
-                TextField("Search files across ZeroDrive…", text: $searchManager.query)
+                TextField("Search files by name, type, size, extension (e.g. ext:pdf, size:>100m)…", text: $searchManager.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
                     .onSubmit {
                         searchManager.executeSearch()
                     }
@@ -56,19 +60,143 @@ public struct GlobalSearchView: View {
                     .buttonStyle(.plain)
                 }
 
-                Picker("Mode", selection: $searchManager.searchMode) {
-                    ForEach(SearchMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
+                // Finder-Style Scope Dropdown (Everything vs Name Matches)
+                Menu {
+                    ForEach(SearchScope.allCases) { scope in
+                        Button {
+                            searchManager.searchScope = scope
+                            searchManager.executeSearch()
+                        } label: {
+                            HStack {
+                                Text(scope.rawValue)
+                                if searchManager.searchScope == scope {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
                     }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: searchManager.searchScope == .nameOnly ? "character.cursor.ibeam" : "globe")
+                            .font(.system(size: 11))
+                        Text(searchManager.searchScope.rawValue)
+                            .font(.system(size: 11, weight: .medium))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.secondary.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 290)
-                .onChange(of: searchManager.searchMode) { _ in
-                    searchManager.executeSearch()
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
+                // Finder-Style Size Filter Dropdown
+                Menu {
+                    ForEach(FileSizeFilter.allCases) { sf in
+                        Button {
+                            searchManager.sizeFilter = sf
+                            searchManager.executeSearch()
+                        } label: {
+                            HStack {
+                                Text(sf.rawValue)
+                                if searchManager.sizeFilter == sf {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "scalemass")
+                            .font(.system(size: 11))
+                        Text(searchManager.sizeFilter == .any ? "Size" : searchManager.sizeFilter.rawValue)
+                            .font(.system(size: 11, weight: .medium))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(searchManager.sizeFilter == .any ? Color.secondary.opacity(0.1) : Color.accentColor.opacity(0.15))
+                    .foregroundStyle(searchManager.sizeFilter == .any ? Color.primary : Color.accentColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
+                // Finder-Style Date Filter Dropdown
+                Menu {
+                    ForEach(DateModifiedFilter.allCases) { df in
+                        Button {
+                            searchManager.dateFilter = df
+                            searchManager.executeSearch()
+                        } label: {
+                            HStack {
+                                Text(df.rawValue)
+                                if searchManager.dateFilter == df {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 11))
+                        Text(searchManager.dateFilter == .any ? "Date" : searchManager.dateFilter.rawValue)
+                            .font(.system(size: 11, weight: .medium))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(searchManager.dateFilter == .any ? Color.secondary.opacity(0.1) : Color.accentColor.opacity(0.15))
+                    .foregroundStyle(searchManager.dateFilter == .any ? Color.primary : Color.accentColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+
+                // Finder-Style Sort By Dropdown
+                Menu {
+                    ForEach(SearchSortOption.allCases) { opt in
+                        Button {
+                            searchManager.sortOption = opt
+                            searchManager.executeSearch()
+                        } label: {
+                            HStack {
+                                Text(opt.rawValue)
+                                if searchManager.sortOption == opt {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 11))
+                        Text(searchManager.sortOption == .relevance ? "Sort" : searchManager.sortOption.rawValue)
+                            .font(.system(size: 11, weight: .medium))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(searchManager.sortOption == .relevance ? Color.secondary.opacity(0.1) : Color.accentColor.opacity(0.15))
+                    .foregroundStyle(searchManager.sortOption == .relevance ? Color.primary : Color.accentColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
             .background(Color(NSColor.controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(
@@ -76,68 +204,125 @@ public struct GlobalSearchView: View {
                     .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
             )
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .background(Color(NSColor.windowBackgroundColor))
     }
 
-    // MARK: - 2. Filter Pills & Stats Row
+    // MARK: - 2. Filter Pills & Extension Bar
     private var filterAndStatsBar: some View {
-        HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(FileCategory.allCases) { cat in
+        VStack(spacing: 6) {
+            // Category capsules & Extension chips
+            HStack(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(FileCategory.allCases) { cat in
+                            Button {
+                                searchManager.selectedCategory = cat
+                                searchManager.executeSearch()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: cat.icon)
+                                        .font(.system(size: 10))
+                                    Text(cat.rawValue)
+                                        .font(.system(size: 11, weight: searchManager.selectedCategory == cat ? .semibold : .regular))
+                                }
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(searchManager.selectedCategory == cat ? Color.accentColor : Color.secondary.opacity(0.08))
+                                .foregroundStyle(searchManager.selectedCategory == cat ? Color.white : Color.primary)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Divider()
+                            .frame(height: 16)
+                            .padding(.horizontal, 4)
+
+                        // Extension Filters
                         Button {
-                            searchManager.selectedCategory = cat
+                            searchManager.selectedExtension = ""
                             searchManager.executeSearch()
                         } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: cat.icon)
-                                    .font(.caption2)
-                                Text(cat.rawValue)
-                                    .font(.caption.weight(searchManager.selectedCategory == cat ? .bold : .regular))
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(searchManager.selectedCategory == cat ? Color.accentColor : Color.secondary.opacity(0.08))
-                            .foregroundStyle(searchManager.selectedCategory == cat ? Color.white : Color.primary)
-                            .clipShape(Capsule())
+                            Text("All Exts")
+                                .font(.system(size: 11, weight: searchManager.selectedExtension.isEmpty ? .semibold : .regular))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(searchManager.selectedExtension.isEmpty ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.06))
+                                .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
+
+                        ForEach(popularExtensions, id: \.self) { ext in
+                            Button {
+                                if searchManager.selectedExtension == ext {
+                                    searchManager.selectedExtension = ""
+                                } else {
+                                    searchManager.selectedExtension = ext
+                                }
+                                searchManager.executeSearch()
+                            } label: {
+                                Text(".\(ext)")
+                                    .font(.system(size: 11, weight: searchManager.selectedExtension == ext ? .semibold : .regular))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(searchManager.selectedExtension == ext ? Color.accentColor : Color.secondary.opacity(0.06))
+                                    .foregroundStyle(searchManager.selectedExtension == ext ? Color.white : Color.primary)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
+                    .padding(.horizontal, 14)
                 }
-                .padding(.horizontal, 16)
-            }
 
-            Spacer()
+                Spacer()
 
-            if !searchManager.query.isEmpty {
-                Text("\(searchManager.results.count) results (\(String(format: "%.1f", searchManager.searchDurationMs)) ms)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 8)
-            }
-
-            Button {
-                Task {
-                    await searchManager.prewarmIndex()
+                if !searchManager.query.isEmpty || searchManager.selectedCategory != .all || !searchManager.selectedExtension.isEmpty || searchManager.sizeFilter != .any || searchManager.dateFilter != .any {
+                    Button("Reset") {
+                        searchManager.clearAllFilters()
+                    }
+                    .font(.caption2)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.trailing, 4)
                 }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                if !searchManager.results.isEmpty || !searchManager.query.isEmpty {
+                    Text("\(searchManager.results.count) items (\(String(format: "%.1f", searchManager.searchDurationMs)) ms)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 6)
+                }
+
+                Button {
+                    Task {
+                        await searchManager.prewarmIndex()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Re-index cloud tree (\(searchManager.totalIndexedCount) files cached)")
+                .padding(.trailing, 14)
             }
-            .buttonStyle(.plain)
-            .help("Re-index cloud tree (\(searchManager.totalIndexedCount) files cached)")
-            .padding(.trailing, 16)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
     }
 
     // MARK: - 3. Results Content Area
     private var resultsContentArea: some View {
         Group {
-            if searchManager.query.isEmpty {
+            let hasActiveFilter = searchManager.selectedCategory != .all ||
+                                  !searchManager.selectedExtension.isEmpty ||
+                                  searchManager.sizeFilter != .any ||
+                                  searchManager.dateFilter != .any
+
+            if searchManager.query.isEmpty && !hasActiveFilter {
                 emptySearchPrompt
             } else if searchManager.results.isEmpty {
                 noResultsView
@@ -252,6 +437,7 @@ public struct GlobalSearchView: View {
         case .images: return .pink
         case .code: return .green
         case .archives: return .orange
+        case .folders: return .yellow
         case .all: return .secondary
         }
     }
@@ -266,11 +452,11 @@ public struct GlobalSearchView: View {
             Text("Global Search")
                 .font(.title3.bold())
 
-            Text("Search across everything in your ZeroDrive Cloud Vault instantly.\nFind files by keyword, topic, extension, or exact name.")
+            Text("Search across everything in your ZeroDrive Cloud Vault instantly.\nFind files by keyword, type, extension, size, or date.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: 440)
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Try searching for:")
@@ -279,9 +465,9 @@ public struct GlobalSearchView: View {
 
                 HStack(spacing: 8) {
                     suggestionChip("invoices")
+                    suggestionChip("ext:mov")
+                    suggestionChip("size:>100m")
                     suggestionChip("screen recordings")
-                    suggestionChip("taxes")
-                    suggestionChip(".mov")
                     suggestionChip("react components")
                 }
             }
@@ -316,16 +502,14 @@ public struct GlobalSearchView: View {
             Text("No Files Found")
                 .font(.headline)
 
-            Text("No files matched \"\(searchManager.query)\" in \(searchManager.selectedCategory.rawValue).\nTry broadening your query or selecting another category.")
+            Text("No files matched your criteria.\nTry clearing filters or broadening your search terms.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
 
-            Button("Clear Filters") {
-                searchManager.selectedCategory = .all
-                searchManager.searchMode = .hybrid
-                searchManager.executeSearch()
+            Button("Clear All Filters") {
+                searchManager.clearAllFilters()
             }
             .controlSize(.small)
             .padding(.top, 4)

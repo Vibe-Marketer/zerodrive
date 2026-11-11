@@ -176,6 +176,9 @@ public struct MainStudioWindow: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenUpgradeAccountModal"))) { _ in
+            selectedTab = 5
+        }
     }
 
     // MARK: - Tab 0: Overview (Live Transfer Card + Active Connections + Cloud Folders)

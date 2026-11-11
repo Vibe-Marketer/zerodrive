@@ -9,6 +9,7 @@ public struct OnboardingView: View {
         case planSelection
         case cloudflareSetup
         case licenseActivation
+        case permissionsSetup
     }
 
     @State private var currentStep: Step = .planSelection
@@ -38,6 +39,8 @@ public struct OnboardingView: View {
                 cloudflareSetupView
             case .licenseActivation:
                 licenseActivationView
+            case .permissionsSetup:
+                permissionsSetupView
             }
         }
         .frame(width: 580)
@@ -135,7 +138,7 @@ public struct OnboardingView: View {
 
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text("Install Free (10 GB Free Storage)")
+                            Text("Deploy Free with Cloudflare (10 GB)")
                                 .font(.body.bold())
                                 .foregroundStyle(.primary)
                             Text("FREE FOREVER")
@@ -146,7 +149,7 @@ public struct OnboardingView: View {
                                 .foregroundStyle(.green)
                                 .clipShape(Capsule())
                         }
-                        Text("Connects your free Cloudflare R2 account (10 GB included monthly with zero egress fees).")
+                        Text("Sign In with Cloudflare to mount 10 GB free cloud storage directly in Finder.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -278,6 +281,8 @@ public struct OnboardingPlanCard: View {
 
     // MARK: - Step 2: Automatic / Guided Cloudflare Connection (Free 10GB)
 
+    @State private var showCustomR2Keys: Bool = false
+
     private var cloudflareSetupView: some View {
         VStack(spacing: 16) {
             HStack {
@@ -301,66 +306,62 @@ public struct OnboardingPlanCard: View {
                     .font(.system(size: 36))
                     .foregroundStyle(.orange)
 
-                Text("Connect Your Free Cloudflare Storage")
+                Text("Deploy Free Cloudflare Vault (10 GB)")
                     .font(.title3.bold())
 
-                Text("Cloudflare provides 10 GB of free R2 storage with zero egress fees. Enter your R2 keys to mount your 10 GB drive directly into Finder.")
+                Text("ZeroDrive provisions an isolated 10 GB partition on Cloudflare R2 with zero egress fees and mounts it directly into macOS Finder.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 440)
             }
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Your Email Address")
+                    Text("Your Account Email")
                         .font(.caption.bold())
                     TextField("you@example.com", text: $cfEmail)
                         .textFieldStyle(.roundedBorder)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Cloudflare Account ID")
-                        .font(.caption.bold())
-                    TextField("e.g. 7c32bf81a4d9...", text: $cfAccountId)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("R2 Access Key ID")
-                        .font(.caption.bold())
-                    TextField("Access Key ID", text: $cfAccessKeyId)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("R2 Secret Access Key")
-                        .font(.caption.bold())
-                    SecureField("Secret Access Key", text: $cfSecretAccessKey)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("R2 Bucket Name")
-                        .font(.caption.bold())
-                    TextField("zerodrive-vault-free", text: $cfBucketName)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                HStack {
-                    Button {
-                        if let url = URL(string: "https://dash.cloudflare.com/?to=/:account/r2/api-tokens") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    } label: {
-                        Label("Get Cloudflare R2 Keys (1-Click)", systemImage: "arrow.up.right.square")
+                // Trusted Cloudflare Sign In / Deploy Action
+                Button {
+                    Task { await connect1ClickCloudflare() }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "cloud.fill")
+                            .foregroundStyle(.orange)
+                        Text(isWorking ? "Deploying Vault…" : "Sign In with Cloudflare")
+                            .font(.headline)
                     }
-                    .controlSize(.small)
-                    .buttonStyle(.bordered)
-
-                    Spacer()
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.top, 2)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isWorking || cfEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                // Advanced manual R2 keys disclosure
+                DisclosureGroup("Advanced: Use Custom Cloudflare Keys", isExpanded: $showCustomR2Keys) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("Cloudflare Account ID", text: $cfAccountId)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("R2 Access Key ID", text: $cfAccessKeyId)
+                            .textFieldStyle(.roundedBorder)
+                        SecureField("R2 Secret Access Key", text: $cfSecretAccessKey)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("R2 Bucket Name", text: $cfBucketName)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button("Connect with Custom Keys") {
+                            Task { await connectFreeCloudflare() }
+                        }
+                        .controlSize(.small)
+                        .disabled(isWorking || cfAccessKeyId.isEmpty || cfSecretAccessKey.isEmpty)
+                    }
+                    .padding(.top, 4)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             .frame(maxWidth: 420)
 
@@ -377,17 +378,7 @@ public struct OnboardingPlanCard: View {
                     currentStep = .planSelection
                 }
                 .keyboardShortcut(.cancelAction)
-
                 Spacer()
-
-                Button {
-                    Task { await connectFreeCloudflare() }
-                } label: {
-                    Text(isWorking ? "Connecting & Mounting…" : "Connect & Mount Free 10GB Drive")
-                        .bold()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isWorking || cfEmail.isEmpty || cfAccessKeyId.isEmpty || cfSecretAccessKey.isEmpty)
             }
             .frame(maxWidth: 420)
         }
@@ -476,6 +467,26 @@ public struct OnboardingPlanCard: View {
 
     // MARK: - Actions
 
+    private func connect1ClickCloudflare() async {
+        let cleanEmail = cfEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard cleanEmail.contains("@") && cleanEmail.contains(".") else {
+            errorMessage = "Please enter a valid email address."
+            return
+        }
+
+        isWorking = true
+        errorMessage = ""
+
+        do {
+            try await ManageLicensing.shared.provisionFreeCloudflare(email: cleanEmail)
+            isWorking = false
+            currentStep = .permissionsSetup
+        } catch {
+            isWorking = false
+            errorMessage = "Cloudflare deployment failed: \(error.localizedDescription)"
+        }
+    }
+
     private func connectFreeCloudflare() async {
         let cleanEmail = cfEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard cleanEmail.contains("@") && cleanEmail.contains(".") else {
@@ -521,7 +532,7 @@ public struct OnboardingPlanCard: View {
 
             await supervisor.forceCleanAndRemount()
             isWorking = false
-            lifecycleController.showOnboardingSheet = false
+            currentStep = .permissionsSetup
         } catch {
             isWorking = false
             errorMessage = "Failed to connect Cloudflare R2: \(error.localizedDescription)"
@@ -545,11 +556,106 @@ public struct OnboardingPlanCard: View {
                 spoolCapGB: 50
             )
             isWorking = false
-            lifecycleController.showOnboardingSheet = false
+            currentStep = .permissionsSetup
         } catch {
             isWorking = false
             errorMessage = "Activation failed: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Step 4: One-Time Permissions Setup
+
+    private var permissionsSetupView: some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 8) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(Color.accentColor)
+
+                Text("One-Time Finder Setup")
+                    .font(.title2.bold())
+
+                Text("macOS will ask for one-time permission to allow ZeroDrive to display your cloud files as a native drive in Finder.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+            .padding(.top, 6)
+
+            VStack(spacing: 12) {
+                HStack(spacing: 14) {
+                    Image(systemName: "externaldrive.badge.icloud")
+                        .font(.title2)
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 32)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Virtual Drive Access")
+                            .font(.subheadline.bold())
+                        Text("Streams files instantly without taking up your Mac's internal storage.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .padding(12)
+                .background(Color.secondary.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                HStack(spacing: 14) {
+                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.blue)
+                        .frame(width: 32)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Local Streaming Engine")
+                            .font(.subheadline.bold())
+                        Text("High-speed background caching directly on your Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .padding(12)
+                .background(Color.secondary.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .padding(.horizontal, 6)
+
+            VStack(spacing: 10) {
+                Button {
+                    finishPermissionsAndOpen()
+                } label: {
+                    HStack {
+                        Text("Complete Setup & Open Finder")
+                            .bold()
+                        Image(systemName: "arrow.right")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Text("macOS only asks once. Click **Allow** or **OK** on the system prompt.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private func finishPermissionsAndOpen() {
+        let userSymlink = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ZeroDrive")
+        _ = FileManager.default.fileExists(atPath: userSymlink.path)
+        lifecycleController.showOnboardingSheet = false
+        supervisor.openInFinder()
     }
 
     private func openStripeCheckout(tier: String) {

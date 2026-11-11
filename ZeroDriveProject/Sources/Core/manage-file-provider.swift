@@ -30,11 +30,13 @@ public actor ManageFileProvider {
         syncCredentialsToAppGroup()
 
         let domain = NSFileProviderDomain(identifier: domainIdentifier, displayName: "ZeroDrive")
-        // Clean any stale or orphaned domain state first
-        do {
-            try await NSFileProviderManager.remove(domain)
-            NSLog("[ZeroDrive] Purged stale domain state")
-        } catch {}
+        let existingDomains = (try? await NSFileProviderManager.domains()) ?? []
+        if existingDomains.contains(where: { $0.identifier == domainIdentifier }) {
+            setupCloudStorageSymlink()
+            startBackgroundPoller()
+            startRealtimeEventListener()
+            return
+        }
 
         do {
             try await NSFileProviderManager.add(domain)

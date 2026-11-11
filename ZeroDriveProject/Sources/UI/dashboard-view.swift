@@ -18,6 +18,9 @@ public struct DashboardView: View {
     @State private var renamingNode: ConnectedNodeStatus? = nil
     @State private var editingDeviceName: String = ""
     @State private var showUpgradeModal: Bool = false
+    @State private var isShowingAddDriveSheet: Bool = false
+    @State private var isShowingUpgradePrompt: Bool = false
+    @State private var upgradePromptReason: String = ""
 
     public init() {}
 
@@ -124,6 +127,12 @@ public struct DashboardView: View {
                 requiredTier: "Creator"
             )
         }
+        .sheet(isPresented: $isShowingAddDriveSheet) {
+            AddNewDriveSheet(isPresented: $isShowingAddDriveSheet) { _ in }
+        }
+        .sheet(isPresented: $isShowingUpgradePrompt) {
+            UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")
+        }
     }
 
     private var freeTierUpgradeBanner: some View {
@@ -202,14 +211,31 @@ public struct DashboardView: View {
 
             Spacer()
 
-            Button {
-                supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent("My Drive"))
-            } label: {
-                Label("Browse Drive in Finder", systemImage: "folder.fill")
-                    .font(.subheadline.bold())
+            HStack(spacing: 8) {
+                Button {
+                    let check = ManageDrives.shared.canAddDrive()
+                    if check.allowed {
+                        isShowingAddDriveSheet = true
+                    } else {
+                        upgradePromptReason = check.reason
+                        isShowingUpgradePrompt = true
+                    }
+                } label: {
+                    Label("Add Drive", systemImage: "plus.circle.fill")
+                        .font(.subheadline.bold())
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+
+                Button {
+                    supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent("My Drive"))
+                } label: {
+                    Label("Browse in Finder", systemImage: "folder.fill")
+                        .font(.subheadline.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
         }
         .padding(16)
         .background(Color(NSColor.controlBackgroundColor))
@@ -404,6 +430,10 @@ public struct DashboardView: View {
             )
 
             // CARD 3: SPEED & HIGH THROUGHPUT
+            let currentUpSpeed = max(turbo.telemetry.isRunning ? turbo.telemetry.speedMBps : 0, spoolManager.telemetry.uploadSpeedMBps)
+            let currentDownSpeed = spoolManager.telemetry.downloadSpeedMBps
+            let hasActiveSpeed = currentUpSpeed > 0.05 || currentDownSpeed > 0.05
+
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Image(systemName: "bolt.fill")
@@ -413,14 +443,23 @@ public struct DashboardView: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if turbo.telemetry.isRunning && turbo.telemetry.speedMBps > 0.1 {
-                        Text(String(format: "%.1f MB/s", turbo.telemetry.speedMBps))
-                            .font(.caption2.bold().monospacedDigit())
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.12))
-                            .clipShape(Capsule())
+                    if hasActiveSpeed {
+                        HStack(spacing: 6) {
+                            if currentUpSpeed > 0.05 {
+                                Text(String(format: "↑ %.1f MB/s", currentUpSpeed))
+                                    .font(.caption2.bold().monospacedDigit())
+                                    .foregroundStyle(.orange)
+                            }
+                            if currentDownSpeed > 0.05 {
+                                Text(String(format: "↓ %.1f MB/s", currentDownSpeed))
+                                    .font(.caption2.bold().monospacedDigit())
+                                    .foregroundStyle(.cyan)
+                            }
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
                     } else {
                         Text("1.2 GB/s Engine")
                             .font(.caption2.bold())
@@ -432,10 +471,18 @@ public struct DashboardView: View {
                     }
                 }
 
-                if turbo.telemetry.isRunning {
-                    Text(String(format: "%.1f MB/s Live", turbo.telemetry.speedMBps))
+                if currentUpSpeed > 0.05 && currentDownSpeed > 0.05 {
+                    Text(String(format: "↑%.1f  ↓%.1f MB/s", currentUpSpeed, currentDownSpeed))
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(.orange)
+                } else if currentUpSpeed > 0.05 {
+                    Text(String(format: "↑ %.1f MB/s", currentUpSpeed))
                         .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundStyle(.orange)
+                } else if currentDownSpeed > 0.05 {
+                    Text(String(format: "↓ %.1f MB/s", currentDownSpeed))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundStyle(.cyan)
                 } else {
                     Text("High Speed")
                         .font(.system(size: 26, weight: .bold, design: .rounded))
@@ -494,22 +541,22 @@ public struct DashboardView: View {
     // MARK: - 3. Action Station: Move vs Copy vs View
     private var actionStationSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Transfer & Storage Operations")
                         .font(.headline)
-                    Text("Choose whether to Move (free Mac disk space), Copy (keep local files), or View in Finder")
+                    Text("Move files to free Mac SSD space, or copy to keep local originals.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
+                Spacer(minLength: 16)
 
-                Picker("Transfer Mode", selection: $isTransferModeCopy) {
-                    Text("Move to Drive (Frees Space)").tag(false)
-                    Text("Copy to Drive (Keep Local)").tag(true)
+                Picker("", selection: $isTransferModeCopy) {
+                    Text("Move (Frees Space)").tag(false)
+                    Text("Copy (Keep Local)").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 320)
+                .fixedSize()
             }
 
             // Interactive Drag & Drop Box
@@ -535,14 +582,14 @@ public struct DashboardView: View {
                     Button {
                         pickFilesForTransfer(isCopy: false)
                     } label: {
-                        Label("Move Files (Free Space)", systemImage: "arrow.up.forward.circle.fill")
+                        Label("Move Files", systemImage: "arrow.up.forward.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
 
                     Button {
                         pickFilesForTransfer(isCopy: true)
                     } label: {
-                        Label("Copy Files (Keep on Mac)", systemImage: "doc.badge.plus")
+                        Label("Copy Files", systemImage: "doc.badge.plus")
                     }
                     .buttonStyle(.bordered)
 
@@ -551,8 +598,7 @@ public struct DashboardView: View {
                     } label: {
                         Label("View in Finder", systemImage: "folder")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.bordered)
                 }
                 .controlSize(.regular)
             }

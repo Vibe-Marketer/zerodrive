@@ -54,7 +54,11 @@ cp "${RCLONE_LOCAL_BIN}" "${APP_BUNDLE}/Contents/Resources/rclone"
 chmod +x "${APP_BUNDLE}/Contents/Resources/rclone"
 
 echo "==> [3/6] Compiling Swift sources into Universal Binary (arm64 + x86_64)..."
-SWIFT_FILES=$(find Sources -name "*.swift")
+SWIFT_FILES=()
+while IFS= read -r line; do
+  SWIFT_FILES+=("$line")
+done < <(find Sources -name "*.swift")
+
 ARM64_BIN="${BUILD_DIR}/${APP_NAME}-arm64"
 X86_64_BIN="${BUILD_DIR}/${APP_NAME}-x86_64"
 
@@ -70,7 +74,7 @@ swiftc -O \
   -framework CryptoKit \
   -framework FileProvider \
   -o "${ARM64_BIN}" \
-  ${SWIFT_FILES}
+  "${SWIFT_FILES[@]}"
 
 echo "    -> Compiling x86_64-apple-macos13.0..."
 swiftc -O \
@@ -84,7 +88,7 @@ swiftc -O \
   -framework CryptoKit \
   -framework FileProvider \
   -o "${X86_64_BIN}" \
-  ${SWIFT_FILES}
+  "${SWIFT_FILES[@]}"
 
 echo "    -> Merging architectures via lipo..."
 lipo -create -output "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}" "${ARM64_BIN}" "${X86_64_BIN}"
@@ -138,7 +142,10 @@ if [ -f "ZeroDriveFileProvider/file-provider-extension.swift" ]; then
   mkdir -p "${FP_BUNDLE}/Contents/MacOS"
   cp "ZeroDriveFileProvider/Info.plist" "${FP_BUNDLE}/Contents/Info.plist"
 
-  FP_SWIFT_FILES=$(find ZeroDriveFileProvider -name "*.swift")
+  FP_SWIFT_FILES=()
+  while IFS= read -r line; do
+    FP_SWIFT_FILES+=("$line")
+  done < <(find ZeroDriveFileProvider -name "*.swift")
 
   swiftc -O \
     -target arm64-apple-macos13.0 \
@@ -149,7 +156,7 @@ if [ -f "ZeroDriveFileProvider/file-provider-extension.swift" ]; then
     -framework UniformTypeIdentifiers \
     -Xlinker -e -Xlinker _NSExtensionMain \
     -o "${BUILD_DIR}/ZeroDriveFileProvider-arm64" \
-    ${FP_SWIFT_FILES}
+    "${FP_SWIFT_FILES[@]}"
 
   swiftc -O \
     -target x86_64-apple-macos13.0 \
@@ -160,7 +167,7 @@ if [ -f "ZeroDriveFileProvider/file-provider-extension.swift" ]; then
     -framework UniformTypeIdentifiers \
     -Xlinker -e -Xlinker _NSExtensionMain \
     -o "${BUILD_DIR}/ZeroDriveFileProvider-x86_64" \
-    ${FP_SWIFT_FILES}
+    "${FP_SWIFT_FILES[@]}"
 
   lipo -create -output "${FP_BUNDLE}/Contents/MacOS/ZeroDriveFileProvider" \
     "${BUILD_DIR}/ZeroDriveFileProvider-arm64" \

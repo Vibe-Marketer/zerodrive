@@ -19,12 +19,21 @@ public struct MenuBarPopoverView: View {
                     .fill(supervisor.isMounted ? Color.green : Color.orange)
                     .frame(width: 8, height: 8)
 
+                let upSpeed = max(turbo.telemetry.isRunning ? turbo.telemetry.speedMBps : 0, spoolManager.telemetry.uploadSpeedMBps)
+                let downSpeed = spoolManager.telemetry.downloadSpeedMBps
+
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ZeroDrive")
                         .font(.headline)
-                    Text("\(turbo.connectedNodes.filter { $0.isOnline }.count) Connections Active • Finder Ready")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if upSpeed > 0.05 || downSpeed > 0.05 {
+                        Text("↑ \(String(format: "%.1f", upSpeed)) MB/s  ↓ \(String(format: "%.1f", downSpeed)) MB/s • Live")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("\(turbo.connectedNodes.filter { $0.isOnline }.count) Connections Active • Finder Ready")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()

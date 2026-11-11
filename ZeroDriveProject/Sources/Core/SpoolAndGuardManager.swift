@@ -282,9 +282,19 @@ public final class SpoolAndGuardManager: ObservableObject {
 
         if let core = coreStats {
             let mbps = max(0.0, core.speedBytesPerSec / (1024.0 * 1024.0))
-            if abs(telemetry.uploadSpeedMBps - mbps) > 0.01 {
+            let isUploading = (vfsStats?.uploadsInProgress ?? 0) > 0 || queueDTOs.contains(where: { $0.uploading })
+
+            if isUploading && mbps > 0.01 {
                 telemetry.uploadSpeedMBps = mbps
+                telemetry.downloadSpeedMBps = 0.0
+            } else if mbps > 0.01 {
+                telemetry.downloadSpeedMBps = mbps
+                telemetry.uploadSpeedMBps = 0.0
+            } else {
+                telemetry.uploadSpeedMBps = 0.0
+                telemetry.downloadSpeedMBps = 0.0
             }
+
             if mbps > 0.01 || (bandwidthHistory.last?.speedMBps ?? 0.0) > 0.01 {
                 bandwidthHistory.append(BandwidthSample(timestamp: Date(), speedMBps: mbps))
                 if bandwidthHistory.count > 40 {

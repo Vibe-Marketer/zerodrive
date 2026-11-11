@@ -7892,16 +7892,20 @@ export default {
             ? `https://${env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`
             : `${CANONICAL_ORIGIN}/s3`;
 
+        const isFree = body.tier === "free" || (body.licenseKey && String(body.licenseKey).toLowerCase().includes("free"));
+        const quotaTB = isFree ? 0.01 : parseFloat(env.DEFAULT_QUOTA_TB || "5.0");
+
         const provisionData = {
           endpoint,
           bucket: env.R2_BUCKET || "zerodrive-vault-prod",
           userPrefix: `usr_${cleanName}_${userHash}`,
           accessKeyId: env.R2_ACCESS_KEY_ID || `zd_r2_${cleanName}_${userHash}`,
           secretAccessKey: env.R2_SECRET_ACCESS_KEY || `zd_sec_${secretHash}`,
-          quotaTB: parseFloat(env.DEFAULT_QUOTA_TB || "5.0"),
+          quotaTB,
+          tier: isFree ? "Free Starter" : "Pro Unlimited",
           domain: "api.zerodrive.dev",
           provisionedAt: new Date().toISOString(),
-          mode: "live_r2_s3_proxy",
+          mode: isFree ? "live_r2_free_starter" : "live_r2_s3_proxy",
         };
 
         return new Response(JSON.stringify(provisionData), {

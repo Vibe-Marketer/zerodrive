@@ -82,6 +82,14 @@ public struct UpgradePromptSheet: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 480)
 
+            Button("Already have a paid license key? Activate Upgrade…") {
+                dismiss()
+                NotificationCenter.default.post(name: NSNotification.Name("OpenUpgradeAccountModal"), object: nil)
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+
             // Actions
             HStack(spacing: 12) {
                 Button("Continue with Free (10 GB)") {

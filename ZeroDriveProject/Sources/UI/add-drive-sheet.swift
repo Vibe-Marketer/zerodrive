@@ -30,7 +30,7 @@ public enum DriveProvisioningMode: String, CaseIterable, Identifiable {
         case .partition:
             return "Free • Included in your active plan"
         case .dedicated:
-            return "$9/mo per 1 TB (Normally $19/mo • 50% Off)"
+            return "$25/mo per 1 TB • Or upgrade to Pro Max (3 TB)"
         }
     }
 
@@ -120,6 +120,15 @@ public struct AddNewDriveSheet: View {
         ByteCountFormatter.string(fromByteCount: availableFreeBytes, countStyle: .file)
     }
 
+    private var dedicatedPriceString: String {
+        switch dedicatedQuotaTB {
+        case 1: return "$25/mo"
+        case 2: return "$40/mo"
+        case 3: return "$97/mo"
+        default: return "$\(dedicatedQuotaTB * 25)/mo"
+        }
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -175,10 +184,10 @@ public struct AddNewDriveSheet: View {
                             modeCard(
                                 targetMode: .dedicated,
                                 title: "Add Another Drive",
-                                badgeText: "DISCOUNTED RATE",
+                                badgeText: "DEDICATED",
                                 badgeColor: Color.accentColor,
-                                priceText: "$9/mo per 1 TB",
-                                subtitle: "Adds fresh dedicated cloud capacity (50% off)"
+                                priceText: "$25/mo per 1 TB",
+                                subtitle: "Adds dedicated cloud capacity or upgrade to Pro Max (3 TB)"
                             )
                         }
                     }
@@ -302,14 +311,14 @@ public struct AddNewDriveSheet: View {
                                 .foregroundStyle(.secondary)
 
                             HStack(spacing: 10) {
-                                dedicatedOptionCard(tb: 1, price: "$9/mo")
-                                dedicatedOptionCard(tb: 2, price: "$16/mo")
-                                dedicatedOptionCard(tb: 5, price: "$35/mo")
+                                dedicatedOptionCard(tb: 1, price: "$25/mo", badge: nil)
+                                dedicatedOptionCard(tb: 2, price: "$40/mo", badge: nil)
+                                dedicatedOptionCard(tb: 3, price: "$97/mo", badge: "PRO MAX")
                             }
 
-                            Text("Dedicated capacity adds an independent cloud vault container with unthrottled bandwidth.")
+                            Text(dedicatedQuotaTB == 3 ? "Pro Max includes 3 TB dedicated cloud storage, unlimited independent drives, and full fleet access." : "Dedicated capacity adds an independent cloud vault container with unthrottled bandwidth.")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(dedicatedQuotaTB == 3 ? Color.accentColor : Color.secondary)
                                 .padding(.top, 2)
                         }
                     }
@@ -329,7 +338,7 @@ public struct AddNewDriveSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(mode == .partition ? "FREE OF CHARGE" : "ADD-ON DISCOUNT")
+                        Text(mode == .partition ? "FREE OF CHARGE" : (dedicatedQuotaTB == 3 ? "PRO MAX TIER" : "DEDICATED CAPACITY"))
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(mode == .partition ? Color.green : Color.accentColor)
                             .padding(.horizontal, 6)
@@ -337,7 +346,7 @@ public struct AddNewDriveSheet: View {
                             .background((mode == .partition ? Color.green : Color.accentColor).opacity(0.14))
                             .clipShape(Capsule())
 
-                        Text(mode == .partition ? "Included in your current plan" : "50% Off Partner Rate")
+                        Text(mode == .partition ? "Included in your current plan" : (dedicatedQuotaTB == 3 ? "Complete fleet vault + 3 TB" : "Unthrottled cloud vault"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -358,8 +367,8 @@ public struct AddNewDriveSheet: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Label(
-                            mode == .partition ? "Partition & Mount Drive (FREE)" : "Provision Dedicated Drive ($9/mo)",
-                            systemImage: mode == .partition ? "checkmark.circle.fill" : "creditcard.fill"
+                            mode == .partition ? "Partition & Mount Drive (FREE)" : (dedicatedQuotaTB == 3 ? "Upgrade to Pro Max ($97/mo)" : "Provision Dedicated Drive (\(dedicatedPriceString))"),
+                            systemImage: mode == .partition ? "checkmark.circle.fill" : (dedicatedQuotaTB == 3 ? "bolt.fill" : "creditcard.fill")
                         )
                     }
                 }
@@ -422,15 +431,26 @@ public struct AddNewDriveSheet: View {
         .buttonStyle(.plain)
     }
 
-    private func dedicatedOptionCard(tb: Int, price: String) -> some View {
+    private func dedicatedOptionCard(tb: Int, price: String, badge: String? = nil) -> some View {
         let isSelected = (dedicatedQuotaTB == tb)
 
         return Button {
             dedicatedQuotaTB = tb
         } label: {
             VStack(spacing: 3) {
-                Text("\(tb) TB")
-                    .font(.subheadline.bold())
+                HStack(spacing: 4) {
+                    Text("\(tb) TB")
+                        .font(.subheadline.bold())
+                    if let badge = badge {
+                        Text(badge)
+                            .font(.system(size: 8, weight: .black))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor)
+                            .foregroundStyle(.white)
+                            .clipShape(Capsule())
+                    }
+                }
                 Text(price)
                     .font(.caption.bold())
                     .foregroundStyle(Color.accentColor)
@@ -449,7 +469,14 @@ public struct AddNewDriveSheet: View {
 
     private func createDrive() {
         let finalQuotaGB = (mode == .partition) ? partitionQuotaGB : Double(dedicatedQuotaTB * 1024)
-        let priceTag = (mode == .partition) ? "Free (Included)" : "$\(dedicatedQuotaTB * 9)/mo (Discounted)"
+        let priceTag = (mode == .partition) ? "Free (Included)" : "\(dedicatedPriceString) (Dedicated)"
+
+        if mode == .dedicated && dedicatedQuotaTB == 3 {
+            let checkoutURL = "https://api.zerodrive.dev/v1/billing/checkout?tier=promax"
+            if let url = URL(string: checkoutURL) {
+                NSWorkspace.shared.open(url)
+            }
+        }
 
         Task {
             do {

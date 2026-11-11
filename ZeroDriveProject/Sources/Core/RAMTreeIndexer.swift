@@ -38,18 +38,12 @@ public final class RAMTreeIndexer: ObservableObject {
 
     public func revealInFinder(node: CloudNode) {
         let fileURL = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent(node.relativePath)
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = ["-R", fileURL.path]
-        try? proc.run()
+        NSWorkspace.shared.selectFile(fileURL.path, inFileViewerRootedAtPath: fileURL.deletingLastPathComponent().path)
     }
 
     public func openFile(node: CloudNode) {
         let fileURL = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent(node.relativePath)
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = [fileURL.path]
-        try? proc.run()
+        NSWorkspace.shared.open(fileURL)
     }
 
     private func startBackgroundAutoRefresh() {

@@ -30,6 +30,18 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 ZeroDrive. All rights reserved.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>ZeroDrive accesses its high-speed local virtual drive to stream and manage your cloud files directly in Finder without taking up local disk space.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>ZeroDrive communicates with its local streaming engine to give you instant access to your cloud files.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>ZeroDrive allows you to transfer and back up files from external drives.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>ZeroDrive allows you to move and protect your documents in your cloud vault.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>ZeroDrive allows you to quickly archive desktop items to free up space on your Mac.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>ZeroDrive allows you to organize and move downloaded files to your cloud drive.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

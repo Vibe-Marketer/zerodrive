@@ -18,7 +18,7 @@ struct ZeroDriveApp: App {
                 .environmentObject(supervisor)
                 .environmentObject(spoolManager)
                 .environmentObject(indexer)
-                .frame(minWidth: 740, minHeight: 480)
+                .frame(minWidth: 840, minHeight: 560)
                 .onAppear {
                     lifecycleController.setStudioWindowVisible(true)
                 }
@@ -26,7 +26,7 @@ struct ZeroDriveApp: App {
                     lifecycleController.setStudioWindowVisible(false)
                 }
         }
-        .defaultSize(width: 820, height: 540)
+        .defaultSize(width: 960, height: 680)
 
         Settings {
             AutostartAndWorkflowsView()
@@ -110,24 +110,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
 
-        if turbo.telemetry.isRunning {
-            let img = NSImage(systemSymbolName: "arrow.up.icloud.fill", accessibilityDescription: "ZeroDrive Transferring")?.withSymbolConfiguration(symbolConfig)
+        let upSpeed = max(turbo.telemetry.isRunning ? turbo.telemetry.speedMBps : 0, spool.telemetry.uploadSpeedMBps)
+        let downSpeed = spool.telemetry.downloadSpeedMBps
+
+        if upSpeed > 0.05 && downSpeed > 0.05 {
+            let img = NSImage(systemSymbolName: "arrow.up.arrow.down.circle.fill", accessibilityDescription: "ZeroDrive Active")?.withSymbolConfiguration(symbolConfig)
             img?.isTemplate = true
             button.image = img
-            if turbo.telemetry.speedMBps > 0.1 {
-                button.title = String(format: " ↑ %.1f MB/s", turbo.telemetry.speedMBps)
-            } else {
-                button.title = " ↑"
-            }
+            button.title = String(format: " ↑%.1f ↓%.1f", upSpeed, downSpeed)
+        } else if upSpeed > 0.05 {
+            let img = NSImage(systemSymbolName: "arrow.up.icloud.fill", accessibilityDescription: "ZeroDrive Uploading")?.withSymbolConfiguration(symbolConfig)
+            img?.isTemplate = true
+            button.image = img
+            button.title = String(format: " ↑ %.1f MB/s", upSpeed)
+        } else if downSpeed > 0.05 {
+            let img = NSImage(systemSymbolName: "arrow.down.icloud.fill", accessibilityDescription: "ZeroDrive Downloading")?.withSymbolConfiguration(symbolConfig)
+            img?.isTemplate = true
+            button.image = img
+            button.title = String(format: " ↓ %.1f MB/s", downSpeed)
         } else if spool.dirtyFileCount > 0 {
             let img = NSImage(systemSymbolName: "arrow.up.icloud.fill", accessibilityDescription: "ZeroDrive Syncing")?.withSymbolConfiguration(symbolConfig)
             img?.isTemplate = true
             button.image = img
-            if spool.telemetry.uploadSpeedMBps > 0.05 {
-                button.title = String(format: " ↑ %.1f MB/s", spool.telemetry.uploadSpeedMBps)
-            } else {
-                button.title = " ↑ \(spool.dirtyFileCount)"
-            }
+            button.title = " ↑ \(spool.dirtyFileCount)"
         } else {
             let imgName = supervisor.isMounted ? "externaldrive.fill.badge.checkmark" : "externaldrive.fill"
             let img = NSImage(systemSymbolName: imgName, accessibilityDescription: "ZeroDrive")?.withSymbolConfiguration(symbolConfig)

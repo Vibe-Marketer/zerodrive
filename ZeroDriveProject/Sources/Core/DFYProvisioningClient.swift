@@ -19,12 +19,15 @@ public actor DFYProvisioningClient {
         URL(string: "http://127.0.0.1:3000/v1/vault/provision")!
     ]
 
-    public func provisionVault(email: String, licenseKey: String) async throws -> DFYProvisionResult {
-        let payload: [String: String] = [
+    public func provisionVault(email: String, licenseKey: String, isFreeTier: Bool = false) async throws -> DFYProvisionResult {
+        var payload: [String: String] = [
             "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
             "licenseKey": licenseKey.trimmingCharacters(in: .whitespacesAndNewlines),
             "machineUUID": getHardwareUUID()
         ]
+        if isFreeTier {
+            payload["tier"] = "free"
+        }
         let bodyData = try JSONSerialization.data(withJSONObject: payload)
 
         for endpoint in endpoints {
@@ -45,7 +48,7 @@ public actor DFYProvisioningClient {
         }
 
         // Local dev / offline fallback
-        return generateLocalDevelopmentVault(email: email)
+        return generateLocalDevelopmentVault(email: email, isFreeTier: isFreeTier)
     }
 
     private func getHardwareUUID() -> String {
@@ -66,7 +69,7 @@ public actor DFYProvisioningClient {
         return "MAC-ZD-" + UUID().uuidString.prefix(8)
     }
 
-    private func generateLocalDevelopmentVault(email: String) -> DFYProvisionResult {
+    private func generateLocalDevelopmentVault(email: String, isFreeTier: Bool = false) -> DFYProvisionResult {
         let safeName = (email.components(separatedBy: "@").first ?? "user")
             .replacingOccurrences(of: "[^a-zA-Z0-9]", with: "_", options: .regularExpression)
             .lowercased()
@@ -76,7 +79,7 @@ public actor DFYProvisioningClient {
             userPrefix: "usr_\(safeName)",
             accessKeyId: "zd_dfy_r2_acc_" + UUID().uuidString.prefix(12),
             secretAccessKey: "zd_dfy_r2_sec_" + UUID().uuidString.replacingOccurrences(of: "-", with: ""),
-            quotaTB: 5.0
+            quotaTB: isFreeTier ? 0.01 : 5.0
         )
     }
 }

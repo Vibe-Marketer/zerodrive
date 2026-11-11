@@ -170,6 +170,36 @@ export const DEFAULT_PRICING_TIERS = {
       seats: 1
     }
   },
+  promax: {
+    id: "promax",
+    name: "Pro Max",
+    aliases: ["pro_max", "pro-max"],
+    price_monthly: 97.00,
+    price_yearly: 897.00,
+    storage_gb: 3072, // 3TB
+    max_drives: 8,
+    max_devices: -1, // Unlimited
+    seats: 1,
+    features: [
+      "3TB Dedicated Cloud Storage",
+      "8 Vaults / Multi-Drive in Finder",
+      "Unlimited Machine Slots",
+      "Multi-project studio teams",
+      "Fleet rendering & 24/7 agent registry",
+      "Hosted MCP Server Access"
+    ],
+    flags: {
+      byok: false,
+      dfy_r2: true,
+      mcp_token: true,
+      fleet_rendering: true,
+      agent_skill_registry: true,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: true,
+      seats: 1
+    }
+  },
   agency: {
     id: "agency",
     name: "Agency Partner",
@@ -1025,22 +1055,45 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       });
     }
 
-    // 2. POST /v1/billing/checkout — creates Stripe Checkout session
-    if (pathname === "/v1/billing/checkout" && method === "POST") {
-      let body = {};
-      try {
-        body = await request.json();
-      } catch {
-        return jsonResp({ ok: false, error: "Invalid JSON body" }, 400);
+    // 2. GET & POST /v1/billing/checkout — creates Stripe Checkout session
+    if (pathname === "/v1/billing/checkout" && (method === "GET" || method === "POST")) {
+      let tierId = url.searchParams.get("tierId") || url.searchParams.get("tier") || "promax";
+      let billingCycle = url.searchParams.get("cycle") || url.searchParams.get("billingCycle") || "monthly";
+      let customerEmail = url.searchParams.get("email") || url.searchParams.get("customerEmail") || "user@zerodrive.dev";
+      let successUrl = url.searchParams.get("successUrl");
+      let cancelUrl = url.searchParams.get("cancelUrl");
+
+      if (method === "POST") {
+        try {
+          const body = await request.json();
+          if (body.tierId || body.tier) tierId = body.tierId || body.tier;
+          if (body.billingCycle || body.cycle) billingCycle = body.billingCycle || body.cycle;
+          if (body.customerEmail || body.email) customerEmail = body.customerEmail || body.email;
+          if (body.successUrl) successUrl = body.successUrl;
+          if (body.cancelUrl) cancelUrl = body.cancelUrl;
+        } catch {
+          // Keep query params if JSON parsing fails
+        }
       }
 
       const session = await createCheckoutSession(env, {
-        tierId: body.tierId || body.tier || "pro",
-        billingCycle: body.billingCycle || body.cycle || "monthly",
-        customerEmail: body.customerEmail || body.email,
-        successUrl: body.successUrl,
-        cancelUrl: body.cancelUrl
+        tierId,
+        billingCycle,
+        customerEmail,
+        successUrl,
+        cancelUrl
       });
+
+      const acceptHeader = request.headers.get("accept") || "";
+      if (method === "GET" && !acceptHeader.includes("application/json")) {
+        if (!session.mock && session.url) {
+          return Response.redirect(session.url, 302);
+        }
+        return new Response(renderCheckoutPageHtml(session), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
 
       return jsonResp({ ok: true, session });
     }
@@ -1124,4 +1177,197 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       details: err instanceof Error ? err.message : String(err)
     }, 500);
   }
+}
+
+/**
+ * Renders a dark-mode checkout landing page when opened in a browser
+ */
+function renderCheckoutPageHtml(session) {
+  const tierName = session.tierName || "Pro Max";
+  const amount = session.amount || 97;
+  const cycle = session.billingCycle === "yearly" ? "year" : "month";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Checkout — ZeroDrive ${tierName}</title>
+  <style>
+    :root {
+      --bg: #0d0f12;
+      --card-bg: #16191f;
+      --border: #232833;
+      --text: #f0f3f6;
+      --text-muted: #8b949e;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --green: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .checkout-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      max-width: 520px;
+      width: 100%;
+      padding: 36px 32px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 18px;
+    }
+    .brand-name {
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(37, 99, 235, 0.18);
+      color: #60a5fa;
+      padding: 3px 8px;
+      border-radius: 999px;
+      margin-bottom: 12px;
+    }
+    .title {
+      font-size: 26px;
+      font-weight: 800;
+      margin-bottom: 6px;
+      letter-spacing: -0.02em;
+    }
+    .price-row {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin: 16px 0 24px;
+    }
+    .price-val {
+      font-size: 42px;
+      font-weight: 800;
+      color: #ffffff;
+    }
+    .price-cycle {
+      color: var(--text-muted);
+      font-size: 16px;
+    }
+    .features {
+      list-style: none;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 20px 0;
+      margin-bottom: 24px;
+    }
+    .features li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      color: #e2e8f0;
+    }
+    .features li:last-child { margin-bottom: 0; }
+    .features li svg {
+      width: 18px;
+      height: 18px;
+      stroke: var(--green);
+      stroke-width: 2.5;
+      fill: none;
+      flex-shrink: 0;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px 20px;
+      background: var(--accent);
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 600;
+      text-align: center;
+      border-radius: 8px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .note {
+      text-align: center;
+      margin-top: 14px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="checkout-card">
+    <div class="brand">
+      <div class="brand-icon">Z</div>
+      <div class="brand-name">ZeroDrive</div>
+    </div>
+    <div class="badge">Founder Tier</div>
+    <div class="title">ZeroDrive ${tierName}</div>
+    <p style="color: var(--text-muted); font-size: 14px;">Instant multi-drive cloud partition with unthrottled streaming speed.</p>
+    
+    <div class="price-row">
+      <span class="price-val">$${amount}</span>
+      <span class="price-cycle">/ ${cycle}</span>
+    </div>
+
+    <ul class="features">
+      <li>
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <strong>3 TB Dedicated Cloud Storage</strong> (Zero setup, unthrottled)
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <strong>Unlimited Independent Drives</strong> in Finder & File Explorer
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <strong>Unlimited Fleet Machines</strong> (Mac, Windows, Minis)
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <strong>24/7 Agent MCP Token</strong> & skill registry access
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <strong>Zero Egress Fees</strong> & direct multi-cloud streaming
+      </li>
+    </ul>
+
+    <a href="${session.url || '#'}" class="btn">Proceed to Stripe Checkout</a>
+    <div class="note">Encrypted & secure billing powered by Stripe. Cancel anytime in 1-click.</div>
+  </div>
+</body>
+</html>`;
 }

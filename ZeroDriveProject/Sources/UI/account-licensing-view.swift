@@ -18,6 +18,12 @@ public struct AccountLicensingView: View {
     @State private var newDriveQuotaGB: Double = 100.0
     @State private var feedbackMessage: String = ""
     @State private var driveActionFeedback: String = ""
+    @State private var isShowingUpgradeAccountSheet: Bool = false
+    @State private var upgradeEmail: String = ""
+    @State private var upgradeLicenseKey: String = ""
+    @State private var upgradeMigrateFiles: Bool = true
+    @State private var upgradeFeedbackMessage: String = ""
+    @State private var isUpgrading: Bool = false
 
     public init() {}
 
@@ -295,30 +301,59 @@ public struct AccountLicensingView: View {
                 .padding(.vertical, 2)
             }
 
-            // MARK: - 5. Account Management
-            Section("Account Management") {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Need to switch account or re-provision?")
-                            .font(.body.weight(.medium))
-                        Text("Log into a different ZeroDrive account or configure a new cloud vault.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            // MARK: - 5. Account Management & Upgrade
+            Section("Account Management & Upgrade") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Upgrade Account")
+                                .font(.body.weight(.medium))
+                            Text("Upgrade from Free to Creator or Studio. Migrates all files automatically to your upgraded vault with 0 data loss.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            upgradeFeedbackMessage = ""
+                            isShowingUpgradeAccountSheet = true
+                        } label: {
+                            Label("Upgrade Account…", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
                     }
 
-                    Spacer()
+                    Divider()
 
-                    Button("Switch Account…") {
-                        isShowingSwitchAccountSheet = true
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Need to switch account or re-provision?")
+                                .font(.body.weight(.medium))
+                            Text("Log into a different ZeroDrive account or configure a new cloud vault.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button("Switch Account…") {
+                            isShowingSwitchAccountSheet = true
+                        }
+                        .controlSize(.regular)
                     }
-                    .controlSize(.regular)
                 }
+                .padding(.vertical, 2)
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Account & Licensing")
         .sheet(isPresented: $isShowingSwitchAccountSheet) {
             switchAccountModal
+        }
+        .sheet(isPresented: $isShowingUpgradeAccountSheet) {
+            upgradeAccountModal
         }
         .sheet(isPresented: $isShowingAddDriveSheet) {
             AddNewDriveSheet(isPresented: $isShowingAddDriveSheet) { createdName in
@@ -327,6 +362,9 @@ public struct AccountLicensingView: View {
         }
         .sheet(isPresented: $isShowingUpgradePrompt) {
             UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenUpgradeAccountModal"))) { _ in
+            isShowingUpgradeAccountSheet = true
         }
     }
 
@@ -430,6 +468,99 @@ public struct AccountLicensingView: View {
         }
         .padding(24)
         .frame(width: 380)
+    }
+
+    private var upgradeAccountModal: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 38))
+                .foregroundStyle(Color.accentColor)
+
+            Text("Upgrade to Paid Account")
+                .font(.title3.bold())
+
+            Text("Seamlessly upgrade to ZeroDrive Creator or Studio. All files in your current vault will be safely moved to your upgraded storage with zero downtime.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Paid Account Email")
+                        .font(.caption.bold())
+                    TextField("you@example.com", text: $upgradeEmail)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Master License Key")
+                        .font(.caption.bold())
+                    TextField("zd_live_creator_... (optional)", text: $upgradeLicenseKey)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Toggle(isOn: $upgradeMigrateFiles) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Migrate all files to upgraded vault")
+                            .font(.subheadline.weight(.medium))
+                        Text("Automatically moves all existing files into your upgraded cloud storage.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .padding(.top, 4)
+            }
+            .frame(maxWidth: 360)
+
+            if !upgradeFeedbackMessage.isEmpty {
+                Text(upgradeFeedbackMessage)
+                    .font(.caption)
+                    .foregroundStyle(upgradeFeedbackMessage.contains("failed") ? .red : Color.accentColor)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
+
+            HStack {
+                Button("Cancel") {
+                    isShowingUpgradeAccountSheet = false
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    Task {
+                        isUpgrading = true
+                        upgradeFeedbackMessage = "Upgrading account and migrating files…"
+                        do {
+                            try await licensing.transferAccountAndMigrate(
+                                newEmail: upgradeEmail,
+                                newLicenseKey: upgradeLicenseKey,
+                                migrateFiles: upgradeMigrateFiles
+                            )
+                            isUpgrading = false
+                            isShowingUpgradeAccountSheet = false
+                            upgradeEmail = ""
+                            upgradeLicenseKey = ""
+                            feedbackMessage = "Account successfully upgraded!"
+                        } catch {
+                            isUpgrading = false
+                            upgradeFeedbackMessage = "Upgrade failed: \(error.localizedDescription)"
+                        }
+                    }
+                } label: {
+                    Text(isUpgrading ? "Upgrading & Migrating…" : "Upgrade Account Now")
+                        .bold()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isUpgrading || upgradeEmail.isEmpty || !upgradeEmail.contains("@"))
+            }
+            .frame(maxWidth: 360)
+        }
+        .padding(24)
+        .frame(width: 420)
     }
 
     private func maskedLicenseKey(_ key: String) -> String {

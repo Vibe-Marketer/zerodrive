@@ -111,11 +111,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         isBusy = true
 
         // Fast-path: if the NFS daemon and kernel mount are already live, adopt them without unmounting
-        var mountRoot = nfsMountRoot
-        mountRoot.removeAllCachedResourceValues()
-        if ((try? mountRoot.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false),
-           isPortListening(55730),
-           await RcloneRCClient.shared.ping() {
+        if isPortListening(55730),
+           await RcloneRCClient.shared.ping(),
+           isKernelMountActive() {
             self.isMounted = true
             Self.wasMountedBeforeSleep = true
             self.isBusy = false
@@ -195,6 +193,11 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--s3-upload-cutoff=32M",
             "--s3-chunk-size=16M",
             "--s3-upload-concurrency=4",
+            "--retries=10",
+            "--low-level-retries=20",
+            "--retries-sleep=1s",
+            "--timeout=30s",
+            "--contimeout=10s",
             "--exclude=**/.DS_Store",
             "--exclude=**/.DS_Store.rclonelink",
             "--exclude=**/._*",
@@ -209,6 +212,29 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         ]
 
         do {
+            let logFileURL = cacheDir.appendingPathComponent("rclone-daemon.log")
+            if !FileManager.default.fileExists(atPath: logFileURL.path) {
+                FileManager.default.createFile(atPath: logFileURL.path, contents: nil)
+            }
+            if let fileHandle = try? FileHandle(forWritingTo: logFileURL) {
+                fileHandle.seekToEndOfFile()
+                process.standardOutput = fileHandle
+                process.standardError = fileHandle
+            } else {
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+            }
+
+            process.terminationHandler = { [weak self] proc in
+                Task { @MainActor in
+                    guard let self = self else { return }
+                    if self.isMounted && !self.isBusy {
+                        NSLog("[ZeroDrive] rclone daemon process terminated unexpectedly with code %d", proc.terminationStatus)
+                        self.isMounted = false
+                        self.statusMessage = "Engine stopped unexpectedly"
+                    }
+                }
+            }
             try process.run()
             self.rcloneProcess = process
 
@@ -226,7 +252,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             }
 
             if nfsReady {
-                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async,intr,timeo=300,retrans=5"
+                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async,intr,timeo=600,retrans=10,mutejukebox,deadtimeout=0"
                 await runCommand("/sbin/mount_nfs", [
                     "-o", nfsMountOptions,
                     "localhost:/",
@@ -250,8 +276,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             // Start telemetry & queue poller + RAM tree pre-warm
             SpoolAndGuardManager.shared.startTelemetryPolling()
             startDaemonHealthWatchdog()
-            Task {
+            Task.detached(priority: .utility) {
                 await RAMTreeIndexer.shared.prewarmAll()
+                await ManageGlobalSearch.shared.loadCacheFromDisk()
             }
         } catch {
             self.statusMessage = "Failed to launch: \(error.localizedDescription)"
@@ -288,12 +315,8 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     /// Opens the given folder in macOS Finder and brings the Finder window to the front
     public func openInFinder(_ url: URL? = nil) {
-        let target = url ?? mountPoint
-        let folderToOpen = FileManager.default.fileExists(atPath: target.path) ? target : mountPoint
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = [folderToOpen.path]
-        try? proc.run()
+        let target = url ?? userSymlinkURL
+        NSWorkspace.shared.open(target)
     }
 
     public func healDeadMountAfterSleep() async {
@@ -313,29 +336,40 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         healthMonitorTask?.cancel()
         healthMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
                 guard let self = self, self.isMounted, !self.isBusy else { continue }
-                if !self.isPortListening(55730) {
-                    self.isMounted = false
-                    self.statusMessage = "Reconnecting drive…"
-                    await self.mountUnifiedDrive()
-                    continue
-                }
-                // Verify the kernel NFS mount is still attached; if detached while rclone is alive, re-attach immediately
-                var mountRoot = self.nfsMountRoot
-                mountRoot.removeAllCachedResourceValues()
-                let isVol = (try? mountRoot.resourceValues(forKeys: [.isVolumeKey]).isVolume) ?? false
-                if !isVol {
-                    let watchdogMountOpts = "port=55730,mountport=55730,nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,actimeo=300,noatime,noacl,async,intr,timeo=300,retrans=5"
-                    await self.runCommand("/sbin/mount_nfs", [
-                        "-o", watchdogMountOpts,
-                        "localhost:/",
-                        self.nfsMountRoot.path
-                    ])
-                    self.ensureMetadataNeverIndex()
+                if let proc = self.rcloneProcess {
+                    if !proc.isRunning {
+                        NSLog("[ZeroDrive] Watchdog detected rclone is not running. Recovering...")
+                        self.isMounted = false
+                        self.statusMessage = "Reconnecting drive…"
+                        await self.mountUnifiedDrive()
+                    }
+                } else {
+                    // For adopted running daemon: verify RPC ping or port listening
+                    let pingOk = await RcloneRCClient.shared.ping()
+                    if !pingOk && !self.isPortListening(55730) {
+                        NSLog("[ZeroDrive] Watchdog detected adopted daemon stopped responding. Recovering...")
+                        self.isMounted = false
+                        self.statusMessage = "Reconnecting drive…"
+                        await self.mountUnifiedDrive()
+                    }
                 }
             }
         }
+    }
+
+    private func isKernelMountActive() -> Bool {
+        var stat = statfs()
+        if statfs(nfsMountRoot.path, &stat) == 0 {
+            let fstypename = withUnsafePointer(to: &stat.f_fstypename) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) {
+                    String(cString: $0)
+                }
+            }
+            return fstypename.lowercased() == "nfs"
+        }
+        return false
     }
 
     private func forceCleanStaleMounts() async {

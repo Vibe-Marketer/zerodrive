@@ -634,9 +634,10 @@ await test("GET /v1/billing/tiers returns live pricing and feature flags", async
   assert.ok(data.tiers.creator !== undefined);
   assert.ok(data.tiers.studio !== undefined);
   assert.ok(data.tiers.studio_max !== undefined);
+  assert.ok(data.tiers.promax !== undefined);
   assert.ok(data.tiers.agency !== undefined);
   assert.ok(data.tiers.byok_lifetime !== undefined);
-  assert.equal(data.count, 7);
+  assert.equal(data.count, 8);
 });
 
 await test("POST /v1/billing/checkout returns checkout session", async () => {
@@ -657,6 +658,19 @@ await test("POST /v1/billing/checkout returns checkout session", async () => {
   assert.equal(data.ok, true);
   assert.ok(data.session.url.includes("checkout.stripe.com"));
   assert.equal(data.session.tierId, "builder");
+});
+
+await test("GET /v1/billing/checkout?tier=promax handles browser navigation", async () => {
+  const req = new Request("https://api.zerodrive.dev/v1/billing/checkout?tier=promax", {
+    method: "GET",
+    headers: { "Accept": "text/html" }
+  });
+
+  const res = await worker.fetch(req, testEnv);
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.ok(text.includes("ZeroDrive Pro Max"));
+  assert.ok(text.includes("$97"));
 });
 
 await test("GET /v1/billing/portal returns portal session URL", async () => {
