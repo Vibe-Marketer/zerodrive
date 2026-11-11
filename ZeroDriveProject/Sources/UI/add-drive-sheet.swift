@@ -97,6 +97,7 @@ public struct AddNewDriveSheet: View {
     @State private var partitionQuotaGB: Double = 250.0
     @State private var dedicatedQuotaTB: Int = 1
     @State private var errorMessage: String = ""
+    @State private var checkoutOpened: Bool = false
 
     private let nameSuggestions = ["Clients", "Video Projects", "Raw Footage", "Team Shared", "Archive", "AI Datasets"]
 
@@ -323,6 +324,26 @@ public struct AddNewDriveSheet: View {
                         }
                     }
 
+                    if mode == .dedicated && checkoutOpened {
+                        HStack(spacing: 12) {
+                            Image(systemName: "safari.fill")
+                                .font(.title3)
+                                .foregroundStyle(Color.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Checkout Launched in Browser")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.primary)
+                                Text("Complete checkout on Stripe to activate this \(dedicatedQuotaTB) TB dedicated drive. Unpaid drives will not be mounted.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(Color.accentColor.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+
                     if !errorMessage.isEmpty {
                         Text(errorMessage)
                             .font(.caption)
@@ -354,7 +375,7 @@ public struct AddNewDriveSheet: View {
 
                 Spacer()
 
-                Button("Cancel") {
+                Button(checkoutOpened ? "Done" : "Cancel") {
                     isPresented = false
                 }
                 .controlSize(.regular)
@@ -367,8 +388,14 @@ public struct AddNewDriveSheet: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Label(
-                            mode == .partition ? "Partition & Mount Drive (FREE)" : (dedicatedQuotaTB == 3 ? "Upgrade to Pro Max ($97/mo)" : "Provision Dedicated Drive (\(dedicatedPriceString))"),
-                            systemImage: mode == .partition ? "checkmark.circle.fill" : (dedicatedQuotaTB == 3 ? "bolt.fill" : "creditcard.fill")
+                            mode == .partition
+                                ? "Partition & Mount Drive (FREE)"
+                                : (checkoutOpened
+                                    ? "Reopen Checkout (\(dedicatedPriceString))"
+                                    : (dedicatedQuotaTB == 3 ? "Upgrade to Pro Max ($97/mo)" : "Provision Dedicated Drive (\(dedicatedPriceString))")),
+                            systemImage: mode == .partition
+                                ? "checkmark.circle.fill"
+                                : (checkoutOpened ? "arrow.clockwise" : (dedicatedQuotaTB == 3 ? "bolt.fill" : "creditcard.fill"))
                         )
                     }
                 }
@@ -468,15 +495,24 @@ public struct AddNewDriveSheet: View {
     }
 
     private func createDrive() {
-        let finalQuotaGB = (mode == .partition) ? partitionQuotaGB : Double(dedicatedQuotaTB * 1024)
-        let priceTag = (mode == .partition) ? "Free (Included)" : "\(dedicatedPriceString) (Dedicated)"
-
-        if mode == .dedicated && dedicatedQuotaTB == 3 {
-            let checkoutURL = "https://api.zerodrive.dev/v1/billing/checkout?tier=promax"
+        if mode == .dedicated {
+            let tierParam: String
+            switch dedicatedQuotaTB {
+            case 1: tierParam = "dedicated_1tb"
+            case 2: tierParam = "dedicated_2tb"
+            default: tierParam = "promax"
+            }
+            let checkoutURL = "https://api.zerodrive.dev/v1/billing/checkout?tier=\(tierParam)"
             if let url = URL(string: checkoutURL) {
                 NSWorkspace.shared.open(url)
             }
+            checkoutOpened = true
+            return
         }
+
+        // Partition mode: Free, carved from existing quota
+        let finalQuotaGB = partitionQuotaGB
+        let priceTag = "Free (Included)"
 
         Task {
             do {

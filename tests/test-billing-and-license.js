@@ -635,9 +635,11 @@ await test("GET /v1/billing/tiers returns live pricing and feature flags", async
   assert.ok(data.tiers.studio !== undefined);
   assert.ok(data.tiers.studio_max !== undefined);
   assert.ok(data.tiers.promax !== undefined);
+  assert.ok(data.tiers.dedicated_1tb !== undefined);
+  assert.ok(data.tiers.dedicated_2tb !== undefined);
   assert.ok(data.tiers.agency !== undefined);
   assert.ok(data.tiers.byok_lifetime !== undefined);
-  assert.equal(data.count, 8);
+  assert.equal(data.count, 10);
 });
 
 await test("POST /v1/billing/checkout returns checkout session", async () => {

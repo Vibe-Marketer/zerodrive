@@ -200,6 +200,62 @@ export const DEFAULT_PRICING_TIERS = {
       seats: 1
     }
   },
+  dedicated_1tb: {
+    id: "dedicated_1tb",
+    name: "Dedicated 1TB",
+    aliases: ["dedicated-1tb", "dedicated1tb", "1tb"],
+    price_monthly: 25.00,
+    price_yearly: 250.00,
+    storage_gb: 1024,
+    max_drives: 2,
+    max_devices: -1,
+    seats: 1,
+    features: [
+      "1TB Dedicated Cloud Storage",
+      "Independent cloud vault container",
+      "Unthrottled bandwidth",
+      "Multi-device fleet sync"
+    ],
+    flags: {
+      byok: false,
+      dfy_r2: true,
+      mcp_token: true,
+      fleet_rendering: false,
+      agent_skill_registry: false,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: false,
+      seats: 1
+    }
+  },
+  dedicated_2tb: {
+    id: "dedicated_2tb",
+    name: "Dedicated 2TB",
+    aliases: ["dedicated-2tb", "dedicated2tb", "2tb"],
+    price_monthly: 40.00,
+    price_yearly: 400.00,
+    storage_gb: 2048,
+    max_drives: 4,
+    max_devices: -1,
+    seats: 1,
+    features: [
+      "2TB Dedicated Cloud Storage",
+      "Independent cloud vault container",
+      "Unthrottled bandwidth",
+      "Multi-device fleet sync"
+    ],
+    flags: {
+      byok: false,
+      dfy_r2: true,
+      mcp_token: true,
+      fleet_rendering: false,
+      agent_skill_registry: false,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: false,
+      seats: 1
+    }
+  },
   agency: {
     id: "agency",
     name: "Agency Partner",
