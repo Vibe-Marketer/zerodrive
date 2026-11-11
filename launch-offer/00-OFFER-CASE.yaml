@@ -16,6 +16,7 @@ blockers:
   - "Connect Cloudflare asks for pasted keys (OnboardingView.swift); needs one-click Cloudflare sign-in."
   - "Free tier MCP flag is false in billing.js; local MCP must be allowed for free."
   - "10 GB BYOK to hosted migration untested."
+  - "Partition screen falls back to 5.0 TB when plan quota missing (add-drive-sheet.swift:110)."
   - "Three non-owner unaided setups not done."
 inputs:
   known:
@@ -33,7 +34,12 @@ inputs:
     - "Bonuses not ready; software ships now without them"
     - "Launch offer = Pro Max Founder Special, +$10 per 10 founders, locked; start $39 or $49 open"
     - "Second paid plan = Agency"
+  decided_2026_11_10_rev3:
+    - "Replaces rev2 Pro Max founder ladder: founders get Studio ($49 list, 1 TB) at $29/mo locked while subscribed"
+    - "Partition current drive free; add drive 1 TB $25, 2 TB $40; 3 TB = Pro Max $97"
   assumed:
+    - "Founder deadline Sun Dec 13 2026 11:59 PM ET (replay close)"
+    - "Goal math: 2,500 registrations, 30% live, 4-8% buy"
     - "Request/Worker cost $1 per paid user per month"
     - "Event Thu Dec 10 2026"
   missing:

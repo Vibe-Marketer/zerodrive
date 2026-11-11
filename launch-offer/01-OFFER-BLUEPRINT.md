@@ -1,156 +1,209 @@
-# ZeroDrive launch offer and funnel
+# ZeroDrive Founders Launch: the complete outline
 
-Drafted November 10, 2026 with the Offer Machine skill. Revision 2, same day, after Andrew's decisions. Status: **CONCEPT COMPLETE, ECONOMICS PROVISIONAL.** Nothing here is priced in Stripe, built or published.
+Revision 3, November 10, 2026. Built with the Offer Machine skill; earlier revisions are in git history. Status: **CONCEPT COMPLETE, ECONOMICS PROVISIONAL.** Nothing is priced in Stripe, built or published yet.
 
-Inputs read: [product strategy](../docs/product-strategy-and-market-research.md), [founder board verdict](../founder/board.md), live tier code in `deploy/billing.js`, onboarding code, `bin/zerodrive-mcp`, the [12 Month Millionaire swipe](/Users/Naegele/_LIBRARY/Swipes/12-month-millionaire/ROUTER.md), and Andrew's pasted launch notes and blueprint.
-
-## Andrew's decisions (revision 2)
-
-1. **Free stays 10 GB on the user's own Cloudflare.** Andrew pays nothing for free storage. Users sign up, sign in, and press "Connect Cloudflare." Hitting 10 GB is the switch to paid.
-2. **Free users get MCP access, no API.**
-3. **Bonuses (ReelFarm skill, fleet setup, the full stack) are not ready to share.** The software ships now. The bonuses do not go in the launch stack.
-4. **The launch offer is Pro Max as a Founder Special,** price rising $10 for every 10 founders and locked for those who join. Start at $39 or $49 (open, see section 2).
-5. **The other paid plan is Agency.**
+Andrew's decisions (rev 3): keep it simple. Free stays 10 GB on the user's own Cloudflare, local MCP only, no API. Founders get the $49 plan for **$29 a month, locked for as long as they keep it.** Partitioning their drive is free. Extra drives: 1 TB $25, 2 TB $40, 3 TB means upgrading to Pro Max ($97). Agency is the high-end plan. Bonuses (ReelFarm, fleet playbook, full stack) are not ready and stay off the offer.
 
 ---
 
-## 0. Launch blockers (verified in code)
+## 1. The offer on one page
 
-1. **Customers are not kept apart.** `deploy/worker.js:218` `extractTenantFromAuth` takes the customer ID from the `Credential=` header without checking the signature, and falls back to `default_tenant`. Anyone who knows or guesses a customer ID could reach that customer's hosted files through `/s3/`. This applies to every paid vault. Free vaults sit in the user's own Cloudflare and are not exposed this way. Live endpoint not probed.
-2. **"Connect Cloudflare" is not one click yet.** `OnboardingView.swift` `connectFreeCloudflare` asks the user to paste an account ID, access key, secret key and bucket name. To match "they don't set anything up," it needs a Cloudflare sign-in button that creates the bucket and keys for them. No Cloudflare OAuth code exists in the repo today.
-3. **Cloudflare asks for a card before R2 works.** As far as I know, Cloudflare requires a payment method on the account before R2 can be turned on, even within the free 10 GB. Not checked today. Confirm it in the three-tester run, because a card prompt inside Cloudflare is where free signups will drop.
-4. **The 10 GB → paid move is not tested.** The plan in the strategy doc (both buckets shown together, cloud-to-cloud copy, checksum, switch) is marked tentative.
+**One line:** ZeroDrive is the cloud drive your AI actually lives in. Your files in Finder, your AI reading and writing them from anywhere, and your Mac's disk stays empty.
 
----
+**The enemy:** dumb storage. Drive, Dropbox and iCloud were built for people filing documents. They don't speak MCP, can't hold your AI's skills, fill your disk with cache, and their AI is a sidebar.
 
-## 1. Free vault: the front door
-
-| Free vault | |
-|---|---|
-| Storage | 10 GB in the user's own Cloudflare account. $0 to Andrew |
-| Setup | Sign up, sign in, Connect Cloudflare |
-| AI access | MCP for AI tools **on that computer** (local `zerodrive-mcp` works through the mounted drive) |
-| Not included | API, hosted MCP (Claude.ai, ChatGPT, phone, VPS agents), more machines |
-| Upgrade trigger | 10 GB reached, or wanting their AI to reach the vault from anywhere |
-
-Code observation: the hosted MCP at `api.zerodrive.dev` reads only storage Andrew hosts (`env.VAULT_BUCKET`), never a user's own bucket. That fits the plan. **Free = AI on your computer. Paid = AI from anywhere.** That is a second upgrade reason besides the 10 GB limit, and it is the fleet story.
-
-The registration is still the free vault, not a waitlist. By event day the person has the product installed and has watched their AI write into it.
-
----
-
-## 2. The Founder Special: Pro Max
-
-Pro Max today in `billing.js` is "Studio Max": $99/mo, 3 TB hosted, 8 vaults, unlimited machines.
-
-| Founders | Start at $49 (recommended) | Start at $39 |
+| Plan | Price | What it is |
 |---|---|---|
-| 1–10 | $49 | $39 |
-| 11–20 | $59 | $49 |
-| 21–30 | $69 | $59 |
-| 31–40 | $79 | $69 |
-| 41–50 | $89 | $79 |
-| 51–60 | $99 list | $89 |
-| 61+ | $99 list | $99 list |
-| Revenue if every step sells | $3,450/mo from 50 founders | $3,840/mo from 60 founders |
+| **Free** | $0 | 10 GB on your own Cloudflare. Sign up, sign in, Connect Cloudflare. AI tools on your computer can use it (MCP). No API |
+| **ZeroDrive Studio, Founders** | **$29/mo locked** (list $49) | 1 TB hosted, nothing to set up. AI from anywhere: Claude.ai, ChatGPT, Cursor, phone, cloud servers. API. Unlimited computers, Mac and Windows |
+| Partition your drive | Free | Split your plan's storage into separate drives (Work, Clients, Personal), each isolated |
+| Add a drive | 1 TB +$25/mo · 2 TB +$40/mo | Extra storage that doesn't use your plan's space |
+| Pro Max | $97/mo | 3 TB |
+| Agency | $497/mo (Founding Agency $297/mo, 12 months, 10 seats, by application) | 10 TB, white label, branded MCP portal for clients, client drives, resale rights, 5 team seats |
 
-**Why $49, not $39: a founder who fills 3 TB on a locked $39 costs you money every month for as long as they stay.**
-
-| Per founder per month | 40% used (1.2 TB) | Full 3 TB |
-|---|---|---|
-| $39 locked | $39 − $18 storage − $1.43 Stripe − $1 requests = **+$18.57** | $39 − $45 − $1.43 − $1 = **−$8.43** |
-| $49 locked | $49 − $18 − $1.72 − $1 = **+$28.28** | $49 − $45 − $1.72 − $1 = **+$1.28** |
-| $99 list | $99 − $18 − $3.17 − $1 = **+$76.83** | $99 − $45 − $3.17 − $1 = **+$49.83** |
-
-R2 storage is $15 per TB a month. The $1 for requests and Worker calls is an assumption to measure. If $39 matters for the headline, keep it and give founders 2 TB at that price with +$25 per extra TB.
-
-Rules that make the step mechanic work:
-1. **$99 is shown on every page from day one.** A discount is only believed when the full price was public first.
-2. **The counter is real and steps never go backwards.**
-3. **"Locked" means for as long as they stay subscribed.** Say so on the page. Cancelling and coming back means the current price.
-
-What Pro Max sells (the price is carried by "AI from anywhere," not gigabytes):
-- 3 TB hosted vault, nothing to set up
-- Hosted MCP: Claude.ai, ChatGPT, Cursor, phone and VPS agents all reach the same vault
-- API access
-- Unlimited computers, Mac and Windows
-- Move-in from iCloud (proven on Andrew's own Macs only; leave Dropbox and Google Drive out of the copy until tested)
+**Founder rule:** $29 is available until the replay closes (**Sunday December 13, 11:59 PM ET**). After that, Studio is $49. The price stays $29 as long as they stay subscribed. If they cancel and come back, they pay the current price. Say all of this on the page.
 
 **Guarantee:** 30 days, full refund, no questions asked. Your files stay yours: download everything for 30 days after you cancel.
 
-**The bonuses that are not ready:** keep them off the value stack and off the price justification. One line on the page is enough: "Founders get the ReelFarm skill, the fleet playbook and my full stack free as each one is released." Give no dates unless you will keep them. Their release becomes the reason for a second launch event to the free list.
+**Upgrade triggers built into the product:**
+1. Free user hits 10 GB → "Move to Studio at the founder price."
+2. Free user wants their AI on a phone, Claude.ai or a cloud server → only paid plans have hosted MCP.
+3. Studio user fills 1 TB → add a drive or go Pro Max.
 
-Cut from the public page: Builder, Creator, Studio, BYOK Lifetime. They stay in the code, hidden, for later use.
-
----
-
-## 3. Agency
-
-| | |
-|---|---|
-| List | $497/mo |
-| Founding Agency | $297/mo on a 12-month agreement, 10 TB included, +$25/TB after, 10 seats |
-| Includes | White label domain, branded MCP portal for clients, client sub-vaults, resale rights at their own price, 5 team seats |
-| How sold | Application link on the confirmation page; Andrew closes on a call |
-
-Margin at full 10 TB: $297 − $150 storage − ~$9 Stripe ≈ **$138/mo** before support time. Support hours per agency: missing. Client sub-vaults depend on blocker 1 and on `deploy/teams.js`, which was not tested.
+**Bonuses not ready:** one line on the founder page, no dates: "Founders get the ReelFarm skill, my fleet playbook and my full AI stack free as each one is released." Their release is the reason for a second launch to the free list in early 2027.
 
 ---
 
-## 4. Funnel map
+## 2. Numbers behind the prices (provisional)
+
+R2 storage is $15 per TB a month. Stripe is 2.9% + $0.30. "Requests" ($1) is an assumption to measure in week one.
+
+| Per subscriber per month | 40% of storage used | 100% used |
+|---|---|---|
+| Studio Founders $29, 1 TB | $29 − $6 − $1.14 − $1 = **$20.86** | $29 − $15 − $1.14 − $1 = **$11.86** |
+| Studio $49, 1 TB | **$40.28** | **$31.28** |
+| Add 1 TB, $25 | **$17.98** | **$8.98** |
+| Add 2 TB, $40 | **$26.54** | **$8.54** |
+| Pro Max $97, 3 TB | **$75.89** | **$48.89** |
+
+Every plan stays positive even when full. Two things to know:
+- **A founder can build 3 TB for $69** ($29 + $40 drive). Pro Max is $97 for 3 TB. After launch, Studio + 2 TB is $89, still under $97. Either give Pro Max something extra beyond storage, or accept that most people will add drives instead. Adding drives makes money either way.
+- The 2 TB drive at $40 earns least when full ($8.54). Fine at launch; review once real usage is known.
+
+**Goal math (assumptions to replace with real numbers after the event):**
+
+| Step | Assumed rate | For 100 founders |
+|---|---|---|
+| Registrations (free signups) | — | ~2,500 |
+| Show up live | 30% | ~750 |
+| Buy live or during replay | 8% of registrations total | ~200 (pessimistic case 100 at 4%) |
+
+100 founders = $2,900 a month. 200 = $5,800. Each Founding Agency adds $297.
+
+---
+
+## 3. The funnel, page by page
 
 ```
-Ads / organic / email list
-        |
-1. Register: "Get your free ZeroDrive + save your seat for the live launch"
-   (sign up -> sign in -> Connect Cloudflare)
-        |
-2. Founder Special page: short video, live founder counter, current price, $99 shown,
-   what Pro Max adds over free (AI from anywhere, 3 TB hosted, API), guarantee
-        |                                   \
-3. Checkout (+ optional bump)                 decline -> 4
-        |
-4. Confirmation: connect your AI now (5-minute win), add the event to your calendar,
-   Agency application link
-        |
-5. Warm-up emails, one belief each
-        |
-6. Live event -> 7. Founders call -> 8. Replay 72 hours
-        |
-9. Price keeps stepping up after the event until $99
+Traffic -> 1 Register -> 2 Founder page -> 3 Checkout -> 4 Confirmation
+                      \-> decline -> 4 Confirmation
+-> 5 Warm-up emails -> 6 Live event -> 7 Founders call -> 8 Replay (72 h) -> 9 Close
 ```
 
-**Order bump (optional):** Concierge Move-In, $97 once. We move their iCloud folder in, cloud to cloud. Cap it by your capacity. Skip it if you don't want the work.
+### Page 1: Register (the opt-in)
+- Headline idea: "The cloud drive your AI actually lives in. Free. Live launch December 10."
+- Short video (2–3 minutes): your own vault, Claude writing a file, it appears in Finder.
+- The "they don't" list (Drive, Dropbox, iCloud).
+- Event date and time, "the live demo is cut from the replay."
+- Button: **Get ZeroDrive free + save my seat** → Google sign-in creates the account and registers them for the event in one step.
 
-**Live-only moment:** the original plan used the fleet build as the live-only reveal. That isn't ready to hand over, so **show it, don't give it.** Live: an agent on a VPS and Claude on your phone both working in the same vault as your Mac, in real time. That demonstrates exactly what Pro Max adds over free. Cut that segment from the replay.
+### Page 2: Founder page (right after signup; Brunson's VIP page)
+- Video from Andrew, 3–5 minutes: why founders, what they get, the deadline.
+- "Studio, **$49** → **$29/mo for founders**, locked for as long as you keep it."
+- Free vs Studio table: 10 GB vs 1 TB; AI on this computer vs AI from anywhere; no API vs API.
+- Partition free, add-drive prices, Pro Max, all shown so nothing is hidden.
+- Countdown to Dec 13, 11:59 PM ET.
+- Guarantee block.
+- Bonuses line (released later, free for founders).
+- FAQ: Is my data safe? What if I cancel? Does it work on Windows? What's MCP? What happens at 10 GB? Is it the same Finder? Does it need internet? (Yes, cloud files need internet; say it.)
+- Button: **Lock in $29**. Small link: "No thanks, keep my free drive."
 
-**Warm-up emails (one belief each):**
-1. Your AI starts from zero every session: no memory, no files, no skills.
-2. Dumb storage: what Drive, Dropbox and iCloud don't do for AI.
-3. Recorded demo: an agent filing and reusing real work in a vault.
-4. The live demo named and teased, not explained.
-5. The founder counter and the price steps.
-6. Logistics and what's cut from the replay.
-7. "Is there a replay?" Yes, minus the live demo.
+### Page 3: Checkout
+- Stripe checkout, Studio Founders price (separate Stripe price, not a coupon, so it never expires).
+- Order bump (optional): **Concierge Move-In, $97 once.** We move your iCloud folder into ZeroDrive cloud to cloud. Cap it at what you can handle. iCloud only until other sources are tested.
 
-**Event (90 minutes):** dumb storage (10) → your own vault (20) → AI from anywhere, live (25) → Founder Special at the current price (15) → Q&A and close (20) → founders call.
+### Page 4: Confirmation
+- "You're in." Three steps: 1) Download the app, 2) Connect your AI (5-minute win, with the exact Claude setup), 3) Add the event to your calendar.
+- Agency link: "Run an agency? Apply for one of 10 Founding Agency seats."
+
+### Page 8: Replay page
+- Event recording minus the live demo segment, countdown to Dec 13, same founder button.
 
 ---
 
-## 5. Timeline (recommended)
+## 4. Emails
 
-Black Friday is Friday November 27; avoid that week's inboxes.
+Use **launch-and-funnel-emails** to write them, **send-check** before each send.
 
-| When | What |
+**Free-user onboarding (sent to every signup, starts right away)**
+1. Immediately: your drive is ready, connect your AI in 5 minutes.
+2. Day 1: three things to ask your AI to do in your vault.
+3. Day 3: what happens at 10 GB, and what AI-from-anywhere looks like.
+
+**Warm-up (Dec 1–9), one idea each**
+1. Dec 1: Your AI starts from zero every session.
+2. Dec 2: Dumb storage, the "they don't" list.
+3. Dec 3: Recorded demo, an agent filing and reusing real work.
+4. Dec 4: Your Mac's disk is full and it's not your fault (iCloud cache story, your 40 GB lesson).
+5. Dec 7: The live demo, named and teased: "AI from anywhere, live."
+6. Dec 8: The founder price, the deadline, why it's locked.
+7. Dec 9: Logistics. "Is there a replay?" Yes, minus the live demo.
+
+**Event day (Dec 10):** 3 hours before, 1 hour before, "we're live," "the founder price is open" during the event.
+
+**Close (Dec 11–13):** replay is up; FAQ answers; what founders are already doing; 24 hours left; 3 hours left; closed.
+
+**After close (Dec 14+):** non-buyers stay free; their upgrade reason is the 10 GB limit and hosted MCP. The next push is the bonus release.
+
+---
+
+## 5. The live event (Thu Dec 10, YouTube Live, 90 minutes)
+
+| Minutes | Segment |
 |---|---|
-| Nov 10–20 | Fix blocker 1. Build one-click Connect Cloudflare. Test 10 GB → paid move. Three non-owners go from signup to their AI writing a file, alone |
-| Nov 20–29 | Pages, Stripe prices for each step, upgrade video, warm-up demo |
-| Tue Dec 1 | Registration opens; warm-up starts |
-| **Thu Dec 10** | Live launch + founders call |
-| Dec 10–13 | Replay |
+| 0–10 | Dumb storage: why your AI forgets everything and your disk is full |
+| 10–30 | Your own vault: 800,000 files, your skills, your AI working in it |
+| 30–55 | **Live-only: AI from anywhere.** An agent on a cloud server and Claude on your phone both working in the same vault as your Mac, live. Cut from the replay |
+| 55–70 | The founder offer: $49 → $29 locked, the deadline, guarantee |
+| 70–90 | Q&A and close |
+| After | Founders call (private link for buyers): onboarding, what's coming, Agency pitch |
+
+Rehearse the live demo twice on a clean machine. It carries the whole launch.
 
 ---
 
-## 6. Missing numbers
+## 6. Traffic: where the 2,500 signups come from
 
-Free-to-paid conversion, refund rate, average storage used per founder, request cost per user, support hours per agency, ad cost per free signup. None are guessed in the tables above except the $1 request cost, which is labelled.
+Use **list-builder** and **direct-response-copy**.
+1. **Your own lists first:** email list, both Instagram accounts, the people you've worked with. Personal DMs to warm contacts convert best.
+2. **Content, Dec 1–9:** daily short videos of the product doing something real (AI saving a file, a drive filling with no disk use, partitioning a drive). Use **simple-reels** for editing.
+3. **AI builder communities** where you are already a member: Claude, Cursor, vibe-coding groups. Show, don't pitch.
+4. **Paid ads (optional):** a small Meta campaign to the register page, plus retargeting of page visitors. Use **static-ads-machine** for concepts and **meta-machine** to run it. Set the daily budget once cost per signup is known.
+5. **Affiliates (later):** Brunson's funnel takes `aff=` links. A 30% recurring commission for founders who refer others can wait until after launch.
+
+---
+
+## 7. Build checklist
+
+### Product (must be done before Dec 1)
+- [ ] **Fix the customer-separation bug** (`deploy/worker.js:218`: the customer ID is trusted without a signature check). Blocks every paid account.
+- [ ] **One-click Connect Cloudflare**: today the user pastes account ID, two keys and a bucket name (`OnboardingView.swift`).
+- [ ] Check whether Cloudflare asks free users for a card before storage turns on; design the screen around it.
+- [ ] Turn on local MCP for free (`billing.js:47` has `mcp_token: false`).
+- [ ] Studio Founders $29 as its own Stripe price; Studio $49; add-drive $25 and $40; Pro Max $97; Agency $497 and $297 annual.
+- [ ] Hide Builder, Creator and BYOK Lifetime from public signup.
+- [ ] Partition screen shows the real plan size. It falls back to "5.0 TB" when the size is missing (`add-drive-sheet.swift:110`).
+- [ ] Free 10 GB → paid move tested end to end, no files lost, Finder path unchanged.
+- [ ] Event registration saved with the account (so emails know who signed up).
+- [ ] Three people who aren't you go from signup to their AI writing a file, alone, Mac and Windows. Fix what they get stuck on.
+
+### Marketing (Nov 20–30)
+- [ ] Register, founder, confirmation and replay pages.
+- [ ] Register video and founder video.
+- [ ] Recorded demo for email 3.
+- [ ] All emails in sections 4 and 5, checked.
+- [ ] YouTube Live event scheduled; founders call link.
+- [ ] Tracking: Meta pixel, signup and purchase events.
+- [ ] **claims-compliance-guard** on every page; **launch-readiness-preflight** before Dec 1.
+
+---
+
+## 8. Timeline
+
+| Dates | Focus |
+|---|---|
+| Nov 10–16 | Customer-separation fix, one-click Connect Cloudflare, free MCP on, Stripe prices |
+| Nov 12 | Watch Brunson's live event; file notes into the swipe |
+| Nov 17–20 | Three outside testers; 10 GB → paid move test |
+| Nov 20–26 | Pages, videos, emails written |
+| Nov 27–30 | Black Friday week: no sends. Preflight, rehearse the demo, schedule everything |
+| **Tue Dec 1** | Registration opens; warm-up and daily content start |
+| **Thu Dec 10** | Live event + founders call |
+| Dec 11–13 | Replay and close |
+| Dec 14 | Founder price ends; Studio $49 |
+| Dec 15–19 | Read the numbers; onboard founders; plan the bonus launch |
+
+---
+
+## 9. Numbers to watch
+
+Signups per day by source · Cloudflare connect completion rate (where free users drop off) · live attendance · founder purchases live vs replay · refund requests in 30 days · average storage used per founder · request cost per user · Agency applications.
+
+---
+
+## 10. Claims to keep honest
+
+- "8–9 figure entrepreneurs" needs named clients before it goes public. Maccs on file is about $1.02M (7 figures).
+- Move-in: iCloud proven on Andrew's Macs only. Leave Dropbox and Google Drive out until tested.
+- Cloud files need internet. Say it in the FAQ.
+- "800,000 files" is from the Nov 6 vault count (797,000+). Recheck before the event.

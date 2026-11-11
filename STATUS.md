@@ -57,3 +57,5 @@ Drafted the launch offer, funnel and pricing answers in [launch-offer/](launch-o
 Next action: Andrew works through [the decision list](launch-offer/09-DECISION.md), starting with the tenant fix and the free-vault change.
 
 Revision 2 same day: Andrew kept free at 10 GB on the user's own Cloudflare (switch to paid at 10 GB, MCP yes, API no), held the bonuses until ready, and chose Pro Max as the Founder Special plus Agency. Blueprint updated. New gaps found in code: Connect Cloudflare still asks for pasted keys, and hosted MCP cannot read a user's own bucket (local MCP can). Open: $49 vs $39 start.
+
+Revision 3 same day: Andrew simplified the launch. Founders get Studio ($49, 1 TB) at $29/mo locked; partition free; add drives 1 TB $25, 2 TB $40; 3 TB = Pro Max $97; Agency $497. The blueprint is now the complete launch outline (offer, pages, emails, event, traffic, build checklist, timeline). Next action: fix the customer-separation bug, then one-click Connect Cloudflare.
