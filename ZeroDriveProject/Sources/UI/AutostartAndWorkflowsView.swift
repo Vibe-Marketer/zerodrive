@@ -7,6 +7,7 @@ public struct AutostartAndWorkflowsView: View {
 
     @State private var autoStartEnabled: Bool = false
     @State private var streamGuardEnabled: Bool = false
+    @AppStorage("zerodrive_bandwidth_limit") private var bandwidthLimit: String = "off"
     @State private var statusFeedback: String = ""
 
     public init() {}
@@ -30,9 +31,21 @@ public struct AutostartAndWorkflowsView: View {
                     .onChange(of: streamGuardEnabled) { active in
                         spoolManager.telemetry.streamGuardActive = active
                         Task {
-                            _ = await RcloneRCClient.shared.setBandwidthCap(rate: active ? "3M:off" : "off")
+                            _ = await RcloneRCClient.shared.setBandwidthCap(rate: active ? "3M:off" : bandwidthLimit)
                         }
                     }
+
+                Picker("Network Bandwidth Limit", selection: $bandwidthLimit) {
+                    Text("Unlimited (Full Line Speed)").tag("off")
+                    Text("50 MB/s (High Speed)").tag("50M")
+                    Text("15 MB/s (Balanced)").tag("15M")
+                    Text("3 MB/s (Hotspot / Mobile Data)").tag("3M")
+                }
+                .onChange(of: bandwidthLimit) { newLimit in
+                    Task {
+                        _ = await RcloneRCClient.shared.setBandwidthCap(rate: newLimit)
+                    }
+                }
             }
 
             Section("Finder Integration") {

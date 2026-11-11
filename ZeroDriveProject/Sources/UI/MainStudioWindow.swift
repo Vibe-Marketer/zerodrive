@@ -55,6 +55,22 @@ public struct MainStudioWindow: View {
 
                 NavigationLink(value: 3) {
                     HStack {
+                        Label("Storage Advisor", systemImage: "sparkles.rectangle.stack.fill")
+                        Spacer()
+                        if ManageStorageAdvisor.shared.totalReclaimableBytes > 0 {
+                            Text(ByteCountFormatter.string(fromByteCount: ManageStorageAdvisor.shared.totalReclaimableBytes, countStyle: .file))
+                                .font(.caption2.bold().monospacedDigit())
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.accentColor.opacity(0.18))
+                                .foregroundStyle(Color.accentColor)
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
+
+                NavigationLink(value: 4) {
+                    HStack {
                         Label("Duplicate Protection", systemImage: "shield.checkerboard")
                         Spacer()
                         if ManageDuplicateProtection.shared.totalDuplicateFiles > 0 {
@@ -73,7 +89,7 @@ public struct MainStudioWindow: View {
                     }
                 }
 
-                NavigationLink(value: 4) {
+                NavigationLink(value: 5) {
                     HStack {
                         Label("Devices & Clouds", systemImage: "laptopcomputer.and.iphone")
                         Spacer()
@@ -87,7 +103,7 @@ public struct MainStudioWindow: View {
                     }
                 }
 
-                NavigationLink(value: 5) {
+                NavigationLink(value: 6) {
                     HStack {
                         Label("Account & Licensing", systemImage: "person.badge.shield.checkmark")
                         Spacer()
@@ -99,7 +115,7 @@ public struct MainStudioWindow: View {
                     }
                 }
 
-                NavigationLink(value: 6) {
+                NavigationLink(value: 7) {
                     Label("Settings", systemImage: "gearshape")
                 }
             }
@@ -115,10 +131,12 @@ public struct MainStudioWindow: View {
                 case 2:
                     TransfersView()
                 case 3:
-                    DuplicateProtectionView()
+                    StorageAdvisorView()
                 case 4:
-                    devicesAndCloudsView
+                    DuplicateProtectionView()
                 case 5:
+                    devicesAndCloudsView
+                case 6:
                     AccountLicensingView()
                 default:
                     AutostartAndWorkflowsView()
@@ -177,7 +195,10 @@ public struct MainStudioWindow: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenUpgradeAccountModal"))) { _ in
-            selectedTab = 5
+            selectedTab = 6
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenStorageAdvisorTab"))) { _ in
+            selectedTab = 3
         }
     }
 

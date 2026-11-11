@@ -21,8 +21,11 @@ public final class FinderSyncExtension: FIFinderSync {
         ]
         FIFinderSyncController.default().directoryURLs = watchedDirs
 
-        if let cloudIcon = NSImage(systemSymbolName: "checkmark.icloud.fill", accessibilityDescription: "Synced in ZeroDrive") {
+        if let cloudIcon = NSImage(systemSymbolName: "icloud.fill", accessibilityDescription: "Streaming in ZeroDrive Cloud") {
             FIFinderSyncController.default().setBadgeImage(cloudIcon, label: "ZeroDrive Cloud", forBadgeIdentifier: "cloud_synced")
+        }
+        if let checkIcon = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Cached on this Mac") {
+            FIFinderSyncController.default().setBadgeImage(checkIcon, label: "Cached on Mac", forBadgeIdentifier: "pinned_offline")
         }
     }
 
@@ -39,8 +42,17 @@ public final class FinderSyncExtension: FIFinderSync {
     }
 
     public override func requestBadgeIdentifier(for url: URL) {
-        if url.path.hasPrefix(zeroDriveRoot.path) {
-            FIFinderSyncController.default().setBadgeIdentifier("cloud_synced", for: url)
+        let path = url.path
+        if path.hasPrefix(zeroDriveRoot.path) {
+            let rel = String(path.dropFirst(zeroDriveRoot.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let cachePath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".zerodrive-cache/vfs/ZeroDriveUnified")
+                .appendingPathComponent(rel).path
+            if FileManager.default.fileExists(atPath: cachePath) {
+                FIFinderSyncController.default().setBadgeIdentifier("pinned_offline", for: url)
+            } else {
+                FIFinderSyncController.default().setBadgeIdentifier("cloud_synced", for: url)
+            }
         }
     }
 
@@ -98,13 +110,23 @@ public final class FinderSyncExtension: FIFinderSync {
         retakeItem.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
         menu.addItem(retakeItem)
 
+        let pinItem = NSMenuItem(
+            title: "ZeroDrive: Keep Downloaded on Mac (Pin)",
+            action: #selector(pinLocalCopy(_:)),
+            keyEquivalent: ""
+        )
+        pinItem.target = self
+        pinItem.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
+        menu.addItem(pinItem)
+
         let evictItem = NSMenuItem(
-            title: "ZeroDrive: Free Local Cache Copy",
+            title: "ZeroDrive: Evict Local Cache (Free Mac Space)",
             action: #selector(evictLocalCopy(_:)),
             keyEquivalent: ""
         )
         evictItem.target = self
-        evictItem.image = NSImage(systemSymbolName: "trash.slash.fill", accessibilityDescription: nil)
+        evictItem.image = NSImage(systemSymbolName: "arrow.down.to.line.circle", accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "trash.slash.fill", accessibilityDescription: nil)
         menu.addItem(evictItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -141,6 +163,10 @@ public final class FinderSyncExtension: FIFinderSync {
 
     @objc private func moveToRetakes(_ sender: AnyObject?) {
         dispatchFinderAction("retake")
+    }
+
+    @objc private func pinLocalCopy(_ sender: AnyObject?) {
+        dispatchFinderAction("pin")
     }
 
     @objc private func evictLocalCopy(_ sender: AnyObject?) {

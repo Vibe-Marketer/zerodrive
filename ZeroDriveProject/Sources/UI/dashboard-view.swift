@@ -11,6 +11,7 @@ public struct DashboardView: View {
     @ObservedObject private var duplicateManager = ManageDuplicateProtection.shared
     @ObservedObject private var licenseManager = ManageLicensing.shared
     @ObservedObject private var searchManager = ManageGlobalSearch.shared
+    @ObservedObject private var advisorManager = ManageStorageAdvisor.shared
 
     @State private var isTransferModeCopy: Bool = false
     @State private var isDropTargeted: Bool = false
@@ -51,6 +52,9 @@ public struct DashboardView: View {
 
                 // MARK: - 4. Duplicate Protection Live Shield
                 duplicateShieldBanner
+
+                // MARK: - 4.5 Storage Reclaim Advisor Banner
+                storageAdvisorBanner
 
                 // MARK: - 5. Connected Devices & Free Space Breakdown
                 devicesBreakdownSection
@@ -671,6 +675,53 @@ public struct DashboardView: View {
                 .controlSize(.regular)
                 .disabled(duplicateManager.isScanning)
             }
+        }
+        .padding(16)
+        .background(Color(NSColor.controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    // MARK: - 4.5 Storage Reclaim Advisor Banner
+    private var storageAdvisorBanner: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "sparkles.rectangle.stack.fill")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("Storage Reclaim Advisor")
+                        .font(.headline)
+                    if advisorManager.totalReclaimableBytes > 0 {
+                        Text("\(ByteCountFormatter.string(fromByteCount: advisorManager.totalReclaimableBytes, countStyle: .file)) RECLAIMABLE")
+                            .font(.caption2.bold())
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Text(advisorManager.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                NotificationCenter.default.post(name: NSNotification.Name("OpenStorageAdvisorTab"), object: nil)
+            } label: {
+                Label("Review Recommendations", systemImage: "sparkles")
+                    .font(.subheadline.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
         }
         .padding(16)
         .background(Color(NSColor.controlBackgroundColor))

@@ -329,11 +329,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "evict":
                     let mountPath = RcloneDaemonSupervisor.shared.mountPoint.path + "/"
+                    let cachePath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zerodrive-cache/vfs/ZeroDriveUnified").path + "/"
                     for u in fileURLs {
                         let rel = u.path.replacingOccurrences(of: mountPath, with: "")
                         _ = await RcloneRCClient.shared.forgetFile(relativePath: rel)
+                        let localCachedFile = cachePath + rel
+                        if FileManager.default.fileExists(atPath: localCachedFile) {
+                            try? FileManager.default.removeItem(atPath: localCachedFile)
+                        }
                         let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier("ZeroDrive"), displayName: "ZeroDrive")
                         try? await NSFileProviderManager(for: domain)?.evictItem(withIdentifier: NSFileProviderItemIdentifier(rel))
+                    }
+                case "pin":
+                    Task.detached(priority: .utility) {
+                        for u in fileURLs {
+                            // Touch / read through mount to pull chunks into local VFS cache
+                            if let handle = try? FileHandle(forReadingFrom: u) {
+                                _ = handle.readData(ofLength: 128 * 1024)
+                                try? handle.close()
+                            }
+                        }
                     }
                 default:
                     break
