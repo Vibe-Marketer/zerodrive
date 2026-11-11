@@ -241,7 +241,7 @@ public struct MainStudioWindow: View {
                     } else {
                         Button {
                             if let rclone = supervisor.resolveRcloneBinary() {
-                                Task { await vaultStats.refresh(rclone: rclone) }
+                                Task { await vaultStats.refresh(rclone: rclone, forceFullSize: true) }
                             }
                         } label: {
                             Image(systemName: "arrow.clockwise")

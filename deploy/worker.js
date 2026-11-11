@@ -337,17 +337,81 @@ async function handleS3Proxy(request, env, url) {
 
       return new Response(xml, {
         status: 200,
-        headers: { "Content-Type": "application/xml" },
+        headers: {
+          "Content-Type": "application/xml",
+          "Cache-Control": "private, no-store, no-cache, must-revalidate",
+        },
       });
     }
     return new Response(null, { status: 200 });
   }
 
+  const extractS3WriteOptions = (fallbackObj = null) => {
+    const customMetadata = {};
+    const directive = (request.headers.get("x-amz-metadata-directive") || "").toUpperCase();
+    if (fallbackObj?.customMetadata && directive !== "REPLACE") {
+      Object.assign(customMetadata, fallbackObj.customMetadata);
+    }
+    for (const [k, v] of request.headers.entries()) {
+      const lower = k.toLowerCase();
+      if (lower.startsWith("x-amz-meta-")) {
+        const metaKey = lower.slice("x-amz-meta-".length);
+        if (metaKey) customMetadata[metaKey] = v;
+      }
+    }
+    const reqContentType = request.headers.get("Content-Type");
+    const contentType =
+      (reqContentType && reqContentType !== "application/octet-stream" ? reqContentType : null) ||
+      fallbackObj?.httpMetadata?.contentType ||
+      reqContentType ||
+      guessMimeType(objectKey);
+    const opts = { httpMetadata: { contentType } };
+    if (Object.keys(customMetadata).length > 0) {
+      opts.customMetadata = customMetadata;
+    }
+    return opts;
+  };
+
+  const buildCustomMetaHeaders = (obj) => {
+    const out = {};
+    if (obj?.customMetadata) {
+      for (const [k, v] of Object.entries(obj.customMetadata)) {
+        if (k && typeof v === "string") {
+          out[`x-amz-meta-${k.toLowerCase()}`] = v;
+        }
+      }
+    }
+    return out;
+  };
+
+  const notifyS3Mutation = (action, etagVal = "") => {
+    const firstSlash = objectKey.indexOf("/");
+    const userSeg = firstSlash === -1 ? "" : objectKey.slice(0, firstSlash);
+    const relPath = firstSlash === -1 ? objectKey : objectKey.slice(firstSlash + 1);
+    if (!relPath) return;
+    const baseName = relPath.split("/").pop() || "";
+    if (baseName === ".DS_Store" || baseName === ".metadata_never_index" || baseName.startsWith("._")) {
+      return;
+    }
+    const s3UserPrefix = userSeg
+      ? `${tenantRoot}${userSeg}`
+      : tenantRoot.replace(/\/+$/, "");
+    broadcastVaultEvent(s3UserPrefix, {
+      event: "change",
+      action,
+      path: relPath,
+      etag: etagVal,
+    });
+  };
+
   // 2. Object-level HEAD
   if (method === "HEAD") {
     const headObj = await env.VAULT_BUCKET.head(r2Key);
     if (!headObj) {
-      return new Response(null, { status: 404 });
+      return new Response(null, {
+        status: 404,
+        headers: { "Cache-Control": "private, no-store, no-cache, must-revalidate" },
+      });
     }
     const etag = headObj.httpEtag || `"${headObj.etag}"`;
     const lastModified = headObj.uploaded ? headObj.uploaded.toUTCString() : new Date().toUTCString();
@@ -357,9 +421,8 @@ async function handleS3Proxy(request, env, url) {
       "Last-Modified": lastModified,
       "Accept-Ranges": "bytes",
       "Content-Type": headObj.httpMetadata?.contentType || "application/octet-stream",
-      "Cache-Control": "public, max-age=604800, s-maxage=604800, stale-while-revalidate=86400",
-      "CDN-Cache-Control": "public, max-age=604800, stale-while-revalidate=86400",
-      "Cache-Tag": `zerodrive-s3,${encodeURIComponent(r2Key)}`
+      "Cache-Control": "private, no-store, no-cache, must-revalidate",
+      ...buildCustomMetaHeaders(headObj),
     };
     if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) {
       return new Response(null, { status: 304, headers });
@@ -376,7 +439,13 @@ async function handleS3Proxy(request, env, url) {
     if (!headObj) {
       return new Response(
         `<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message></Error>`,
-        { status: 404, headers: { "Content-Type": "application/xml" } }
+        {
+          status: 404,
+          headers: {
+            "Content-Type": "application/xml",
+            "Cache-Control": "private, no-store, no-cache, must-revalidate",
+          },
+        }
       );
     }
     const etag = headObj.httpEtag || `"${headObj.etag}"`;
@@ -384,12 +453,11 @@ async function handleS3Proxy(request, env, url) {
     const contentType = headObj.httpMetadata?.contentType || "application/octet-stream";
     const cacheHeaders = {
       "Accept-Ranges": "bytes",
-      "Cache-Control": "public, max-age=604800, s-maxage=604800, stale-while-revalidate=86400",
-      "CDN-Cache-Control": "public, max-age=604800, stale-while-revalidate=86400",
-      "Cache-Tag": `zerodrive-s3,${encodeURIComponent(r2Key)}`,
+      "Cache-Control": "private, no-store, no-cache, must-revalidate",
       ETag: etag,
       "Last-Modified": lastModified,
       "Content-Type": contentType,
+      ...buildCustomMetaHeaders(headObj),
     };
 
     if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) {
@@ -435,7 +503,7 @@ async function handleS3Proxy(request, env, url) {
   // 4. Object-level POST (Multipart Upload initiation or completion)
   if (method === "POST") {
     if (url.searchParams.has("uploads")) {
-      const mp = await env.VAULT_BUCKET.createMultipartUpload(r2Key);
+      const mp = await env.VAULT_BUCKET.createMultipartUpload(r2Key, extractS3WriteOptions());
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Bucket>${xmlEscape(bucketName)}</Bucket>
@@ -483,12 +551,14 @@ async function handleS3Proxy(request, env, url) {
           );
         }
       }
+      const completedEtag = completed.httpEtag || `"${completed.etag}"`;
+      notifyS3Mutation("write_file", completedEtag);
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Location>${xmlEscape(url.origin + url.pathname)}</Location>
   <Bucket>${xmlEscape(bucketName)}</Bucket>
   <Key>${xmlEscape(objectKey)}</Key>
-  <ETag>${xmlEscape(completed.httpEtag || `"${completed.etag}"`)}</ETag>
+  <ETag>${xmlEscape(completedEtag)}</ETag>
 </CompleteMultipartUploadResult>`;
       return new Response(xml, {
         status: 200,
@@ -520,11 +590,13 @@ async function handleS3Proxy(request, env, url) {
       if (!existing) {
         return new Response("Source Not Found", { status: 404 });
       }
-      const putRes = await env.VAULT_BUCKET.put(r2Key, existing.body);
+      const putRes = await env.VAULT_BUCKET.put(r2Key, existing.body, extractS3WriteOptions(existing));
+      const copyEtag = putRes.httpEtag || `"${putRes.etag}"`;
+      notifyS3Mutation("copy_file", copyEtag);
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <CopyObjectResult>
   <LastModified>${new Date().toISOString()}</LastModified>
-  <ETag>${xmlEscape(putRes.httpEtag || `"${putRes.etag}"`)}</ETag>
+  <ETag>${xmlEscape(copyEtag)}</ETag>
 </CopyObjectResult>`;
       return new Response(xml, {
         status: 200,
@@ -532,11 +604,13 @@ async function handleS3Proxy(request, env, url) {
       });
     }
 
-    const putObj = await env.VAULT_BUCKET.put(r2Key, request.body);
+    const putObj = await env.VAULT_BUCKET.put(r2Key, request.body, extractS3WriteOptions());
+    const putEtag = putObj.httpEtag || `"${putObj.etag}"`;
+    notifyS3Mutation("write_file", putEtag);
     return new Response(null, {
       status: 200,
       headers: {
-        ETag: putObj.httpEtag || `"${putObj.etag}"`,
+        ETag: putEtag,
       },
     });
   }
@@ -550,6 +624,7 @@ async function handleS3Proxy(request, env, url) {
       return new Response(null, { status: 204 });
     }
     await env.VAULT_BUCKET.delete(r2Key);
+    notifyS3Mutation("delete_file");
     return new Response(null, { status: 204 });
   }
 

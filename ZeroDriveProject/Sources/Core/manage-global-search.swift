@@ -285,106 +285,101 @@ public final class ManageGlobalSearch: ObservableObject {
         }
     }
 
-    /// Crawls My Drive into RAM memory for instant sub-millisecond querying
+    /// Indexes My Drive directly from S3 via rclone lsjson (bypasses go-nfs so the NFS mount never stalls!)
     public func prewarmIndex() async {
         guard !isIndexing else { return }
         isIndexing = true
 
         let mount = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
         let cacheFile = self.cacheURL
+        let rcloneBin = RcloneDaemonSupervisor.shared.resolveRcloneBinary()
+        let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+        let configPath = MultiCloudCombineBuilder.shared.configPath.path
 
-        Task.detached(priority: .userInitiated) {
-            let fm = FileManager.default
-            guard fm.fileExists(atPath: mount.path) else {
+        Task.detached(priority: .utility) {
+            guard let rclone = rcloneBin else {
+                await MainActor.run { self.isIndexing = false }
+                return
+            }
+
+            let proc = Process()
+            proc.executableURL = rclone
+            proc.arguments = [
+                "lsjson",
+                "-R",
+                "--fast-list",
+                "--no-mimetype",
+                "--use-server-modtime",
+                "--disable-http2",
+                "primary_vault:\(meta.bucketAndPrefix)",
+                "--config=\(configPath)",
+                "--exclude=**/.git/**",
+                "--exclude=**/node_modules/**",
+                "--exclude=**/scroll-sequences/**",
+                "--exclude=**/__pycache__/**",
+                "--exclude=**/.obsidian/**",
+                "--exclude=**/kf/**",
+                "--exclude=**/.runitback/**",
+                "--exclude=**/.transcode-cache/**",
+                "--exclude=**/.DS_Store",
+                "--exclude=**/._*"
+            ]
+            let outPipe = Pipe()
+            proc.standardOutput = outPipe
+            proc.standardError = Pipe()
+
+            var rawData = Data()
+            do {
+                try proc.run()
+                rawData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                proc.waitUntilExit()
+            } catch {
+                await MainActor.run { self.isIndexing = false }
+                return
+            }
+
+            guard proc.terminationStatus == 0,
+                  let entries = try? JSONSerialization.jsonObject(with: rawData) as? [[String: Any]] else {
                 await MainActor.run { self.isIndexing = false }
                 return
             }
 
             var records: [IndexedFileRecord] = []
-            let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
-            let mountPathPrefix = mount.path.hasSuffix("/") ? mount.path : mount.path + "/"
+            records.reserveCapacity(entries.count)
+            let mountBasePath = mount.path.hasSuffix("/") ? String(mount.path.dropLast()) : mount.path
+            let isoFrac = ISO8601DateFormatter()
+            isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let isoBasic = ISO8601DateFormatter()
 
-            // Exclude heavy noisy internal cache and build folders
-            let noisyFolders: Set<String> = [".git", "node_modules", "scroll-sequences", "__pycache__", ".obsidian", "kf", ".runitback"]
+            for entry in entries {
+                guard let rel = entry["Path"] as? String, !rel.isEmpty else { continue }
+                let name = (entry["Name"] as? String) ?? (rel as NSString).lastPathComponent
+                if name.hasPrefix(".") { continue }
 
-            // List top-level items in My Drive
-            let topItems = (try? fm.contentsOfDirectory(at: mount, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
-            var lastReportedCount = 0
-
-            for topItem in topItems {
-                let topName = topItem.lastPathComponent
-                if topName.hasPrefix(".") { continue }
-
-                guard let res = try? topItem.resourceValues(forKeys: Set(keys)) else { continue }
-                let isDir = res.isDirectory ?? false
-                let size = Int64(res.fileSize ?? 0)
-                let mdate = res.contentModificationDate ?? Date()
-                let rel = topItem.path.replacingOccurrences(of: mountPathPrefix, with: "")
-                let category = Self.classifyCategory(filename: topName, isDirectory: isDir)
-                let ext = (topName as NSString).pathExtension.lowercased()
-                let tokens = Self.tokenize(text: topName + " " + rel)
+                let isDir = (entry["IsDir"] as? Bool) ?? false
+                let size = (entry["Size"] as? NSNumber)?.int64Value ?? 0
+                let mdate: Date = {
+                    if let modStr = entry["ModTime"] as? String {
+                        return isoFrac.date(from: modStr) ?? isoBasic.date(from: modStr) ?? Date()
+                    }
+                    return Date()
+                }()
+                let fullPath = "\(mountBasePath)/\(rel)"
+                let category = Self.classifyCategory(filename: name, isDirectory: isDir)
+                let ext = (name as NSString).pathExtension.lowercased()
+                let tokens = Self.tokenize(text: name + " " + rel)
 
                 records.append(IndexedFileRecord(
-                    name: topName,
+                    name: name,
                     relativePath: rel,
-                    fullPath: topItem.path,
-                    sizeBytes: size,
+                    fullPath: fullPath,
+                    sizeBytes: max(0, size),
                     isFolder: isDir,
                     modifiedDate: mdate,
                     category: category,
                     ext: ext,
                     tokens: tokens
                 ))
-
-                if !isDir { continue }
-                if noisyFolders.contains(topName) { continue }
-
-                // Enumerate subfolder recursively with robust error handler
-                if let enumerator = fm.enumerator(
-                    at: topItem,
-                    includingPropertiesForKeys: keys,
-                    options: [.skipsHiddenFiles, .skipsPackageDescendants],
-                    errorHandler: { _, _ in true }
-                ) {
-                    while let fileURL = enumerator.nextObject() as? URL {
-                        let name = fileURL.lastPathComponent
-                        if name.hasPrefix(".") { continue }
-
-                        guard let subRes = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
-                        let subIsDir = subRes.isDirectory ?? false
-                        if subIsDir && noisyFolders.contains(name) {
-                            enumerator.skipDescendants()
-                            continue
-                        }
-
-                        let subSize = Int64(subRes.fileSize ?? 0)
-                        let subDate = subRes.contentModificationDate ?? Date()
-                        let subRel = fileURL.path.replacingOccurrences(of: mountPathPrefix, with: "")
-                        let subCategory = Self.classifyCategory(filename: name, isDirectory: subIsDir)
-                        let subExt = (name as NSString).pathExtension.lowercased()
-                        let subTokens = Self.tokenize(text: name + " " + subRel)
-
-                        records.append(IndexedFileRecord(
-                            name: name,
-                            relativePath: subRel,
-                            fullPath: fileURL.path,
-                            sizeBytes: subSize,
-                            isFolder: subIsDir,
-                            modifiedDate: subDate,
-                            category: subCategory,
-                            ext: subExt,
-                            tokens: subTokens
-                        ))
-
-                        if records.count - lastReportedCount >= 500 {
-                            lastReportedCount = records.count
-                            let currentCount = records.count
-                            await MainActor.run {
-                                self.totalIndexedCount = currentCount
-                            }
-                        }
-                    }
-                }
             }
 
             let finalRecords = records

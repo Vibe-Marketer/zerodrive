@@ -13,10 +13,13 @@ public final class VaultStats: ObservableObject {
     private struct Cache: Codable {
         var totalBytes: Int64
         var folders: [String]
+        var updatedAt: Double?
     }
 
     private let cacheURL: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/rclone/zerodrive-stats.json")
+    private var lastFullRefreshAt: Date? = nil
+    private var activeSizeProcess: Process? = nil
 
     private init() {
         refreshFromCache()
@@ -28,6 +31,9 @@ public final class VaultStats: ObservableObject {
             totalBytes = cache.totalBytes
             if !cache.folders.isEmpty {
                 folders = cache.folders
+            }
+            if let ts = cache.updatedAt {
+                lastFullRefreshAt = Date(timeIntervalSince1970: ts)
             }
         }
     }
@@ -44,7 +50,8 @@ public final class VaultStats: ObservableObject {
         return base + moving
     }
 
-    public func refresh(rclone: URL) async {
+    /// Fast (<300 ms) top-level folder refresh on launch; full bucket `rclone size` only runs when forced or uncached (>6h old).
+    public func refresh(rclone: URL, forceFullSize: Bool = false) async {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
@@ -53,7 +60,12 @@ public final class VaultStats: ObservableObject {
         let remote = "primary_vault:\(meta.bucketAndPrefix)"
         let config = MultiCloudCombineBuilder.shared.configPath.path
 
-        if let dirsData = await Self.run(rclone, ["lsf", "--dirs-only", remote, "--config=\(config)"]),
+        if let dirsData = await Self.run(rclone, [
+            "lsf", "--dirs-only", remote,
+            "--config=\(config)",
+            "--disable-http2",
+            "--use-server-modtime"
+        ]),
            let text = String(data: dirsData, encoding: .utf8) {
             folders = text.split(separator: "\n")
                 .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "/ \r")) }
@@ -61,16 +73,67 @@ public final class VaultStats: ObservableObject {
                 .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         }
 
-        if let sizeData = await Self.run(rclone, ["size", "--fast-list", "--json", remote, "--config=\(config)",
-                                                  "--exclude=**/.DS_Store", "--exclude=**/._*"]),
-           let obj = try? JSONSerialization.jsonObject(with: sizeData) as? [String: Any],
-           let bytes = (obj["bytes"] as? NSNumber)?.int64Value {
-            totalBytes = bytes
+        let needsFullSize: Bool = {
+            if forceFullSize { return true }
+            guard totalBytes != nil else { return true }
+            guard let last = lastFullRefreshAt else { return false }
+            return Date().timeIntervalSince(last) > 6 * 3600
+        }()
+
+        if needsFullSize {
+            if let sizeData = await runTrackedSize(rclone, [
+                "size", "--fast-list", "--json", remote,
+                "--config=\(config)",
+                "--disable-http2",
+                "--use-server-modtime",
+                "--no-modtime",
+                "--exclude=**/.DS_Store",
+                "--exclude=**/._*"
+            ]),
+               let obj = try? JSONSerialization.jsonObject(with: sizeData) as? [String: Any],
+               let bytes = (obj["bytes"] as? NSNumber)?.int64Value {
+                totalBytes = bytes
+                lastFullRefreshAt = Date()
+            }
         }
 
         if let total = totalBytes,
-           let data = try? JSONEncoder().encode(Cache(totalBytes: total, folders: folders)) {
+           let data = try? JSONEncoder().encode(Cache(
+               totalBytes: total,
+               folders: folders,
+               updatedAt: lastFullRefreshAt?.timeIntervalSince1970 ?? Date().timeIntervalSince1970
+           )) {
             try? data.write(to: cacheURL, options: .atomic)
+        }
+    }
+
+    public func cancelActiveProcesses() {
+        if let proc = activeSizeProcess, proc.isRunning {
+            proc.terminate()
+        }
+        activeSizeProcess = nil
+    }
+
+    private func runTrackedSize(_ exe: URL, _ args: [String]) async -> Data? {
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = args
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        self.activeSizeProcess = p
+        defer { self.activeSizeProcess = nil }
+        return await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try p.run()
+                    let data = out.fileHandleForReading.readDataToEndOfFile()
+                    p.waitUntilExit()
+                    cont.resume(returning: p.terminationStatus == 0 ? data : nil)
+                } catch {
+                    cont.resume(returning: nil)
+                }
+            }
         }
     }
 

@@ -182,6 +182,8 @@ endpoint = $ZD_ENDPOINT
 acl = private
 force_path_style = true
 no_check_bucket = true
+use_server_modtime = true
+disable_http2 = true
 "
 
   # System config directory (/etc/zerodrive and /etc/rclone)
@@ -299,12 +301,19 @@ ExecStart=$RCLONE_BIN_PATH mount primary_vault:$ZD_BUCKET $ZD_MOUNT_PATH \\
     --vfs-cache-mode full \\
     --vfs-cache-max-size 20G \\
     --vfs-cache-max-age 72h \\
-    --vfs-read-chunk-size 64M \\
-    --vfs-read-chunk-size-limit 512M \\
-    --buffer-size 64M \\
-    --dir-cache-time 72h \\
-    --poll-interval 15s \\
-    --attr-timeout 10s \\
+    --vfs-write-back 3s \\
+    --vfs-read-chunk-size 16M \\
+    --vfs-read-chunk-size-limit 256M \\
+    --buffer-size 32M \\
+    --dir-cache-time 15s \\
+    --attr-timeout 3s \\
+    --use-server-modtime \\
+    --disable-http2 \\
+    --s3-disable-http2 \\
+    --transfers 4 \\
+    --s3-upload-cutoff 32M \\
+    --s3-chunk-size 8M \\
+    --s3-upload-concurrency 2 \\
     --umask 0022 \\
     --rc \\
     --rc-addr 127.0.0.1:55729 \\
@@ -349,8 +358,12 @@ elif [ "$OS" = "Linux" ]; then
     --vfs-cache-mode full \
     --vfs-cache-max-size 20G \
     --vfs-cache-max-age 72h \
-    --dir-cache-time 72h \
-    --poll-interval 15s \
+    --vfs-write-back 3s \
+    --dir-cache-time 15s \
+    --attr-timeout 3s \
+    --use-server-modtime \
+    --disable-http2 \
+    --s3-disable-http2 \
     --rc --rc-addr 127.0.0.1:55729 --rc-no-auth \
     >/tmp/zerodrive-mount.log 2>&1 &
   sleep 2

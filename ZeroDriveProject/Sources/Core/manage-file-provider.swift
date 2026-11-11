@@ -53,6 +53,8 @@ public actor ManageFileProvider {
     }
 
     public func setupCloudStorageSymlink() {
+        // Keep ~/ZeroDrive pointed at ~/.zerodrive-mount/My Drive whenever the primary NFS vault is configured
+        guard !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() else { return }
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
         let cloudStoragePath = homeDir.appendingPathComponent("Library/CloudStorage/ZeroDrive").path
         let userSymlink = homeDir.appendingPathComponent("ZeroDrive").path
@@ -293,6 +295,11 @@ public actor ManageFileProvider {
 
         guard isChangeEvent else { return }
 
+        let affectedPaths = [rawPath, rawDestination, rawSource].compactMap { $0 }.filter { !$0.isEmpty }
+        if !affectedPaths.isEmpty {
+            await RcloneDaemonSupervisor.shared.refreshVFSForRemoteChange(paths: affectedPaths)
+        }
+
         if let id = eventId {
             seenActivityIds.insert(id)
         }
@@ -434,20 +441,28 @@ public actor ManageFileProvider {
             ]
 
             var containersToSignal: Set<NSFileProviderItemIdentifier> = []
+            var affectedPaths: [String] = []
 
             for act in newActivities {
                 guard relevantActions.contains(act.action) else { continue }
                 NSLog("[ZeroDrive] Remote delta activity detected: action=%@, path=%@", act.action, act.path ?? act.destination ?? act.source ?? "")
 
-                if let p = act.path {
+                if let p = act.path, !p.isEmpty {
                     containersToSignal.insert(parentContainerIdentifier(for: p))
+                    affectedPaths.append(p)
                 }
-                if let dst = act.destination {
+                if let dst = act.destination, !dst.isEmpty {
                     containersToSignal.insert(parentContainerIdentifier(for: dst))
+                    affectedPaths.append(dst)
                 }
-                if let src = act.source {
+                if let src = act.source, !src.isEmpty {
                     containersToSignal.insert(parentContainerIdentifier(for: src))
+                    affectedPaths.append(src)
                 }
+            }
+
+            if !affectedPaths.isEmpty {
+                await RcloneDaemonSupervisor.shared.refreshVFSForRemoteChange(paths: affectedPaths)
             }
 
             // Always signal root container to trigger parent directory refresh

@@ -46,7 +46,7 @@ public final class FinderSyncExtension: FIFinderSync {
         if path.hasPrefix(zeroDriveRoot.path) {
             let rel = String(path.dropFirst(zeroDriveRoot.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let cachePath = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".zerodrive-cache/vfs/ZeroDriveUnified")
+                .appendingPathComponent(".zerodrive-cache/vfs/ZeroDriveUnified/My Drive")
                 .appendingPathComponent(rel).path
             if FileManager.default.fileExists(atPath: cachePath) {
                 FIFinderSyncController.default().setBadgeIdentifier("pinned_offline", for: url)

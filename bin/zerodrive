@@ -54,17 +54,45 @@ def resolve_mount_dir():
         return os.path.abspath(os.environ["ZERODRIVE_MOUNT_DIR"])
     if os.path.ismount("/zerodrive") or (os.path.exists("/zerodrive") and not sys.platform.startswith("darwin")):
         return "/zerodrive"
-    return os.path.expanduser("~/ZeroDrive/My Drive")
+    nfs_my_drive = os.path.expanduser("~/.zerodrive-mount/My Drive")
+    if os.path.exists(nfs_my_drive):
+        return nfs_my_drive
+    zd_symlink = os.path.expanduser("~/ZeroDrive")
+    if os.path.islink(zd_symlink) or os.path.exists(zd_symlink):
+        return os.path.realpath(zd_symlink)
+    return nfs_my_drive
 
 MOUNT_DIR = resolve_mount_dir()
 RC_URL = "http://127.0.0.1:55729"
 
-# Locate ZeroDrive Storage Engine core binary
-STORAGE_ENGINE_BIN = "/Applications/ZeroDrive.app/Contents/Resources/zerodrive-engine"
-if not os.path.exists(STORAGE_ENGINE_BIN):
-    STORAGE_ENGINE_BIN = "/Applications/ZeroDrive.app/Contents/Resources/rclone"
-if not os.path.exists(STORAGE_ENGINE_BIN):
-    STORAGE_ENGINE_BIN = shutil.which("zerodrive-engine") or shutil.which("rclone") or "/opt/homebrew/bin/rclone"
+def _resolve_storage_engine_bin():
+    candidates = [
+        "/Applications/ZeroDrive.app/Contents/Resources/zerodrive-engine",
+        "/Applications/ZeroDrive.app/Contents/Resources/rclone",
+        os.path.expanduser("~/Library/Application Support/ZeroDrive/bin/rclone"),
+        os.path.expanduser("~/.zerodrive-build-cache/rclone"),
+        shutil.which("zerodrive-engine"),
+        shutil.which("rclone"),
+        "/opt/homebrew/bin/rclone",
+        "/usr/local/bin/rclone",
+        "/usr/bin/rclone",
+    ]
+    seen = set()
+    for cand in candidates:
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            try:
+                probe = subprocess.run([cand, "version"], capture_output=True, timeout=3)
+                if probe.returncode == 0:
+                    return cand
+            except Exception:
+                continue
+    return shutil.which("rclone") or "/opt/homebrew/bin/rclone"
+
+# Locate healthy ZeroDrive Storage Engine core binary
+STORAGE_ENGINE_BIN = _resolve_storage_engine_bin()
 
 # ANSI Colors
 COLOR_RESET = "\033[0m"
@@ -223,7 +251,8 @@ def run_rc_post(endpoint, payload=None, timeout=3.0):
         return None
 
 def exec_engine(args, capture_output=True, text=True):
-    cmd = [STORAGE_ENGINE_BIN] + args + [f"--config={CONFIG_FILE}"]
+    extra_flags = [f"--config={CONFIG_FILE}", "--disable-http2", "--use-server-modtime"]
+    cmd = [STORAGE_ENGINE_BIN] + args + extra_flags
     if capture_output:
         return subprocess.run(cmd, capture_output=True, text=text)
     return subprocess.run(cmd)
@@ -356,7 +385,7 @@ def cmd_ls(args):
     target = resolve_vault_path(args.path)
 
     if args.json:
-        cmd_args = ["lsjson", target, "--fast-list"]
+        cmd_args = ["lsjson", target, "--fast-list", "--no-mimetype"]
         if args.recursive:
             cmd_args.append("-R")
         else:
@@ -523,7 +552,7 @@ def cmd_cat(args):
 
     # Launch streaming child process (binary for --bytes, text for line slicing)
     proc = subprocess.Popen(
-        [STORAGE_ENGINE_BIN] + cmd_args + [f"--config={CONFIG_FILE}"],
+        [STORAGE_ENGINE_BIN] + cmd_args + [f"--config={CONFIG_FILE}", "--disable-http2", "--use-server-modtime"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=not is_binary,

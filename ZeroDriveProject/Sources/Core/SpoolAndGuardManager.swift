@@ -303,14 +303,8 @@ public final class SpoolAndGuardManager: ObservableObject {
             }
         }
 
-        // Reconcile rclone vfs/queue items with local spoolItems list (ignoring & auto-cleaning AppleDouble ._* before 15s write-back)
+        // Ignore excluded AppleDouble/Finder metadata items in queue display without touching the NFS mount on @MainActor
         let mount = RcloneDaemonSupervisor.shared.mountPoint
-        for dto in queueDTOs {
-            let base = (dto.name as NSString).lastPathComponent
-            if (base.hasPrefix("._") || base == ".DS_Store") && dto.expiry < 12.0 {
-                try? FileManager.default.removeItem(at: mount.appendingPathComponent(dto.name))
-            }
-        }
         let visibleQueueDTOs = queueDTOs.filter { dto in
             let base = (dto.name as NSString).lastPathComponent
             return !base.hasPrefix(".") && base != ".metadata_never_index" && base != ".DS_Store"

@@ -114,9 +114,11 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             "acl = private",
             "force_path_style = true",
             "no_check_bucket = true",
-            "upload_cutoff = 50M",
-            "chunk_size = 25M",
-            "upload_concurrency = 8"
+            "use_server_modtime = true",
+            "disable_http2 = true",
+            "upload_cutoff = 32M",
+            "chunk_size = 8M",
+            "upload_concurrency = 2"
         ]
 
         let bucketPath = result.userPrefix.isEmpty
@@ -158,8 +160,11 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
                 "endpoint = \(endpoint.isEmpty ? "https://auto.r2.cloudflarestorage.com" : endpoint)",
                 "region = auto",
                 "no_check_bucket = true",
-                "chunk_size = 64M",
-                "upload_concurrency = 8"
+                "use_server_modtime = true",
+                "disable_http2 = true",
+                "upload_cutoff = 32M",
+                "chunk_size = 8M",
+                "upload_concurrency = 2"
             ]
         case .backblazeB2:
             sections["primary_vault"] = [
@@ -177,8 +182,11 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
                 "access_key_id = \(accessKey)",
                 "secret_access_key = \(secretKey)",
                 "region = \(region.isEmpty ? "us-east-1" : region)",
-                "chunk_size = 64M",
-                "upload_concurrency = 8"
+                "use_server_modtime = true",
+                "disable_http2 = true",
+                "upload_cutoff = 32M",
+                "chunk_size = 8M",
+                "upload_concurrency = 2"
             ]
             if !endpoint.isEmpty {
                 lines.append("endpoint = \(endpoint)")
@@ -371,7 +379,22 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
 
     public func ensureUnifiedUnionConfig() {
         var sections = parseConfigSections()
-        guard sections["primary_vault"] != nil else { return }
+        guard var primaryLines = sections["primary_vault"] else { return }
+        let isS3 = primaryLines.contains { $0.replacingOccurrences(of: " ", with: "").lowercased() == "type=s3" }
+        if isS3 {
+            let ensureKV: (String, String) -> Void = { key, value in
+                if let idx = primaryLines.firstIndex(where: {
+                    $0.components(separatedBy: "=").first?.trimmingCharacters(in: .whitespaces) == key
+                }) {
+                    primaryLines[idx] = "\(key) = \(value)"
+                } else {
+                    primaryLines.append("\(key) = \(value)")
+                }
+            }
+            ensureKV("use_server_modtime", "true")
+            ensureKV("disable_http2", "true")
+            sections["primary_vault"] = primaryLines
+        }
         let meta = loadVaultMetadata()
         try? writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix, allowAdoption: false)
     }

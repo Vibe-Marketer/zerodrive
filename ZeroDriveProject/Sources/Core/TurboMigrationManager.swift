@@ -1,6 +1,6 @@
 import Foundation
 
-public struct TurboMigrationTelemetry: Codable, Sendable {
+public struct TurboMigrationTelemetry: Codable, Sendable, Equatable {
     public var spaceName: String
     public var isRunning: Bool
     public var isComplete: Bool
@@ -61,14 +61,14 @@ public struct TurboMigrationTelemetry: Codable, Sendable {
     }
 }
 
-public struct MigrationLedger: Codable, Sendable {
+public struct MigrationLedger: Codable, Sendable, Equatable {
     public var baselineMacFreeBytes: Int64
     public var currentMacFreeBytes: Int64
     public var totalFreedOnMacBytes: Int64
     public var totalMovedToVaultBytes: Int64
     public var completedSpaces: [CompletedSpaceEntry]
 
-    public struct CompletedSpaceEntry: Codable, Sendable, Identifiable {
+    public struct CompletedSpaceEntry: Codable, Sendable, Identifiable, Equatable {
         public var id: String { spaceName }
         public var spaceName: String
         public var filesMoved: Int
@@ -78,7 +78,7 @@ public struct MigrationLedger: Codable, Sendable {
     }
 }
 
-public struct SymlinkEntry: Codable, Sendable, Identifiable {
+public struct SymlinkEntry: Codable, Sendable, Identifiable, Equatable {
     public var id: String { originalPath }
     public var folderName: String
     public var originalPath: String
@@ -87,7 +87,7 @@ public struct SymlinkEntry: Codable, Sendable, Identifiable {
     public var createdAt: String
 }
 
-public struct ConnectedNodeStatus: Codable, Sendable, Identifiable {
+public struct ConnectedNodeStatus: Codable, Sendable, Identifiable, Equatable {
     public var id: String
     public var name: String
     public var customName: String?
@@ -218,9 +218,20 @@ public final class TurboMigrationManager: ObservableObject {
     private let symlinksFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/rclone/zerodrive-symlinks.json")
 
+    private let fleetCacheDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/rclone/fleet-machines-cache")
+
     private var pollerTimer: Timer?
     private var remotePollerTimer: Timer?
     private var isPollingRemote: Bool = false
+    private var lastLedgerReadAt: Date = .distantPast
+    private var lastFleetSyncAt: Date = .distantPast
+    private let localMachineHost: String = {
+        let host = Host.current().localizedName?.lowercased() ?? ProcessInfo.processInfo.hostName.lowercased()
+        if host.contains("naegele-mm") { return "naegele-mm" }
+        if host.contains("mike") { return "mike-mm" }
+        return "naegele-pro"
+    }()
 
     public var isLocalTransferRunning: Bool {
         if isLocalProcessActive { return true }
@@ -233,6 +244,7 @@ public final class TurboMigrationManager: ObservableObject {
     }
 
     private init() {
+        try? FileManager.default.createDirectory(at: fleetCacheDir, withIntermediateDirectories: true)
         readLedger()
         readSymlinks()
         readTelemetry()
@@ -242,21 +254,28 @@ public final class TurboMigrationManager: ObservableObject {
 
     public func startPoller() {
         pollerTimer?.invalidate()
-        pollerTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+        pollerTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.readTelemetry()
-                self?.readLedger()
-                self?.readSymlinks()
+                guard let self = self else { return }
+                self.readTelemetry()
+                if Date().timeIntervalSince(self.lastLedgerReadAt) >= 15.0 {
+                    self.lastLedgerReadAt = Date()
+                    self.readLedger()
+                    self.readSymlinks()
+                }
             }
         }
 
         remotePollerTimer?.invalidate()
-        remotePollerTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        remotePollerTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.pollRemoteMiniAndConnections()
             }
         }
-        pollRemoteMiniAndConnections()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            self?.pollRemoteMiniAndConnections()
+        }
     }
 
     private func readTelemetry() {
@@ -276,20 +295,22 @@ public final class TurboMigrationManager: ObservableObject {
             return t
         }()
 
-        if let loc = localT {
+        if let loc = localT, self.localTelemetry != loc {
             self.localTelemetry = loc
         }
-        self.remoteTelemetry = remoteT
+        if self.remoteTelemetry != remoteT {
+            self.remoteTelemetry = remoteT
+        }
 
         // Menu bar & combined telemetry: prefer local running job; if local is idle and remote is running, expose remote for Menu Bar
-        if let loc = localT, loc.isRunning {
-            self.telemetry = loc
-        } else if let rem = remoteT, rem.isRunning {
-            self.telemetry = rem
-        } else if let rem = remoteT, rem.isComplete, (localT == nil || !localT!.isComplete) {
-            self.telemetry = rem
-        } else if let loc = localT {
-            self.telemetry = loc
+        let nextTelemetry: TurboMigrationTelemetry? = {
+            if let loc = localT, loc.isRunning { return loc }
+            if let rem = remoteT, rem.isRunning { return rem }
+            if let rem = remoteT, rem.isComplete, (localT == nil || !localT!.isComplete) { return rem }
+            return localT
+        }()
+        if let next = nextTelemetry, self.telemetry != next {
+            self.telemetry = next
         }
     }
 
@@ -299,43 +320,78 @@ public final class TurboMigrationManager: ObservableObject {
 
         let dstPath = remoteTelemetryFile.path
         let sshKeyPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_ed25519").path
+        let isRunningOnMini = (localMachineHost == "naegele-mm")
+        let shouldSyncFleet = Date().timeIntervalSince(lastFleetSyncAt) >= 25.0
+        if shouldSyncFleet {
+            lastFleetSyncAt = Date()
+        }
+        let rcloneBin = RcloneDaemonSupervisor.shared.resolveRcloneBinary()
+        let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+        let configPath = MultiCloudCombineBuilder.shared.configPath.path
+        let fleetDstPath = fleetCacheDir.path
 
         Task.detached(priority: .utility) {
-            // Pull live telemetry from naegele-mm (100.114.74.17) over SSH using explicit key and IP
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            proc.arguments = [
-                "-i", sshKeyPath,
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "ConnectTimeout=2",
-                "admin@100.114.74.17",
-                "cat /Users/admin/.config/rclone/migration-telemetry.json 2>/dev/null"
-            ]
-            let outPipe = Pipe()
-            proc.standardOutput = outPipe
-            proc.standardError = Pipe()
+            // 1. Sync _SYSTEM/MACHINES directly from S3 to local SSD cache (bypasses go-nfs completely!)
+            if shouldSyncFleet, let rclone = rcloneBin {
+                let syncProc = Process()
+                syncProc.executableURL = rclone
+                syncProc.arguments = [
+                    "copy",
+                    "primary_vault:\(meta.bucketAndPrefix)/_SYSTEM/MACHINES",
+                    fleetDstPath,
+                    "--config=\(configPath)",
+                    "--disable-http2",
+                    "--use-server-modtime",
+                    "--transfers=4",
+                    "--checkers=8",
+                    "--contimeout=5s",
+                    "--timeout=10s"
+                ]
+                syncProc.standardOutput = Pipe()
+                syncProc.standardError = Pipe()
+                do {
+                    try syncProc.run()
+                    syncProc.waitUntilExit()
+                } catch {}
+            }
 
-            var miniOnline = false
+            // 2. Pull live telemetry from naegele-mm (100.114.74.17) over SSH (skip if already running on naegele-mm)
+            var miniOnline = isRunningOnMini
             var remoteTelem: TurboMigrationTelemetry? = nil
 
-            do {
-                try proc.run()
-                proc.waitUntilExit()
-                if proc.terminationStatus == 0 {
-                    miniOnline = true
+            if !isRunningOnMini && FileManager.default.fileExists(atPath: sshKeyPath) {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                proc.arguments = [
+                    "-i", sshKeyPath,
+                    "-o", "BatchMode=yes",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=2",
+                    "admin@100.114.74.17",
+                    "cat /Users/admin/.config/rclone/migration-telemetry.json 2>/dev/null"
+                ]
+                let outPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError = Pipe()
+
+                do {
+                    try proc.run()
                     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !data.isEmpty, var decoded = try? JSONDecoder().decode(TurboMigrationTelemetry.self, from: data) {
-                        if !decoded.sourceLocation.contains("naegele-mm") {
-                            decoded.sourceLocation = "\(decoded.sourceLocation) (via naegele-mm)"
+                    proc.waitUntilExit()
+                    if proc.terminationStatus == 0 {
+                        miniOnline = true
+                        if !data.isEmpty, var decoded = try? JSONDecoder().decode(TurboMigrationTelemetry.self, from: data) {
+                            if !decoded.sourceLocation.contains("naegele-mm") {
+                                decoded.sourceLocation = "\(decoded.sourceLocation) (via naegele-mm)"
+                            }
+                            if let encoded = try? JSONEncoder().encode(decoded) {
+                                try? encoded.write(to: URL(fileURLWithPath: dstPath), options: .atomic)
+                            }
+                            remoteTelem = decoded
                         }
-                        if let encoded = try? JSONEncoder().encode(decoded) {
-                            try? encoded.write(to: URL(fileURLWithPath: dstPath), options: .atomic)
-                        }
-                        remoteTelem = decoded
                     }
-                }
-            } catch {}
+                } catch {}
+            }
 
             let finalOnline = miniOnline
             let finalTelem = remoteTelem
@@ -358,30 +414,17 @@ public final class TurboMigrationManager: ObservableObject {
             .appendingPathComponent(".config/rclone/zerodrive-device-names.json")
     }
 
-    private var sharedCustomNamesFileURL: URL? {
-        let candidates = [
-            RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_SYSTEM/MACHINES/custom_names.json"),
-            URL(fileURLWithPath: "/Users/Naegele/.zerodrive-mount/My Drive/_SYSTEM/MACHINES/custom_names.json"),
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ZeroDrive/_SYSTEM/MACHINES/custom_names.json")
-        ]
-        for url in candidates {
-            let parent = url.deletingLastPathComponent()
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDir), isDir.boolValue {
-                return url
-            }
-        }
-        return nil
+    private var cachedSharedCustomNamesFileURL: URL {
+        fleetCacheDir.appendingPathComponent("custom_names.json")
     }
 
     public func loadCustomDeviceNames() -> [String: String] {
         var names: [String: String] = [:]
-        if let data = try? Data(contentsOf: customNamesFileURL),
+        if let data = try? Data(contentsOf: cachedSharedCustomNamesFileURL),
            let dict = try? JSONDecoder().decode([String: String].self, from: data) {
             names.merge(dict) { (_, new) in new }
         }
-        if let shared = sharedCustomNamesFileURL,
-           let data = try? Data(contentsOf: shared),
+        if let data = try? Data(contentsOf: customNamesFileURL),
            let dict = try? JSONDecoder().decode([String: String].self, from: data) {
             names.merge(dict) { (_, new) in new }
         }
@@ -399,8 +442,26 @@ public final class TurboMigrationManager: ObservableObject {
 
         if let data = try? JSONEncoder().encode(dict) {
             try? data.write(to: customNamesFileURL, options: .atomic)
-            if let shared = sharedCustomNamesFileURL {
-                try? data.write(to: shared, options: .atomic)
+            try? data.write(to: cachedSharedCustomNamesFileURL, options: .atomic)
+            let localSrc = customNamesFileURL.path
+            let rcloneBin = RcloneDaemonSupervisor.shared.resolveRcloneBinary()
+            let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+            let configPath = MultiCloudCombineBuilder.shared.configPath.path
+            Task.detached(priority: .utility) {
+                guard let rclone = rcloneBin else { return }
+                let p = Process()
+                p.executableURL = rclone
+                p.arguments = [
+                    "copyto", localSrc,
+                    "primary_vault:\(meta.bucketAndPrefix)/_SYSTEM/MACHINES/custom_names.json",
+                    "--config=\(configPath)",
+                    "--disable-http2",
+                    "--use-server-modtime"
+                ]
+                p.standardOutput = Pipe()
+                p.standardError = Pipe()
+                try? p.run()
+                p.waitUntilExit()
             }
         }
 
@@ -412,16 +473,9 @@ public final class TurboMigrationManager: ObservableObject {
     }
 
     private func findMachinesDirectory() -> URL? {
-        let candidates = [
-            RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive/_SYSTEM/MACHINES"),
-            URL(fileURLWithPath: "/Users/Naegele/.zerodrive-mount/My Drive/_SYSTEM/MACHINES"),
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ZeroDrive/_SYSTEM/MACHINES")
-        ]
-        for url in candidates {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                return url
-            }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: fleetCacheDir.path, isDirectory: &isDir), isDir.boolValue {
+            return fleetCacheDir
         }
         return nil
     }
@@ -517,13 +571,13 @@ public final class TurboMigrationManager: ObservableObject {
         for mID in allMachineIDs {
             let hb = discoveredHeartbeats[mID]
             let fleet = fleetMachines[mID]
-            let isThisMac = (mID == "naegele-pro")
+            let isThisMac = (mID == localMachineHost)
 
             // Determine friendly default name
             let defaultName: String = {
-                if isThisMac { return "naegele-pro (This MacBook Pro)" }
-                if mID == "naegele-mm" { return "naegele-mm (Mac mini M4 #1)" }
-                if mID == "mike-mm" { return "mike-mm (Mac mini M4 #2)" }
+                if mID == "naegele-pro" { return isThisMac ? "naegele-pro (This MacBook Pro)" : "naegele-pro (MacBook Pro)" }
+                if mID == "naegele-mm" { return isThisMac ? "naegele-mm (This Mac mini M4 #1)" : "naegele-mm (Mac mini M4 #1)" }
+                if mID == "mike-mm" { return isThisMac ? "mike-mm (This Mac mini M4 #2)" : "mike-mm (Mac mini M4 #2)" }
                 if mID == "naegele-pc" { return "naegele-pc (Windows RTX 3090 Rig)" }
                 return mID
             }()
@@ -730,11 +784,12 @@ public final class TurboMigrationManager: ObservableObject {
             ))
         }
 
-        // Assign published properties
-        self.connectedDevices = devices
-        self.cloudVaults = vaults
-        self.cloudStreams = streams
-        self.connectedNodes = devices + vaults + streams
+        // Assign published properties only when changed
+        if self.connectedDevices != devices { self.connectedDevices = devices }
+        if self.cloudVaults != vaults { self.cloudVaults = vaults }
+        if self.cloudStreams != streams { self.cloudStreams = streams }
+        let combined = devices + vaults + streams
+        if self.connectedNodes != combined { self.connectedNodes = combined }
     }
 
     public func readLedger() {
@@ -742,7 +797,9 @@ public final class TurboMigrationManager: ObservableObject {
               let l = try? JSONDecoder().decode(MigrationLedger.self, from: data) else {
             return
         }
-        self.ledger = l
+        if self.ledger != l {
+            self.ledger = l
+        }
     }
 
     public func readSymlinks() {
@@ -750,7 +807,9 @@ public final class TurboMigrationManager: ObservableObject {
               let s = try? JSONDecoder().decode([SymlinkEntry].self, from: data) else {
             return
         }
-        self.symlinks = s
+        if self.symlinks != s {
+            self.symlinks = s
+        }
     }
 
     public func stageSpace(_ spaceName: String) {
@@ -940,7 +999,7 @@ public final class TurboMigrationManager: ObservableObject {
                 self.readSymlinks()
                 VaultStats.shared.refreshFromCache()
                 if let rclone = RcloneDaemonSupervisor.shared.resolveRcloneBinary() {
-                    Task { await VaultStats.shared.refresh(rclone: rclone) }
+                    Task { await VaultStats.shared.refresh(rclone: rclone, forceFullSize: true) }
                 }
                 if !self.queuedJobs.isEmpty || !self.queuedSpaces.isEmpty {
                     self.runQueuedMoves()

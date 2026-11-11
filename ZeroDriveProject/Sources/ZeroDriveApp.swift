@@ -42,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var statusTimer: Timer?
+    private var sigtermSource: DispatchSourceSignal?
+    private var sigintSource: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
@@ -218,21 +220,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupTerminationSignalTrap() {
+        let sigQueue = DispatchQueue(label: "co.aisimple.zerodrive.signals", qos: .userInteractive)
         signal(SIGTERM, SIG_IGN)
-        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        sigtermSource.setEventHandler {
+        let termSrc = DispatchSource.makeSignalSource(signal: SIGTERM, queue: sigQueue)
+        termSrc.setEventHandler {
             RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
-            exit(0)
+            _exit(0)
         }
-        sigtermSource.resume()
+        termSrc.resume()
+        self.sigtermSource = termSrc
 
         signal(SIGINT, SIG_IGN)
-        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        sigintSource.setEventHandler {
+        let intSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: sigQueue)
+        intSrc.setEventHandler {
             RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
-            exit(0)
+            _exit(0)
         }
-        sigintSource.resume()
+        intSrc.resume()
+        self.sigintSource = intSrc
     }
 
     // MARK: - Native macOS Finder Services

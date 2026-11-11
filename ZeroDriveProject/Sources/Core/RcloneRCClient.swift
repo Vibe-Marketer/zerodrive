@@ -6,6 +6,26 @@ public struct RcloneQueueItemDTO: Sendable {
     public let size: Int64
     public let expiry: Double
     public let uploading: Bool
+    public let tries: Int
+    public let errorText: String?
+
+    public init(
+        id: Int,
+        name: String,
+        size: Int64,
+        expiry: Double,
+        uploading: Bool,
+        tries: Int = 0,
+        errorText: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.size = size
+        self.expiry = expiry
+        self.uploading = uploading
+        self.tries = tries
+        self.errorText = errorText
+    }
 }
 
 public struct RcloneVFSStatsDTO: Sendable {
@@ -68,7 +88,7 @@ public actor RcloneRCClient {
         if let id = itemId {
             params["id"] = id
         }
-        return await postRPC("vfs/queue/set-expiry", params) != nil
+        return await postRPC("vfs/queue-set-expiry", params) != nil
     }
 
     /// Calls `POST /operations/list` with `fastList: true` for sub-second cloud tree indexing
@@ -179,7 +199,17 @@ public actor RcloneRCClient {
                 let size = (item["size"] as? Int64) ?? Int64((item["size"] as? Int) ?? 0)
                 let expiry = (item["expiry"] as? Double) ?? 0.0
                 let uploading = (item["uploading"] as? Bool) ?? false
-                return RcloneQueueItemDTO(id: id, name: name, size: size, expiry: expiry, uploading: uploading)
+                let tries = (item["tries"] as? Int) ?? 0
+                let errorText = item["error"] as? String
+                return RcloneQueueItemDTO(
+                    id: id,
+                    name: name,
+                    size: size,
+                    expiry: expiry,
+                    uploading: uploading,
+                    tries: tries,
+                    errorText: errorText
+                )
             })
         }
 
