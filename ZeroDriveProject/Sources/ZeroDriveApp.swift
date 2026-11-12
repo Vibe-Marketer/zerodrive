@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigintSource: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
 
@@ -66,6 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await ManageFileProvider.shared.registerDomainIfNeeded()
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            NSApp.activate(ignoringOtherApps: true)
+            for window in NSApp.windows where !(window is NSPanel) {
+                window.makeKeyAndOrderFront(nil)
+            }
         }
     }
 

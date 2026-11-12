@@ -10,7 +10,7 @@ public final class AppLifecycleController: ObservableObject {
 
     private init() {
         setStudioWindowVisible(true)
-        if !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() {
+        if !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() || !ManageLicensing.shared.isLicensed {
             showOnboardingSheet = true
         }
     }
@@ -22,6 +22,9 @@ public final class AppLifecycleController: ObservableObject {
         NSApp.setActivationPolicy(.regular)
         if visible {
             NSApp.activate(ignoringOtherApps: true)
+            for window in NSApp.windows where !(window is NSPanel) {
+                window.makeKeyAndOrderFront(nil)
+            }
         }
     }
 

@@ -443,42 +443,14 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     /// Runs a bounded child-process statfs check on ~/.zerodrive-mount so @MainActor never blocks on a wedged NFS mount
     private func probeMountLiveness(timeoutSeconds: Double = 5.0) async -> Bool {
         let mountPath = nfsMountRoot.path
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/stat")
-                proc.arguments = ["-f", "%T", mountPath]
-                let outPipe = Pipe()
-                proc.standardOutput = outPipe
-                proc.standardError = Pipe()
-
-                do {
-                    try proc.run()
-                } catch {
-                    continuation.resume(returning: false)
-                    return
-                }
-
-                let deadline = Date().addingTimeInterval(timeoutSeconds)
-                while proc.isRunning && Date() < deadline {
-                    Thread.sleep(forTimeInterval: 0.05)
-                }
-                if proc.isRunning {
-                    kill(proc.processIdentifier, SIGKILL)
-                    continuation.resume(returning: false)
-                    return
-                }
-                guard proc.terminationStatus == 0 else {
-                    continuation.resume(returning: false)
-                    return
-                }
-                let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-                let fsType = (String(data: data, encoding: .utf8) ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                continuation.resume(returning: fsType == "nfs")
+        var s = statfs()
+        guard statfs(mountPath, &s) == 0 else { return false }
+        let fsType = withUnsafePointer(to: &s.f_fstypename) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { cStr in
+                String(cString: cStr).lowercased()
             }
         }
+        return fsType == "nfs"
     }
 
     private func cleanPoisonedCacheEntries() {
@@ -657,8 +629,19 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
     }
 
-    /// Pins ~/.zerodrive-mount/My Drive (isVolume = false, so no Eject icon) into Finder's Sidebar Favorites via LaunchServices XPC
+    /// Pins ZeroDrive into Finder's Sidebar Favorites via modern CLI or LaunchServices
     public func pinToFinderSidebarIfNeeded() {
+        let userSymlink = userSymlinkURL
+        let mysidesPaths = ["/opt/homebrew/bin/mysides", "/usr/local/bin/mysides"]
+        for p in mysidesPaths where FileManager.default.fileExists(atPath: p) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: p)
+            proc.arguments = ["add", "ZeroDrive", "file://" + userSymlink.path]
+            try? proc.run()
+            proc.waitUntilExit()
+            return
+        }
+
         let targetURL = mountPoint.appendingPathComponent("My Drive")
 
         guard let list = LSSharedFileListCreate(
