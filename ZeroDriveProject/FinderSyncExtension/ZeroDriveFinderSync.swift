@@ -9,7 +9,7 @@ public final class FinderSyncExtension: FIFinderSync {
 
     private let zeroDriveRoot: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".zerodrive-mount/My Drive")
+        return home.appendingPathComponent(".zerodrive/My Drive")
     }()
 
     public override init() {

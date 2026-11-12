@@ -53,7 +53,7 @@ public actor ManageFileProvider {
     }
 
     public func setupCloudStorageSymlink() {
-        // Keep ~/ZeroDrive pointed at ~/.zerodrive-mount/My Drive whenever the primary NFS vault is configured
+        // Keep ~/ZeroDrive pointed at ~/.zerodrive/My Drive whenever the primary NFS vault is configured
         guard !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() else { return }
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
         let cloudStoragePath = homeDir.appendingPathComponent("Library/CloudStorage/ZeroDrive").path

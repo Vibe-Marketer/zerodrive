@@ -50,12 +50,12 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     public let nfsMountRoot: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".zerodrive-mount")
+        return home.appendingPathComponent(".zerodrive")
     }()
 
     public let mountPoint: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".zerodrive-mount")
+        return home.appendingPathComponent(".zerodrive")
     }()
 
     public let userSymlinkURL: URL = {
@@ -65,7 +65,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     public let cacheDir: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".zerodrive-cache")
+        return home.appendingPathComponent("Library/Caches/ZeroDrive")
     }()
 
     private var rcloneProcess: Process?
@@ -92,7 +92,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     nonisolated public static func handlePreSleepSynchronousUnmount() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let mountPath = home.appendingPathComponent(".zerodrive-mount").path
+        let mountPath = home.appendingPathComponent(".zerodrive").path
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/sbin/umount")
         task.arguments = ["-f", mountPath]
@@ -133,9 +133,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         await forceCleanStaleMounts()
         cleanPoisonedCacheEntries()
 
-        statusMessage = "Locating & verifying rclone nfsmount engine..."
+        statusMessage = "Locating & verifying ZeroDrive streaming engine..."
         guard let rcloneURL = await resolveOrDownloadRcloneBinary() else {
-            statusMessage = "rclone engine missing — click Download Official Engine"
+            statusMessage = "Streaming engine missing — click Download Engine"
             isBusy = false
             return
         }
@@ -158,7 +158,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         let readChunkLimit = boostVideoBufferEnabled ? "512M" : "256M"
         let bufferSize = boostVideoBufferEnabled ? "64M" : "32M"
 
-        statusMessage = "Spawning rclone nfsmount daemon..."
+        statusMessage = "Starting ZeroDrive streaming daemon..."
         let process = Process()
         process.executableURL = rcloneURL
 
@@ -495,7 +495,8 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     }
 
     private func forceCleanStaleMounts() async {
-        for path in [nfsMountRoot.path, userSymlinkURL.path] {
+        let legacyMount = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zerodrive-mount").path
+        for path in [nfsMountRoot.path, userSymlinkURL.path, legacyMount] {
             await runCommand("/sbin/umount", ["-f", path])
         }
         await runCommand("/usr/bin/pkill", ["-f", "rclone nfsmount ZeroDriveUnified:"])
@@ -520,7 +521,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("ZeroDrive/bin/rclone"),
             URL(fileURLWithPath: "/Applications/ZeroDrive.app/Contents/Resources/rclone"),
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zerodrive-build-cache/rclone"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/ZeroDrive/bin/rclone"),
             URL(fileURLWithPath: "/usr/local/bin/rclone"),
             URL(fileURLWithPath: "/opt/homebrew/bin/rclone")
         ]
@@ -544,7 +545,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     /// Auto-downloads the official CGO-enabled universal rclone binary if missing or Homebrew lacks nfsmount
     public func downloadOfficialRcloneEngine() async -> URL? {
-        statusMessage = "Downloading official rclone engine..."
+        statusMessage = "Downloading ZeroDrive streaming engine..."
         guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }

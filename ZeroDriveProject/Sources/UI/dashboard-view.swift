@@ -824,7 +824,7 @@ public struct DashboardView: View {
                             .background(Color.green.opacity(0.12))
                             .clipShape(Capsule())
                     }
-                    Text("Mounted at ~/.zerodrive-mount/My Drive • \(ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)) free remaining in cloud")
+                    Text("Mounted at ~/ZeroDrive • \(ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)) free remaining in cloud")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

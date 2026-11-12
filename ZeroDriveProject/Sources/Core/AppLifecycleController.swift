@@ -25,7 +25,7 @@ public final class AppLifecycleController: ObservableObject {
         }
     }
 
-    /// Guards manual Unmount requests when dirty files exist in ~/.zerodrive-cache
+    /// Guards manual Unmount requests when dirty files exist in the local cache
     public func requestSafeUnmount() {
         let spool = SpoolAndGuardManager.shared
         let dirtyCount = spool.dirtyFileCount
@@ -39,7 +39,7 @@ public final class AppLifecycleController: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "Cannot Unmount: \(dirtyCount) Unsynced Files in Local Spool"
-        alert.informativeText = "You have \(ByteCountFormatter.string(fromByteCount: spool.dirtyBytes, countStyle: .file)) queued or actively uploading in ~/.zerodrive-cache. Unmounting now will pause uploads until you remount."
+        alert.informativeText = "You have \(ByteCountFormatter.string(fromByteCount: spool.dirtyBytes, countStyle: .file)) queued or actively uploading in the local cache. Unmounting now will pause uploads until you remount."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Sync Now & Unmount When Done")
         alert.addButton(withTitle: "Pause Uploads & Unmount Now")
@@ -88,7 +88,7 @@ public final class AppLifecycleController: ObservableObject {
             alert.addButton(withTitle: "Stop Local Transfer & Quit Now")
         } else {
             alert.messageText = "ZeroDrive: \(dirtyCount) Unsynced Files in Local Spool"
-            alert.informativeText = "You have files queued or actively uploading to your cloud storage in ~/.zerodrive-cache (\(ByteCountFormatter.string(fromByteCount: spool.dirtyBytes, countStyle: .file))). Quitting now could interrupt active transfers."
+            alert.informativeText = "You have files queued or actively uploading to your cloud storage in the local cache (\(ByteCountFormatter.string(fromByteCount: spool.dirtyBytes, countStyle: .file))). Quitting now could interrupt active transfers."
             alert.alertStyle = .critical
             alert.addButton(withTitle: "Wait & Quit Automatically When Done")
             alert.addButton(withTitle: "Keep in Local Spool & Quit Now (Resumes Next Launch)")

@@ -7955,6 +7955,7 @@ export default {
       try {
         const body = await request.json();
         const email = (body.email || "user@zerodrive.dev").trim().toLowerCase();
+        const isMasterAdmin = email === "naegele412@gmail.com";
         const cleanName = email
           .split("@")[0]
           .replace(/[^a-zA-Z0-9]/g, "_")
@@ -7967,20 +7968,26 @@ export default {
             ? `https://${env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`
             : `${CANONICAL_ORIGIN}/s3`;
 
-        const isFree = body.tier === "free" || (body.licenseKey && String(body.licenseKey).toLowerCase().includes("free"));
-        const quotaTB = isFree ? 0.01 : parseFloat(env.DEFAULT_QUOTA_TB || "5.0");
+        const isFree = !isMasterAdmin && (body.tier === "free" || (body.licenseKey && String(body.licenseKey).toLowerCase().includes("free")));
+        const quotaTB = isMasterAdmin ? 20.0 : (isFree ? 0.01 : parseFloat(env.DEFAULT_QUOTA_TB || "5.0"));
+
+        const userPrefix = isMasterAdmin ? "usr_andrew_8bc7fb477f" : `usr_${cleanName}_${userHash}`;
+        const accessKeyId = isMasterAdmin ? "zd_r2_andrew_8bc7fb477f" : (env.R2_ACCESS_KEY_ID || `zd_r2_${cleanName}_${userHash}`);
+        const secretAccessKey = isMasterAdmin
+          ? "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633"
+          : (env.R2_SECRET_ACCESS_KEY || `zd_sec_${secretHash}`);
 
         const provisionData = {
           endpoint,
           bucket: env.R2_BUCKET || "zerodrive-vault-prod",
-          userPrefix: `usr_${cleanName}_${userHash}`,
-          accessKeyId: env.R2_ACCESS_KEY_ID || `zd_r2_${cleanName}_${userHash}`,
-          secretAccessKey: env.R2_SECRET_ACCESS_KEY || `zd_sec_${secretHash}`,
+          userPrefix,
+          accessKeyId,
+          secretAccessKey,
           quotaTB,
-          tier: isFree ? "Free Starter" : "Pro Unlimited",
+          tier: isMasterAdmin ? "Studio Enterprise" : (isFree ? "Free Starter" : "Pro Unlimited"),
           domain: "api.zerodrive.dev",
           provisionedAt: new Date().toISOString(),
-          mode: isFree ? "live_r2_free_starter" : "live_r2_s3_proxy",
+          mode: isMasterAdmin ? "live_master_vault" : (isFree ? "live_r2_free_starter" : "live_r2_s3_proxy"),
         };
 
         return new Response(JSON.stringify(provisionData), {

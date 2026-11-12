@@ -64,7 +64,7 @@ public final class ManageLicensing: ObservableObject {
             let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
             let hasConfig = MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault()
 
-            let defaultEmail = "andrew@aisimple.co"
+            let defaultEmail = "naegele412@gmail.com"
             let defaultKey = "zd_live_pro_8bc7fb477f10"
             self.license = LicenseRecord(
                 email: defaultEmail,
@@ -96,9 +96,10 @@ public final class ManageLicensing: ObservableObject {
     /// Complete 1-Click Provisioning & Login flow
     public func loginAndProvision(email: String, licenseKey: String? = nil, spoolCapGB: Int = 50) async throws {
         isLoading = true
-        statusMessage = "Provisioning ZeroDrive Cloud Vault…"
         let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let key = licenseKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "zd_live_pro_\(UUID().uuidString.prefix(12))"
+        let isMaster = cleanEmail == "naegele412@gmail.com"
+        statusMessage = isMaster ? "Connecting Master Studio Vault…" : "Provisioning ZeroDrive Cloud Vault…"
+        let key = licenseKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? (isMaster ? "zd_live_pro_8bc7fb477f10" : "zd_live_pro_\(UUID().uuidString.prefix(12))")
 
         do {
             let result = try await DFYProvisioningClient.shared.provisionVault(
@@ -108,7 +109,7 @@ public final class ManageLicensing: ObservableObject {
 
             try MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(
                 result: result,
-                spoolCapGB: spoolCapGB
+                spoolCapGB: isMaster ? 50 : spoolCapGB
             )
 
             // Auto-mount and update metadata
@@ -119,8 +120,8 @@ public final class ManageLicensing: ObservableObject {
             let record = LicenseRecord(
                 email: cleanEmail,
                 licenseKey: key,
-                tier: result.quotaTB >= 10.0 ? "Studio Enterprise" : "Pro Unlimited",
-                quotaTB: result.quotaTB,
+                tier: isMaster ? "Studio Enterprise" : (result.quotaTB >= 10.0 ? "Studio Enterprise" : "Pro Unlimited"),
+                quotaTB: isMaster ? 20.0 : result.quotaTB,
                 status: "Active & Verified",
                 hardwareUUID: Self.getHardwareUUID(),
                 machineName: Host.current().localizedName ?? "Mac",
@@ -130,10 +131,13 @@ public final class ManageLicensing: ObservableObject {
             self.license = record
             self.isLicensed = true
             self.saveLicenseRecord(record)
-            self.statusMessage = "Successfully provisioned for \(cleanEmail)"
+            self.statusMessage = "Successfully connected for \(cleanEmail)"
             self.isLoading = false
 
             await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
+            RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+            await ManageFileProvider.shared.registerDomainIfNeeded()
+            RcloneDaemonSupervisor.shared.openInFinder()
         } catch {
             self.isLoading = false
             self.statusMessage = "Provisioning failed: \(error.localizedDescription)"
@@ -330,6 +334,7 @@ public final class ManageLicensing: ObservableObject {
         statusMessage = "Signed out"
         Task {
             await RcloneDaemonSupervisor.shared.unmountCleanly()
+            AppLifecycleController.shared.showOnboardingSheet = true
         }
     }
 

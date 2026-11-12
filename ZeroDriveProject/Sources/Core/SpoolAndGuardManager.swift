@@ -240,7 +240,8 @@ public final class SpoolAndGuardManager: ObservableObject {
         _ = await RcloneRCClient.shared.forgetFile(relativePath: item.relativePath)
         
         // Only remove local file if it is confirmed in the cache directory, not in the mounted drive root
-        if item.localCachePath.path.contains(".zerodrive-cache") {
+        let cacheRoot = RcloneDaemonSupervisor.shared.cacheDir.path
+        if item.localCachePath.path.hasPrefix(cacheRoot) || item.localCachePath.path.contains(".zerodrive-cache") {
             try? FileManager.default.removeItem(at: item.localCachePath)
         }
 

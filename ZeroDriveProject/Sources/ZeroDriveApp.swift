@@ -334,7 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await RAMTreeIndexer.shared.prewarmAll()
                 case "evict":
                     let mountPath = RcloneDaemonSupervisor.shared.mountPoint.path + "/"
-                    let cachePath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zerodrive-cache/vfs/ZeroDriveUnified").path + "/"
+                    let cachePath = RcloneDaemonSupervisor.shared.cacheDir.appendingPathComponent("vfs/ZeroDriveUnified").path + "/"
                     for u in fileURLs {
                         let rel = u.path.replacingOccurrences(of: mountPath, with: "")
                         _ = await RcloneRCClient.shared.forgetFile(relativePath: rel)

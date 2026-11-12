@@ -551,7 +551,7 @@ public struct MainStudioWindow: View {
                                 }
 
                                 HStack(spacing: 8) {
-                                    Text("Mounted at ~/.zerodrive-mount/\(drive.name)")
+                                    Text("Mounted at ~/.zerodrive/\(drive.name)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
 
@@ -654,7 +654,7 @@ public struct MainStudioWindow: View {
                             .font(.subheadline.weight(.medium))
                     }
 
-                    Text("Connected to naegele412@gmail.com via rclone's native iCloud API—bypasses Finder/bird completely and uses 0 bytes of local SSD space.")
+                    Text("Connected to naegele412@gmail.com via ZeroDrive's direct cloud stream—bypasses Finder/bird completely and uses 0 bytes of local SSD space.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

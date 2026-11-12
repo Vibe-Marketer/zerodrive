@@ -600,7 +600,7 @@ public final class TurboMigrationManager: ObservableObject {
 
             // Mount path
             let mountPath: String = {
-                if isThisMac { return "~/ZeroDrive & ~/.zerodrive-mount/My Drive" }
+                if isThisMac { return "~/ZeroDrive" }
                 if mID == "naegele-pc" { return "C:\\Users\\andre\\ZeroDrive & /zerodrive" }
                 if mID.contains("mm") { return "~/ZeroDrive/My Drive" }
                 if let w = fleet?.work_dir, !w.isEmpty { return w }
@@ -749,7 +749,7 @@ public final class TurboMigrationManager: ObservableObject {
             activeActivity: telemetry.isRunning ? "\(telemetry.statusMessage) at \(String(format: "%.1f MB/s", telemetry.speedMBps))" : "",
             freeBytes: freeVaultBytes,
             totalBytes: totalVaultBytes,
-            mountPath: "~/.zerodrive-mount/My Drive"
+            mountPath: "~/ZeroDrive"
         ))
 
         // 3. Direct Cloud-to-Cloud Streams & External Connections
