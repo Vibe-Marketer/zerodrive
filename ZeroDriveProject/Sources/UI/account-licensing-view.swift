@@ -24,6 +24,12 @@ public struct AccountLicensingView: View {
     @State private var upgradeMigrateFiles: Bool = true
     @State private var upgradeFeedbackMessage: String = ""
     @State private var isUpgrading: Bool = false
+    @State private var showKeyManager: Bool = false
+    @State private var issueClientEmail: String = ""
+    @State private var issuePlanTier: String = "pro"
+    @State private var issuedLicenseKey: String = ""
+    @State private var managedKeys: [ManagedLicenseInfo] = []
+    @State private var isManagingKeys: Bool = false
 
     public init() {}
 
@@ -64,10 +70,10 @@ public struct AccountLicensingView: View {
 
                         if isFreeTier {
                             Button {
-                                upgradePromptReason = "Upgrade to ZeroDrive Creator to unlock 512GB managed storage, multi-drive Finder isolation, and 24/7 Agent MCP access."
+                                upgradePromptReason = "Upgrade to ZeroDrive Pro or Agency to unlock 5 TB–10 TB managed storage, multi-drive Finder isolation, and 24/7 Agent MCP access."
                                 isShowingUpgradePrompt = true
                             } label: {
-                                Label("Upgrade to Paid", systemImage: "sparkles")
+                                Label("Upgrade to Pro / Agency", systemImage: "sparkles")
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
@@ -208,12 +214,12 @@ public struct AccountLicensingView: View {
                 Text("ZeroDrive Multi-Drive Isolation")
             }
 
-            // MARK: - 3. Active Master License Key
-            Section("Active Master License Key") {
+            // MARK: - 3. Secure License Keys & Management
+            Section("Secure License Key & Key Management") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("License Key")
+                            Text("Active License Key")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Text(maskedLicenseKey(licensing.license.licenseKey))
@@ -228,24 +234,34 @@ public struct AccountLicensingView: View {
                         }
                         .controlSize(.small)
 
-                        Button("Change Key…") {
+                        Button("Activate Key…") {
                             isShowingKeyInput.toggle()
+                        }
+                        .controlSize(.small)
+
+                        Button(showKeyManager ? "Hide Manager" : "Manage Keys") {
+                            showKeyManager.toggle()
+                            if showKeyManager {
+                                Task {
+                                    managedKeys = (try? await DFYProvisioningClient.shared.listManagedLicenseKeys()) ?? []
+                                }
+                            }
                         }
                         .controlSize(.small)
                     }
 
                     if isShowingKeyInput {
                         HStack {
-                            TextField("Enter license key (zd_live_...)", text: $inputKey)
+                            TextField("Enter license key (ZD-PRO-... or ZD-AGY-...)", text: $inputKey)
                                 .textFieldStyle(.roundedBorder)
 
                             Button("Activate") {
                                 Task {
                                     do {
-                                        try await licensing.activateLicenseKey(inputKey)
+                                        try await licensing.activateLicenseKey(inputKey, email: licensing.license.email)
                                         isShowingKeyInput = false
                                         inputKey = ""
-                                        feedbackMessage = "License successfully activated!"
+                                        feedbackMessage = "License key verified and activated!"
                                     } catch {
                                         feedbackMessage = error.localizedDescription
                                     }
@@ -254,6 +270,111 @@ public struct AccountLicensingView: View {
                             .buttonStyle(.borderedProminent)
                             .disabled(inputKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
+                    }
+
+                    if showKeyManager {
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Issue New Client License Key")
+                                .font(.caption.bold())
+
+                            HStack(spacing: 8) {
+                                TextField("Client email (optional)", text: $issueClientEmail)
+                                    .textFieldStyle(.roundedBorder)
+
+                                Picker("Plan", selection: $issuePlanTier) {
+                                    Text("Pro (5 TB)").tag("pro")
+                                    Text("Agency (10 TB)").tag("agency")
+                                }
+                                .labelsHidden()
+                                .frame(width: 130)
+
+                                Button {
+                                    Task {
+                                        isManagingKeys = true
+                                        do {
+                                            let res = try await DFYProvisioningClient.shared.generateManagedLicenseKey(
+                                                tier: issuePlanTier,
+                                                clientEmail: issueClientEmail
+                                            )
+                                            if let key = res.license_key {
+                                                issuedLicenseKey = key
+                                                NSPasteboard.general.clearContents()
+                                                NSPasteboard.general.setString(key, forType: .string)
+                                                feedbackMessage = "Generated & copied key: \(key)"
+                                                managedKeys = (try? await DFYProvisioningClient.shared.listManagedLicenseKeys()) ?? managedKeys
+                                            }
+                                        } catch {
+                                            feedbackMessage = error.localizedDescription
+                                        }
+                                        isManagingKeys = false
+                                    }
+                                } label: {
+                                    Text(isManagingKeys ? "Issuing…" : "Generate Key")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(isManagingKeys)
+                            }
+
+                            if !issuedLicenseKey.isEmpty {
+                                HStack {
+                                    Text(issuedLicenseKey)
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.green)
+                                    Spacer()
+                                    Button("Copy") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(issuedLicenseKey, forType: .string)
+                                    }
+                                    .controlSize(.mini)
+                                }
+                                .padding(6)
+                                .background(Color.green.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+
+                            if !managedKeys.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Issued Keys (\(managedKeys.count))")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.secondary)
+                                    ForEach(managedKeys.prefix(6)) { item in
+                                        HStack(spacing: 8) {
+                                            Text(item.license_key)
+                                                .font(.system(size: 10, design: .monospaced))
+                                            Text(item.tier.uppercased())
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundStyle(.secondary)
+                                            if let email = item.customer_email, !email.isEmpty {
+                                                Text(email)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            Spacer()
+                                            Text(item.status)
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundStyle(item.status == "active" ? .green : .red)
+                                            if item.status == "active" {
+                                                Button("Revoke") {
+                                                    Task {
+                                                        _ = try? await DFYProvisioningClient.shared.revokeManagedLicenseKey(licenseKey: item.license_key)
+                                                        managedKeys = (try? await DFYProvisioningClient.shared.listManagedLicenseKeys()) ?? []
+                                                    }
+                                                }
+                                                .controlSize(.mini)
+                                                .foregroundStyle(.red)
+                                            }
+                                        }
+                                        .padding(.vertical, 2)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .background(Color.secondary.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
 
                     if !feedbackMessage.isEmpty {
@@ -308,7 +429,7 @@ public struct AccountLicensingView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Upgrade Account")
                                 .font(.body.weight(.medium))
-                            Text("Upgrade from Free to Creator or Studio. Migrates all files automatically to your upgraded vault with 0 data loss.")
+                            Text("Upgrade from Free BYOK to Pro or Agency. Migrates all files automatically to your upgraded vault with 0 data loss.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -361,7 +482,7 @@ public struct AccountLicensingView: View {
             }
         }
         .sheet(isPresented: $isShowingUpgradePrompt) {
-            UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")
+            UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Pro")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenUpgradeAccountModal"))) { _ in
             isShowingUpgradeAccountSheet = true
@@ -432,20 +553,43 @@ public struct AccountLicensingView: View {
 
     private var switchAccountModal: some View {
         VStack(spacing: 16) {
-            Image(systemName: "key.fill")
+            Image(systemName: "person.badge.key.fill")
                 .font(.system(size: 32))
                 .foregroundStyle(Color.accentColor)
 
-            Text("Login & Provision ZeroDrive")
+            Text("Sign In or Switch Account")
                 .font(.title3.bold())
 
-            Text("Enter your email address to log in and automatically provision your cloud vault.")
+            Text("Sign in with Google to restore an existing account or create a brand-new segregated Cloud Vault.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 320)
 
-            TextField("Email address", text: $inputEmail)
+            Button {
+                isShowingSwitchAccountSheet = false
+                licensing.startGoogleSignIn()
+                AppLifecycleController.shared.onboardingRequestedStep = 0
+                AppLifecycleController.shared.showOnboardingSheet = true
+            } label: {
+                HStack(spacing: 8) {
+                    Text("G")
+                        .font(.system(size: 13, weight: .black, design: .rounded))
+                        .frame(width: 20, height: 20)
+                        .background(Color.white)
+                        .foregroundStyle(Color.black)
+                        .clipShape(Circle())
+                    Text("Sign in with Google")
+                        .font(.subheadline.bold())
+                }
+                .frame(maxWidth: 320)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+
+            Divider().frame(maxWidth: 320)
+
+            TextField("Or enter email address manually", text: $inputEmail)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 320)
 
@@ -462,7 +606,7 @@ public struct AccountLicensingView: View {
                         inputEmail = ""
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .disabled(inputEmail.isEmpty || !inputEmail.contains("@"))
             }
         }
@@ -476,10 +620,10 @@ public struct AccountLicensingView: View {
                 .font(.system(size: 38))
                 .foregroundStyle(Color.accentColor)
 
-            Text("Upgrade to Paid Account")
+            Text("Upgrade to Pro or Agency")
                 .font(.title3.bold())
 
-            Text("Seamlessly upgrade to ZeroDrive Creator or Studio. All files in your current vault will be safely moved to your upgraded storage with zero downtime.")
+            Text("Seamlessly upgrade to ZeroDrive Pro or Agency. All files in your current vault will be safely moved to your upgraded storage with zero downtime.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

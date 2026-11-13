@@ -4,6 +4,7 @@ import AppKit
 public struct AutostartAndWorkflowsView: View {
     @EnvironmentObject var supervisor: RcloneDaemonSupervisor
     @EnvironmentObject var spoolManager: SpoolAndGuardManager
+    @ObservedObject private var onboardingSetup = ManageOnboardingSetup.shared
 
     @State private var autoStartEnabled: Bool = false
     @State private var streamGuardEnabled: Bool = false
@@ -14,6 +15,30 @@ public struct AutostartAndWorkflowsView: View {
 
     public var body: some View {
         Form {
+            Section("Setup, Permissions & CLI Tools") {
+                LabeledContent("Onboarding & Permissions Wizard") {
+                    Button("Open Setup Guide…") {
+                        AppLifecycleController.shared.openOnboarding(atStep: 1)
+                    }
+                    .controlSize(.small)
+                }
+
+                LabeledContent("Terminal CLI (`zd`) & Agent Skills") {
+                    HStack(spacing: 8) {
+                        Text(onboardingSetup.isCLIAgentToolsInstalled ? "Installed in ~/.local/bin" : "Not Installed")
+                            .font(.caption)
+                            .foregroundStyle(onboardingSetup.isCLIAgentToolsInstalled ? .green : .secondary)
+                        Button("Install / Repair CLI & Skills") {
+                            Task {
+                                await onboardingSetup.installCLIAgentTools()
+                                showFeedback("Installed CLI tools (`zd`, `zerodrive-mcp`) and AI agent skills.")
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+
             Section("General") {
                 Toggle("Open ZeroDrive automatically when you log in", isOn: $autoStartEnabled)
                     .onChange(of: autoStartEnabled) { enabled in

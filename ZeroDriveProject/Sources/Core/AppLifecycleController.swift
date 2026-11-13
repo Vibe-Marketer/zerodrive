@@ -7,24 +7,29 @@ public final class AppLifecycleController: ObservableObject {
 
     @Published public private(set) var isStudioWindowOpen: Bool = true
     @Published public var showOnboardingSheet: Bool = false
+    @Published public var onboardingRequestedStep: Int = 0
 
     private init() {
         setStudioWindowVisible(true)
         if !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() || !ManageLicensing.shared.isLicensed {
+            onboardingRequestedStep = 0
             showOnboardingSheet = true
         }
+    }
+
+    public func openOnboarding(atStep step: Int = 0) {
+        onboardingRequestedStep = step
+        showOnboardingSheet = true
     }
 
     public func setStudioWindowVisible(_ visible: Bool) {
         self.isStudioWindowOpen = visible
         // Always keep .regular activation policy so the Dock icon remains visible
         // and clicking ZeroDrive in Dock/Spotlight always reopens the window.
+        guard NSApp != nil else { return }
         NSApp.setActivationPolicy(.regular)
         if visible {
-            NSApp.activate(ignoringOtherApps: true)
-            for window in NSApp.windows where !(window is NSPanel) {
-                window.makeKeyAndOrderFront(nil)
-            }
+            AppDelegate.shared?.presentMainWindow()
         }
     }
 

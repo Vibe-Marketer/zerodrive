@@ -101,8 +101,9 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     }
 
     public func autoMountIfConfigured() async {
-        guard MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() else {
-            statusMessage = "Setup Required — Configure Primary Vault"
+        guard MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault(),
+              ManageLicensing.shared.isLicensed else {
+            statusMessage = "Sign In Required"
             return
         }
         await mountUnifiedDrive()
@@ -629,16 +630,49 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
     }
 
-    /// Pins ZeroDrive into Finder's Sidebar Favorites via modern CLI or LaunchServices
+    /// Pins My Drive into Finder's Sidebar Favorites via modern CLI or LaunchServices
     public func pinToFinderSidebarIfNeeded() {
-        let userSymlink = userSymlinkURL
+        let driveURL = mountPoint.appendingPathComponent("My Drive", isDirectory: true)
+        try? FileManager.default.createDirectory(at: driveURL, withIntermediateDirectories: true)
+
         let mysidesPaths = ["/opt/homebrew/bin/mysides", "/usr/local/bin/mysides"]
-        for p in mysidesPaths where FileManager.default.fileExists(atPath: p) {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: p)
-            proc.arguments = ["add", "ZeroDrive", "file://" + userSymlink.path]
-            try? proc.run()
-            proc.waitUntilExit()
+        if let mysidesPath = mysidesPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            let listProc = Process()
+            listProc.executableURL = URL(fileURLWithPath: mysidesPath)
+            listProc.arguments = ["list"]
+            let outPipe = Pipe()
+            listProc.standardOutput = outPipe
+            listProc.standardError = Pipe()
+            try? listProc.run()
+            listProc.waitUntilExit()
+
+            let output = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let lines = output.components(separatedBy: .newlines)
+
+            if lines.contains(where: { $0.hasPrefix("ZeroDrive ->") }) {
+                let rmZero = Process()
+                rmZero.executableURL = URL(fileURLWithPath: mysidesPath)
+                rmZero.arguments = ["remove", "ZeroDrive"]
+                try? rmZero.run()
+                rmZero.waitUntilExit()
+            }
+
+            if let myDriveLine = lines.first(where: { $0.hasPrefix("My Drive ->") }) {
+                if !myDriveLine.contains("NOTFOUND") {
+                    return
+                }
+                let rmStale = Process()
+                rmStale.executableURL = URL(fileURLWithPath: mysidesPath)
+                rmStale.arguments = ["remove", "My Drive"]
+                try? rmStale.run()
+                rmStale.waitUntilExit()
+            }
+
+            let insProc = Process()
+            insProc.executableURL = URL(fileURLWithPath: mysidesPath)
+            insProc.arguments = ["insert", "My Drive", driveURL.absoluteString]
+            try? insProc.run()
+            insProc.waitUntilExit()
             return
         }
 

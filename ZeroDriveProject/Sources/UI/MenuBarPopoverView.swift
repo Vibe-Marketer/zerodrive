@@ -8,10 +8,61 @@ public struct MenuBarPopoverView: View {
     @EnvironmentObject var indexer: RAMTreeIndexer
     @ObservedObject private var turbo = TurboMigrationManager.shared
     @ObservedObject private var vaultStats = VaultStats.shared
+    @ObservedObject private var licensing = ManageLicensing.shared
 
     public init() {}
 
     public var body: some View {
+        Group {
+            if !licensing.isLicensed {
+                signedOutPopoverBody
+            } else {
+                signedInPopoverBody
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
+    }
+
+    private var signedOutPopoverBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.secondary)
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("ZeroDrive")
+                        .font(.headline)
+                    Text("Sign in required to mount My Drive")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Button("Open ZeroDrive Setup…") {
+                lifecycleController.openOnboarding(atStep: 0)
+                lifecycleController.setStudioWindowVisible(true)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .frame(maxWidth: .infinity)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Quit") {
+                    NSApp.terminate(nil)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var signedInPopoverBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             // MARK: - 1. Top Connection Header
             HStack(spacing: 8) {
@@ -234,8 +285,6 @@ public struct MenuBarPopoverView: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .frame(width: 320)
     }
 
     private var formattedCloudVaultSize: String {

@@ -105,6 +105,19 @@ if [ -d "Assets/logos" ]; then
   cp -R Assets/logos/* "${APP_BUNDLE}/Contents/Resources/"
 fi
 
+if [ -f "../bin/zerodrive" ]; then
+  cp "../bin/zerodrive" "${APP_BUNDLE}/Contents/Resources/zerodrive"
+  chmod +x "${APP_BUNDLE}/Contents/Resources/zerodrive"
+fi
+if [ -f "../bin/zerodrive-mcp" ]; then
+  cp "../bin/zerodrive-mcp" "${APP_BUNDLE}/Contents/Resources/zerodrive-mcp"
+  chmod +x "${APP_BUNDLE}/Contents/Resources/zerodrive-mcp"
+fi
+if [ -d "../_SKILLS" ]; then
+  rm -rf "${APP_BUNDLE}/Contents/Resources/_SKILLS"
+  cp -R "../_SKILLS" "${APP_BUNDLE}/Contents/Resources/_SKILLS"
+fi
+
 if [ -f "FinderSyncExtension/ZeroDriveFinderSync.swift" ]; then
   APPEX_BUNDLE="${APP_BUNDLE}/Contents/PlugIns/ZeroDriveFinderSync.appex"
   mkdir -p "${APPEX_BUNDLE}/Contents/MacOS"

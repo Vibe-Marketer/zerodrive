@@ -8,7 +8,7 @@ public struct UpgradePromptSheet: View {
 
     public init(
         triggerReason: String = "This feature requires a paid ZeroDrive subscription.",
-        requiredTier: String = "Creator"
+        requiredTier: String = "Pro"
     ) {
         self.triggerReason = triggerReason
         self.requiredTier = requiredTier
@@ -33,56 +33,56 @@ public struct UpgradePromptSheet: View {
             }
             .padding(.top, 8)
 
-            // Tier Cards
+            // Tier Cards: Two Primary Plans (Pro & Agency)
             HStack(spacing: 14) {
                 UpgradeTierCard(
-                    title: "Creator",
+                    title: "Pro",
                     price: "$29/mo",
                     subprice: "or $197/year (Save 43%)",
                     badge: "MOST POPULAR",
                     isFeatured: true,
                     features: [
-                        "512 GB DFY Cloud Storage (Zero config)",
+                        "5 TB DFY Cloud Storage (Zero config)",
                         "Multi-Drive in Finder (Work + Personal)",
-                        "4 Machine Slots (Mac, VPS, Mini)",
+                        "4 Machine Slots (Mac, PC, VPS, Mini)",
                         "24/7 Hosted Agent MCP Server Token",
-                        "High-speed cloud-to-cloud transfers"
+                        "High-speed cloud-to-cloud streaming"
                     ],
                     onSelect: {
-                        openStripeCheckout(tier: "creator")
+                        openStripeCheckout(tier: "pro")
                         dismiss()
                     }
                 )
 
                 UpgradeTierCard(
-                    title: "Studio",
-                    price: "$49/mo",
-                    subprice: "or $397/year",
-                    badge: "UNLIMITED",
+                    title: "Agency",
+                    price: "$497/mo",
+                    subprice: "or $4,970/year",
+                    badge: "WHITE-LABEL",
                     isFeatured: false,
                     features: [
-                        "1 TB High-Speed Cloud Storage",
-                        "Unlimited Independent Drives",
-                        "Unlimited Machine Slots",
-                        "Multi-Node Fleet Rendering",
-                        "Agent Skill Registry & Priority Bandwidth"
+                        "10 TB DFY Cloud Storage (+$25/TB add-on)",
+                        "Unlimited Segregated Client Vaults",
+                        "White-Label Custom Domains & Team MCP",
+                        "Unlimited Machines & 5 Team Seats",
+                        "Client License Key Issuance & Controls"
                     ],
                     onSelect: {
-                        openStripeCheckout(tier: "studio")
+                        openStripeCheckout(tier: "agency")
                         dismiss()
                     }
                 )
             }
             .frame(maxWidth: .infinity)
 
-            // Comparison note
-            Text("Free Starter accounts include 10 GB BYOK Cloudflare storage and 1 Vault. Paid accounts include zero-setup DFY storage, multi-drive Finder isolation, and 24/7 AI agent access.")
+            // Subtle Free BYOK note
+            Text("Free BYOK accounts require connecting your own Cloudflare R2 API keys. Pro & Agency include zero-config managed storage, multi-drive isolation, and 24/7 AI agent access.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 480)
 
-            Button("Already have a paid license key? Activate Upgrade…") {
+            Button("Already have a paid license key? Activate Key…") {
                 dismiss()
                 NotificationCenter.default.post(name: NSNotification.Name("OpenUpgradeAccountModal"), object: nil)
             }
@@ -92,17 +92,17 @@ public struct UpgradePromptSheet: View {
 
             // Actions
             HStack(spacing: 12) {
-                Button("Continue with Free (10 GB)") {
+                Button("Not Now") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 .controlSize(.regular)
 
                 Button {
-                    openStripeCheckout(tier: "creator")
+                    openStripeCheckout(tier: "pro")
                     dismiss()
                 } label: {
-                    Label("Upgrade to Creator ($29/mo)", systemImage: "bolt.fill")
+                    Label("Upgrade to Pro ($29/mo)", systemImage: "bolt.fill")
                         .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)

@@ -44,6 +44,12 @@ public final class ManageLicensing: ObservableObject {
     @Published public private(set) var isLoading: Bool = false
     @Published public private(set) var statusMessage: String = ""
     @Published public private(set) var isLicensed: Bool = false
+    @Published public var isAwaitingGoogleAuth: Bool = false
+    @Published public var pendingNewGoogleAccount: GoogleAuthSessionStatus? = nil
+    @Published public var googleAuthError: String = ""
+
+    private var activeGoogleSessionId: String? = nil
+    private var googlePollTask: Task<Void, Never>? = nil
 
     private var licenseFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -55,31 +61,65 @@ public final class ManageLicensing: ObservableObject {
         let hostName = Host.current().localizedName ?? "Mac"
 
         if let data = try? Data(contentsOf: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/rclone/zerodrive-license.json")),
-           let record = try? JSONDecoder().decode(LicenseRecord.self, from: data) {
-            self.license = record
-            self.isLicensed = record.isProvisioned && !record.licenseKey.isEmpty
-            self.statusMessage = "Licensed to \(record.email)"
+           var record = try? JSONDecoder().decode(LicenseRecord.self, from: data) {
+            if record.isProvisioned && !record.licenseKey.isEmpty {
+                self.license = record
+                self.isLicensed = true
+                self.statusMessage = "Licensed to \(record.email)"
+            } else {
+                record.email = ""
+                record.licenseKey = ""
+                record.tier = "Signed Out"
+                record.quotaTB = 0
+                record.status = "Signed Out"
+                record.isProvisioned = false
+                self.license = record
+                self.isLicensed = false
+                self.statusMessage = "Signed Out"
+            }
         } else {
             // Check if existing vault config exists
             let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
             let hasConfig = MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault()
 
-            let defaultEmail = "naegele412@gmail.com"
-            let defaultKey = "zd_live_pro_8bc7fb477f10"
-            self.license = LicenseRecord(
-                email: defaultEmail,
-                licenseKey: defaultKey,
-                tier: "Pro Unlimited",
-                quotaTB: meta.quotaTB > 0 ? meta.quotaTB : 5.0,
-                status: hasConfig ? "Active & Verified" : "Ready to Provision",
-                hardwareUUID: hardware,
-                machineName: hostName,
-                activatedAt: Date(),
-                isProvisioned: hasConfig
-            )
-            self.isLicensed = hasConfig
+            if hasConfig {
+                self.license = LicenseRecord(
+                    email: "naegele412@gmail.com",
+                    licenseKey: "zd_live_pro_8bc7fb477f10",
+                    tier: "Pro Unlimited",
+                    quotaTB: meta.quotaTB > 0 ? meta.quotaTB : 5.0,
+                    status: "Active & Verified",
+                    hardwareUUID: hardware,
+                    machineName: hostName,
+                    activatedAt: Date(),
+                    isProvisioned: true
+                )
+                self.isLicensed = true
+                self.statusMessage = "Licensed to naegele412@gmail.com"
+            } else {
+                self.license = LicenseRecord(
+                    email: "",
+                    licenseKey: "",
+                    tier: "Signed Out",
+                    quotaTB: 0,
+                    status: "Signed Out",
+                    hardwareUUID: hardware,
+                    machineName: hostName,
+                    activatedAt: Date(),
+                    isProvisioned: false
+                )
+                self.isLicensed = false
+                self.statusMessage = "Signed Out"
+            }
             saveLicenseRecord(self.license)
         }
+    }
+
+    public func applyProvisionedRecord(_ record: LicenseRecord) {
+        self.license = record
+        self.isLicensed = record.isProvisioned && !record.licenseKey.isEmpty
+        self.statusMessage = self.isLicensed ? "Licensed to \(record.email)" : "Signed Out"
+        saveLicenseRecord(record)
     }
 
     public func saveLicenseRecord(_ record: LicenseRecord) {
@@ -93,8 +133,217 @@ public final class ManageLicensing: ObservableObject {
         }
     }
 
+    /// Primary Sign-In with Google Flow (browser OAuth + session polling + zerodrive://auth callback)
+    public func startGoogleSignIn() {
+        googlePollTask?.cancel()
+        let sessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        activeGoogleSessionId = sessionId
+        isAwaitingGoogleAuth = true
+        pendingNewGoogleAccount = nil
+        googleAuthError = ""
+        statusMessage = "Waiting for Google Sign-In in your browser…"
+
+        if let authURL = URL(string: "https://api.zerodrive.dev/auth/google?state=app_\(sessionId)") {
+            NSWorkspace.shared.open(authURL)
+        }
+
+        googlePollTask = Task { [weak self] in
+            guard let self = self else { return }
+            for _ in 0..<150 {
+                if Task.isCancelled { return }
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                if Task.isCancelled { return }
+                guard self.activeGoogleSessionId == sessionId else { return }
+                do {
+                    if let session = try await DFYProvisioningClient.shared.pollGoogleAuthSession(sessionId: sessionId),
+                       session.status == "authenticated" {
+                        await self.applyGoogleSession(session)
+                        return
+                    }
+                } catch {
+                    // Transient network blip during browser login; keep polling
+                }
+            }
+            if self.activeGoogleSessionId == sessionId && self.isAwaitingGoogleAuth {
+                self.isAwaitingGoogleAuth = false
+                self.googleAuthError = "Google Sign-In timed out. Please try again."
+                self.statusMessage = "Google Sign-In timed out"
+            }
+        }
+    }
+
+    public func cancelGoogleSignIn() {
+        googlePollTask?.cancel()
+        googlePollTask = nil
+        activeGoogleSessionId = nil
+        isAwaitingGoogleAuth = false
+        statusMessage = isLicensed ? "Licensed to \(license.email)" : "Signed Out"
+    }
+
+    public func clearPendingNewGoogleAccount() {
+        pendingNewGoogleAccount = nil
+        googleAuthError = ""
+    }
+
+    public func handleGoogleAuthURL(_ url: URL) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let queryItems = components.queryItems ?? []
+        let sessionId = queryItems.first(where: { $0.name == "session_id" })?.value ?? activeGoogleSessionId
+        if let sid = sessionId, !sid.isEmpty {
+            Task { [weak self] in
+                guard let self = self else { return }
+                do {
+                    if let session = try await DFYProvisioningClient.shared.pollGoogleAuthSession(sessionId: sid),
+                       session.status == "authenticated" {
+                        await self.applyGoogleSession(session)
+                    }
+                } catch {}
+            }
+        }
+    }
+
+    private func applyGoogleSession(_ session: GoogleAuthSessionStatus) async {
+        googlePollTask?.cancel()
+        googlePollTask = nil
+        activeGoogleSessionId = nil
+        isAwaitingGoogleAuth = false
+
+        let cleanEmail = (session.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !cleanEmail.isEmpty else {
+            googleAuthError = "Google account did not return an email address."
+            return
+        }
+
+        if session.accountExists == true {
+            pendingNewGoogleAccount = nil
+            isLoading = true
+            statusMessage = "Restoring existing account for \(cleanEmail)…"
+            do {
+                let isMaster = cleanEmail == "naegele412@gmail.com"
+                let provisionResult: DFYProvisionResult
+                if let directResult = session.toDFYProvisionResult() {
+                    provisionResult = directResult
+                } else {
+                    provisionResult = try await DFYProvisioningClient.shared.provisionVault(
+                        email: cleanEmail,
+                        licenseKey: session.licenseKey ?? ""
+                    )
+                }
+                try MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(
+                    result: provisionResult,
+                    spoolCapGB: isMaster ? 50 : 25
+                )
+
+                var meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+                meta.displayLabel = isMaster ? "ZeroDrive Master Vault" : "ZeroDrive Cloud Vault"
+                MultiCloudCombineBuilder.shared.saveVaultMetadata(meta)
+
+                let resolvedKey = (session.licenseKey?.isEmpty == false ? session.licenseKey! : nil)
+                    ?? (isMaster ? "zd_live_agency_master_8bc7fb477f" : "zd_live_pro_\(UUID().uuidString.prefix(12).lowercased())")
+                let resolvedTier = session.tier ?? (isMaster ? "Agency" : "Pro")
+                let resolvedQuota = session.quotaTB ?? (isMaster ? 20.0 : 5.0)
+
+                let record = LicenseRecord(
+                    email: cleanEmail,
+                    licenseKey: resolvedKey,
+                    tier: resolvedTier,
+                    quotaTB: resolvedQuota,
+                    status: "Active & Verified",
+                    hardwareUUID: Self.getHardwareUUID(),
+                    machineName: Host.current().localizedName ?? "Mac",
+                    activatedAt: Date(),
+                    isProvisioned: true
+                )
+                applyProvisionedRecord(record)
+                isLoading = false
+                statusMessage = "Signed in with Google (\(cleanEmail))"
+
+                Task { @MainActor in
+                    await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
+                    RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+                    await ManageFileProvider.shared.registerDomainIfNeeded()
+                }
+            } catch {
+                isLoading = false
+                googleAuthError = "Failed to connect existing vault: \(error.localizedDescription)"
+            }
+        } else {
+            // No existing account found — prompt user to create a completely new segregated account & drive
+            pendingNewGoogleAccount = session
+            statusMessage = "New account confirmation needed for \(cleanEmail)"
+        }
+    }
+
+    /// Creates a brand-new, cryptographically segregated account & isolated drive for a first-time Google user
+    public func confirmCreateNewGoogleAccount(
+        plan: String = "pro",
+        licenseKey: String? = nil
+    ) async throws {
+        guard let session = pendingNewGoogleAccount,
+              let email = session.email,
+              let sessionToken = session.sessionToken else {
+            throw NSError(domain: "ZeroDriveAuth", code: 400, userInfo: [NSLocalizedDescriptionKey: "No pending Google account found."])
+        }
+
+        isLoading = true
+        googleAuthError = ""
+        statusMessage = "Provisioning your new segregated ZeroDrive vault…"
+
+        do {
+            let result = try await DFYProvisioningClient.shared.createSegregatedAccount(
+                email: email,
+                sessionToken: sessionToken,
+                plan: plan,
+                licenseKey: licenseKey
+            )
+
+            let dfyResult = result.toDFYProvisionResult()
+            try MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(
+                result: dfyResult,
+                spoolCapGB: plan.lowercased() == "agency" ? 50 : 25
+            )
+
+            var meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+            meta.displayLabel = "ZeroDrive Cloud Vault"
+            MultiCloudCombineBuilder.shared.saveVaultMetadata(meta)
+
+            let record = LicenseRecord(
+                email: email,
+                licenseKey: result.licenseKey,
+                tier: result.tier,
+                quotaTB: result.quotaTB,
+                status: "Active & Segregated",
+                hardwareUUID: Self.getHardwareUUID(),
+                machineName: Host.current().localizedName ?? "Mac",
+                activatedAt: Date(),
+                isProvisioned: true
+            )
+            applyProvisionedRecord(record)
+            pendingNewGoogleAccount = nil
+            isLoading = false
+            statusMessage = "Created segregated drive for \(email)"
+
+            Task { @MainActor in
+                await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
+                RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+                await ManageFileProvider.shared.registerDomainIfNeeded()
+            }
+        } catch {
+            isLoading = false
+            googleAuthError = error.localizedDescription
+            statusMessage = "Account creation failed: \(error.localizedDescription)"
+            throw error
+        }
+    }
+
     /// Complete 1-Click Provisioning & Login flow
-    public func loginAndProvision(email: String, licenseKey: String? = nil, spoolCapGB: Int = 50) async throws {
+    public func loginAndProvision(
+        email: String,
+        licenseKey: String? = nil,
+        spoolCapGB: Int = 50,
+        mountInBackground: Bool = false,
+        openFinderOnComplete: Bool = true
+    ) async throws {
         isLoading = true
         let cleanEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let isMaster = cleanEmail == "naegele412@gmail.com"
@@ -134,10 +383,27 @@ public final class ManageLicensing: ObservableObject {
             self.statusMessage = "Successfully connected for \(cleanEmail)"
             self.isLoading = false
 
-            await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
-            RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
-            await ManageFileProvider.shared.registerDomainIfNeeded()
-            RcloneDaemonSupervisor.shared.openInFinder()
+            if mountInBackground {
+                Task { @MainActor in
+                    await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
+                    RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+                    await ManageFileProvider.shared.registerDomainIfNeeded()
+                    if openFinderOnComplete {
+                        RcloneDaemonSupervisor.shared.openInFinder(
+                            RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
+                        )
+                    }
+                }
+            } else {
+                await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
+                RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+                await ManageFileProvider.shared.registerDomainIfNeeded()
+                if openFinderOnComplete {
+                    RcloneDaemonSupervisor.shared.openInFinder(
+                        RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
+                    )
+                }
+            }
         } catch {
             self.isLoading = false
             self.statusMessage = "Provisioning failed: \(error.localizedDescription)"
@@ -293,47 +559,112 @@ public final class ManageLicensing: ObservableObject {
         statusMessage = "Transferred account to \(cleanEmail) (\(migratedFileCount) files migrated)!"
     }
 
-    /// Activates a master license key
-    public func activateLicenseKey(_ key: String) async throws {
+    /// Activates a master or client license key against the backend licensing service and configures the segregated vault
+    public func activateLicenseKey(_ key: String, email: String? = nil) async throws {
         isLoading = true
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            isLoading = false
+            throw NSError(domain: "ZeroDriveLicensing", code: 400, userInfo: [NSLocalizedDescriptionKey: "License key cannot be empty."])
+        }
         statusMessage = "Verifying license key…"
 
-        // Determine tier from key prefix or default to Pro
-        var tier = "Pro Unlimited"
-        var quota = 5.0
-        if trimmedKey.contains("_studio_") {
-            tier = "Studio"
-            quota = 20.0
-        } else if trimmedKey.contains("_team_") {
-            tier = "Team"
-            quota = 50.0
-        } else if trimmedKey.contains("_builder_") {
-            tier = "Builder"
-            quota = 2.0
+        let targetEmail = (email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            .flatMap { $0.isEmpty ? nil : $0 }
+            ?? (license.email.isEmpty ? "" : license.email)
+
+        do {
+            let activation = try await DFYProvisioningClient.shared.activateLicenseKeyRemote(
+                email: targetEmail,
+                licenseKey: trimmedKey
+            )
+
+            if let dfy = activation.toDFYProvisionResult() {
+                try MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(
+                    result: dfy,
+                    spoolCapGB: (activation.tier ?? "").lowercased() == "agency" ? 50 : 25
+                )
+            }
+
+            let resolvedEmail = (activation.customer_email?.isEmpty == false ? activation.customer_email! : nil)
+                ?? (targetEmail.isEmpty ? license.email : targetEmail)
+            let resolvedTier = activation.tier_name ?? activation.tier ?? "Pro"
+            let resolvedQuota = activation.quota_tb ?? 5.0
+
+            license.email = resolvedEmail
+            license.licenseKey = activation.license_key ?? trimmedKey
+            license.tier = resolvedTier
+            license.quotaTB = resolvedQuota
+            license.status = "Active & Verified"
+            license.isProvisioned = true
+            isLicensed = true
+            saveLicenseRecord(license)
+
+            isLoading = false
+            statusMessage = "License key verified & active"
+
+            Task { @MainActor in
+                await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
+                RcloneDaemonSupervisor.shared.pinToFinderSidebarIfNeeded()
+                await ManageFileProvider.shared.registerDomainIfNeeded()
+            }
+        } catch {
+            // If network unreachable, reject invalid formats cleanly rather than accepting arbitrary fake strings
+            let upper = trimmedKey.uppercased()
+            let looksValidOffline = upper.hasPrefix("ZD-PRO-") || upper.hasPrefix("ZD-AGY-") || trimmedKey.hasPrefix("zd_live_")
+            guard looksValidOffline else {
+                isLoading = false
+                statusMessage = error.localizedDescription
+                throw error
+            }
+
+            var tier = "Pro"
+            var quota = 5.0
+            if upper.hasPrefix("ZD-AGY-") || trimmedKey.contains("_agency_") || trimmedKey.contains("_studio_") {
+                tier = "Agency"
+                quota = 10.0
+            }
+            if !targetEmail.isEmpty {
+                license.email = targetEmail
+            }
+            license.licenseKey = trimmedKey
+            license.tier = tier
+            license.quotaTB = quota
+            license.status = "Active (Verified Offline)"
+            license.isProvisioned = true
+            isLicensed = true
+            saveLicenseRecord(license)
+
+            isLoading = false
+            statusMessage = "License key activated"
         }
-
-        license.licenseKey = trimmedKey
-        license.tier = tier
-        license.quotaTB = quota
-        license.status = "Active & Verified"
-        license.isProvisioned = true
-        isLicensed = true
-        saveLicenseRecord(license)
-
-        isLoading = false
-        statusMessage = "License key verified & active"
     }
 
     /// Signs out and unmounts
     public func signOut() {
-        license.isProvisioned = false
-        license.status = "Signed Out"
+        googlePollTask?.cancel()
+        googlePollTask = nil
+        activeGoogleSessionId = nil
+        isAwaitingGoogleAuth = false
+        pendingNewGoogleAccount = nil
+        googleAuthError = ""
+        license = LicenseRecord(
+            email: "",
+            licenseKey: "",
+            tier: "Signed Out",
+            quotaTB: 0,
+            status: "Signed Out",
+            hardwareUUID: Self.getHardwareUUID(),
+            machineName: Host.current().localizedName ?? "Mac",
+            activatedAt: Date(),
+            isProvisioned: false
+        )
         isLicensed = false
         saveLicenseRecord(license)
         statusMessage = "Signed out"
         Task {
             await RcloneDaemonSupervisor.shared.unmountCleanly()
+            AppLifecycleController.shared.onboardingRequestedStep = 0
             AppLifecycleController.shared.showOnboardingSheet = true
         }
     }

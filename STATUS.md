@@ -10,6 +10,7 @@
 
 ## 1. Where Supporting Research & Plans Live
 
+- **Canonical Product Definition, 5-Pillar Differentiation & 3 Unfair Advantages (Nov 12):** [`docs/product-differentiation-and-advantages.md`](./docs/product-differentiation-and-advantages.md)
 - **Product Strategy, 3-Bucket Inventory, Competitor Research & Pricing:** [`docs/product-strategy-and-market-research.md`](./docs/product-strategy-and-market-research.md)
 - **Apple HIG UI/UX Audit & 6th-Grade Simplicity Redesign:** [`docs/ui-ux-review-and-redesign.md`](./docs/ui-ux-review-and-redesign.md)
 - **Step-by-Step Execution Plan & Full Scope Outline:** [`docs/execution-plan.md`](./docs/execution-plan.md)

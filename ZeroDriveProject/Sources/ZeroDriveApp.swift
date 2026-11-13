@@ -2,32 +2,49 @@ import SwiftUI
 import AppKit
 import FileProvider
 
+private struct ZeroDriveRootContainerView: View {
+    @EnvironmentObject var lifecycleController: AppLifecycleController
+    @EnvironmentObject var supervisor: RcloneDaemonSupervisor
+    @EnvironmentObject var spoolManager: SpoolAndGuardManager
+    @EnvironmentObject var indexer: RAMTreeIndexer
+    @ObservedObject private var licensing = ManageLicensing.shared
+
+    private var isStandaloneOnboarding: Bool {
+        !licensing.isLicensed || lifecycleController.showOnboardingSheet
+    }
+
+    var body: some View {
+        Group {
+            if isStandaloneOnboarding {
+                OnboardingView()
+                    .frame(width: 680)
+            } else {
+                MainStudioWindow()
+                    .frame(minWidth: 900, minHeight: 620)
+            }
+        }
+        .onAppear {
+            AppDelegate.shared?.applyWindowMode(isOnboarding: isStandaloneOnboarding)
+        }
+        .onChange(of: isStandaloneOnboarding) { newValue in
+            AppDelegate.shared?.applyWindowMode(isOnboarding: newValue, forceCenter: true)
+        }
+    }
+}
+
 @main
 struct ZeroDriveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var lifecycleController = AppLifecycleController.shared
     @StateObject private var supervisor = RcloneDaemonSupervisor.shared
     @StateObject private var spoolManager = SpoolAndGuardManager.shared
-    @StateObject private var indexer = RAMTreeIndexer.shared
-    @StateObject private var turbo = TurboMigrationManager.shared
+
+    init() {
+        if CommandLine.arguments.contains("--dump-storage-audit") {
+            ManageStorageAdvisor.runHeadlessAuditAndExit()
+        }
+    }
 
     var body: some Scene {
-        WindowGroup("ZeroDrive", id: "studio") {
-            MainStudioWindow()
-                .environmentObject(lifecycleController)
-                .environmentObject(supervisor)
-                .environmentObject(spoolManager)
-                .environmentObject(indexer)
-                .frame(minWidth: 840, minHeight: 560)
-                .onAppear {
-                    lifecycleController.setStudioWindowVisible(true)
-                }
-                .onDisappear {
-                    lifecycleController.setStudioWindowVisible(false)
-                }
-        }
-        .defaultSize(width: 960, height: 680)
-
         Settings {
             AutostartAndWorkflowsView()
                 .environmentObject(supervisor)
@@ -38,7 +55,13 @@ struct ZeroDriveApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    public static weak var shared: AppDelegate?
+
+    private var mainWindow: NSWindow?
+    private var hostController: NSHostingController<AnyView>?
+    private var lastOnboardingMode: Bool?
+
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var statusTimer: Timer?
@@ -46,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigintSource: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.shared = self
+
         NSApp.setActivationPolicy(.regular)
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
@@ -69,12 +94,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await RcloneDaemonSupervisor.shared.autoMountIfConfigured()
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            NSApp.activate(ignoringOtherApps: true)
-            for window in NSApp.windows where !(window is NSPanel) {
-                window.makeKeyAndOrderFront(nil)
+        let rootView = ZeroDriveRootContainerView()
+            .environmentObject(AppLifecycleController.shared)
+            .environmentObject(RcloneDaemonSupervisor.shared)
+            .environmentObject(SpoolAndGuardManager.shared)
+            .environmentObject(RAMTreeIndexer.shared)
+
+        let controller = NSHostingController(rootView: AnyView(rootView))
+        if #available(macOS 13.0, *) {
+            controller.sizingOptions = []
+        }
+        self.hostController = controller
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.delegate = self
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.contentViewController = controller
+        self.mainWindow = window
+
+        let initialOnboarding = !ManageLicensing.shared.isLicensed || AppLifecycleController.shared.showOnboardingSheet
+        applyWindowMode(isOnboarding: initialOnboarding, forceCenter: true)
+        presentMainWindow()
+    }
+
+    public func presentMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if !ManageLicensing.shared.isLicensed {
+            NSApp.terminate(nil)
+            return false
+        }
+        sender.orderOut(nil)
+        return false
+    }
+
+    private func targetScreen(for window: NSWindow) -> NSScreen? {
+        let mouseLoc = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) })
+            ?? window.screen
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+    }
+
+    public func applyWindowMode(isOnboarding: Bool, forceCenter: Bool = false) {
+        guard let window = mainWindow else { return }
+        let modeChanged = (lastOnboardingMode != isOnboarding)
+        lastOnboardingMode = isOnboarding
+
+        if isOnboarding {
+            window.title = "ZeroDrive Setup"
+            window.styleMask.remove(.resizable)
+            window.minSize = NSSize(width: 680, height: 480)
+            window.maxSize = NSSize(width: 680, height: 780)
+            let fittingHeight = hostController?.view.fittingSize.height ?? 560
+            let clampedHeight = min(max(fittingHeight, 480), 780)
+            let size = NSSize(width: 680, height: clampedHeight)
+
+            if forceCenter || modeChanged {
+                if let screen = targetScreen(for: window) {
+                    let visible = screen.visibleFrame
+                    let frame = NSRect(
+                        x: visible.midX - size.width / 2,
+                        y: visible.midY - size.height / 2,
+                        width: size.width,
+                        height: size.height
+                    )
+                    window.setFrame(frame, display: true, animate: false)
+                } else {
+                    window.setContentSize(size)
+                    window.center()
+                }
+            } else {
+                let oldFrame = window.frame
+                let newOriginY = oldFrame.maxY - size.height
+                window.setFrame(NSRect(x: oldFrame.origin.x, y: newOriginY, width: size.width, height: size.height), display: true, animate: true)
+            }
+        } else {
+            window.title = "ZeroDrive"
+            window.styleMask.insert(.resizable)
+            window.minSize = NSSize(width: 900, height: 620)
+            window.maxSize = NSSize(width: 10000, height: 10000)
+            if forceCenter || modeChanged {
+                let size = NSSize(width: 1040, height: 740)
+                if let screen = targetScreen(for: window) {
+                    let visible = screen.visibleFrame
+                    let frame = NSRect(
+                        x: visible.midX - size.width / 2,
+                        y: visible.midY - size.height / 2,
+                        width: size.width,
+                        height: size.height
+                    )
+                    window.setFrame(frame, display: true, animate: false)
+                } else {
+                    window.setContentSize(size)
+                    window.center()
+                }
             }
         }
+    }
+
+    public func syncOnboardingHeight() {
+        guard lastOnboardingMode == true else { return }
+        applyWindowMode(isOnboarding: true, forceCenter: false)
     }
 
     private func setupStatusItem() {
@@ -308,6 +439,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppLifecycleController.shared.setStudioWindowVisible(true)
                 continue
             }
+            if url.host == "auth" {
+                ManageLicensing.shared.handleGoogleAuthURL(url)
+                presentMainWindow()
+                continue
+            }
             guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
             let cmd = components.queryItems?.first(where: { $0.name == "cmd" })?.value ?? "move"
             let paths = components.queryItems?.filter({ $0.name == "path" }).compactMap({ $0.value }) ?? []
@@ -375,15 +511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        AppLifecycleController.shared.setStudioWindowVisible(true)
-        if !flag {
-            for window in sender.windows {
-                if window.canBecomeMain {
-                    window.makeKeyAndOrderFront(self)
-                    break
-                }
-            }
-        }
+        presentMainWindow()
         return true
     }
 

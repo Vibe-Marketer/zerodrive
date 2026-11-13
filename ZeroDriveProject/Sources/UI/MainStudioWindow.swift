@@ -154,11 +154,6 @@ public struct MainStudioWindow: View {
                 }
             }
         }
-        .sheet(isPresented: $lifecycleController.showOnboardingSheet) {
-            OnboardingView()
-                .environmentObject(lifecycleController)
-                .environmentObject(supervisor)
-        }
         .sheet(item: $pendingTransfer) { pending in
             TransferConfirmationSheet(pendingItem: pending) { confirmed in
                 pendingTransfer = nil
@@ -181,6 +176,9 @@ public struct MainStudioWindow: View {
             )
         }
         .onAppear {
+            if !ManageLicensing.shared.isLicensed {
+                lifecycleController.showOnboardingSheet = true
+            }
             connectedClouds = MultiCloudCombineBuilder.shared.connectedExternalClouds()
             if let rclone = supervisor.resolveRcloneBinary() {
                 Task { await vaultStats.refresh(rclone: rclone) }
@@ -199,6 +197,9 @@ public struct MainStudioWindow: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenStorageAdvisorTab"))) { _ in
             selectedTab = 3
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenDashboardMoveFolderPicker"))) { _ in
+            selectedTab = 0
         }
     }
 

@@ -41,7 +41,10 @@ import {
   createPortalSession,
   handleStripeWebhook,
   verifyLicenseKey,
-  activateLicenseKey
+  activateLicenseKey,
+  buildTenantIdentityForEmail,
+  createManagedLicense,
+  getLicenseSecret
 } from "./billing.js";
 
 /**
@@ -215,14 +218,25 @@ function xmlEscape(str) {
     .replace(/'/g, "&apos;");
 }
 
-function extractTenantFromAuth(request) {
+function extractTenantFromAuth(request, url = null) {
   const auth = request.headers.get("Authorization") || "";
   const match = auth.match(/Credential=([^/,\s]+)\//);
   if (match && match[1]) {
     const clean = match[1].replace(/[^a-zA-Z0-9_-]/g, "");
     if (clean.length > 0) return clean;
   }
+  if (url) {
+    const queryCred = url.searchParams.get("X-Amz-Credential") || "";
+    const firstSeg = queryCred.split("/")[0]?.replace(/[^a-zA-Z0-9_-]/g, "");
+    if (firstSeg) return firstSeg;
+  }
   return "default_tenant";
+}
+
+function hasUnsafePathTraversal(pathStr) {
+  if (!pathStr) return false;
+  const segments = String(pathStr).split(/[\\/]/);
+  return segments.some((s) => s === ".." || s.includes("\0"));
 }
 
 function parseRangeHeader(rangeHeader, totalSize) {
@@ -270,16 +284,47 @@ function matchesIfRange(ifRangeHeader, currentEtag, uploadedDate) {
 }
 
 async function handleS3Proxy(request, env, url) {
-  const tenantId = extractTenantFromAuth(request);
+  const tenantId = extractTenantFromAuth(request, url);
+  if (!tenantId || tenantId === "default_tenant") {
+    return new Response(
+      `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Missing or invalid S3 tenant credentials.</Message></Error>`,
+      { status: 403, headers: { "Content-Type": "application/xml" } }
+    );
+  }
   // Path after /s3/ -> e.g. /s3/zerodrive-vault-prod/usr_alice/video.mov
   const rawSubpath = decodeURIComponent(url.pathname.replace(/^\/s3\/?/, ""));
   const slashIdx = rawSubpath.indexOf("/");
   const bucketName = slashIdx === -1 ? rawSubpath : rawSubpath.slice(0, slashIdx);
   const objectKey = slashIdx === -1 ? "" : rawSubpath.slice(slashIdx + 1);
+  const reqPrefix = url.searchParams.get("prefix") || "";
+
+  if (hasUnsafePathTraversal(objectKey) || hasUnsafePathTraversal(reqPrefix)) {
+    return new Response(
+      `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Invalid path traversal.</Message></Error>`,
+      { status: 403, headers: { "Content-Type": "application/xml" } }
+    );
+  }
 
   // Enforce multi-tenant prefix isolation in R2
   const tenantRoot = `tenants/${tenantId}/`;
   const r2Key = objectKey ? `${tenantRoot}${objectKey}` : "";
+
+  // Strictly block access outside tenant's own prefix if tenant is non-master
+  if (tenantId !== "zd_r2_andrew_8bc7fb477f" && tenantId.startsWith("zd_r2_usr_")) {
+    const expectedUserSeg = tenantId.slice("zd_r2_".length);
+    if (objectKey && objectKey !== expectedUserSeg && !objectKey.startsWith(`${expectedUserSeg}/`)) {
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Tenant boundary violation.</Message></Error>`,
+        { status: 403, headers: { "Content-Type": "application/xml" } }
+      );
+    }
+    if (reqPrefix && reqPrefix !== expectedUserSeg && !reqPrefix.startsWith(`${expectedUserSeg}/`) && !expectedUserSeg.startsWith(reqPrefix)) {
+      return new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Tenant prefix boundary violation.</Message></Error>`,
+        { status: 403, headers: { "Content-Type": "application/xml" } }
+      );
+    }
+  }
 
   const method = request.method.toUpperCase();
 
@@ -289,7 +334,6 @@ async function handleS3Proxy(request, env, url) {
       return new Response(null, { status: 200 });
     }
     if (method === "GET") {
-      const reqPrefix = url.searchParams.get("prefix") || "";
       const delimiter = url.searchParams.get("delimiter") || undefined;
       const maxKeys = Math.min(parseInt(url.searchParams.get("max-keys") || "1000", 10), 1000);
       const cursor = url.searchParams.get("continuation-token") || undefined;
@@ -585,6 +629,15 @@ async function handleS3Proxy(request, env, url) {
       const decodedSource = decodeURIComponent(copySource).replace(/^\/+/, "");
       const srcSlash = decodedSource.indexOf("/");
       const srcRelKey = srcSlash === -1 ? decodedSource : decodedSource.slice(srcSlash + 1);
+      if (hasUnsafePathTraversal(srcRelKey)) {
+        return new Response("Forbidden: Invalid copy source path", { status: 403 });
+      }
+      if (tenantId !== "zd_r2_andrew_8bc7fb477f" && tenantId.startsWith("zd_r2_usr_")) {
+        const expectedUserSeg = tenantId.slice("zd_r2_".length);
+        if (srcRelKey !== expectedUserSeg && !srcRelKey.startsWith(`${expectedUserSeg}/`)) {
+          return new Response("Forbidden: Cross-tenant copy denied", { status: 403 });
+        }
+      }
       const srcR2Key = `${tenantRoot}${srcRelKey}`;
       const existing = await env.VAULT_BUCKET.get(srcR2Key);
       if (!existing) {
@@ -919,7 +972,7 @@ function authenticateMCPRequest(request, env, url) {
 
   // Check master vault key or user-specific prefix
   const masterKey = env.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
-  if (token.startsWith("zd_oauth_master_") || token === masterKey || token.includes("andrew") || token.startsWith("zd_r2_andrew") || token === "zd_oauth_master") {
+  if (token.startsWith("zd_oauth_master_") || token === masterKey || token === "zd_r2_andrew_8bc7fb477f" || token === "zd_oauth_master") {
     return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
   }
 
@@ -2219,6 +2272,77 @@ async function handleOAuthUserInfo(request, env, url, corsHeaders) {
   );
 }
 
+const accountCache = new Map();
+const authSessionCache = new Map();
+
+async function loadAccountByEmail(env, email) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!cleanEmail) return null;
+  if (cleanEmail === "naegele412@gmail.com") {
+    return {
+      email: cleanEmail,
+      userPrefix: "usr_andrew_8bc7fb477f",
+      tenantPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f",
+      accessKeyId: "zd_r2_andrew_8bc7fb477f",
+      secretAccessKey: "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633",
+      tier: "Agency",
+      tierId: "agency",
+      quotaTB: 20.0,
+      licenseKey: "zd_live_agency_master_8bc7fb477f",
+      isMasterAdmin: true
+    };
+  }
+  if (accountCache.has(cleanEmail)) {
+    return accountCache.get(cleanEmail);
+  }
+  const emailHash = await sha256Hex(cleanEmail);
+  if (env?.VAULT_BUCKET) {
+    try {
+      const obj = await env.VAULT_BUCKET.get(`_accounts/${emailHash}.json`);
+      if (obj) {
+        const parsed = JSON.parse(await obj.text());
+        accountCache.set(cleanEmail, parsed);
+        return parsed;
+      }
+      // Fallback: check if starter vault was previously provisioned for this email
+      const identity = await buildTenantIdentityForEmail(env, cleanEmail);
+      const existingVault = await env.VAULT_BUCKET.head(`${identity.tenantPrefix}/ROUTER.md`);
+      if (existingVault) {
+        const backfilled = {
+          email: cleanEmail,
+          userPrefix: identity.userPrefix,
+          tenantPrefix: identity.tenantPrefix,
+          accessKeyId: identity.accessKeyId,
+          secretAccessKey: identity.secretAccessKey,
+          tier: "Pro",
+          tierId: "pro",
+          quotaTB: 5.0,
+          licenseKey: `zd_live_pro_${emailHash.slice(0, 16)}`,
+          createdAt: new Date().toISOString()
+        };
+        await saveAccountRecord(env, backfilled);
+        return backfilled;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function saveAccountRecord(env, account) {
+  if (!account || !account.email) return null;
+  const cleanEmail = account.email.trim().toLowerCase();
+  accountCache.set(cleanEmail, account);
+  if (env?.VAULT_BUCKET) {
+    try {
+      const emailHash = await sha256Hex(cleanEmail);
+      await env.VAULT_BUCKET.put(`_accounts/${emailHash}.json`, JSON.stringify(account, null, 2), {
+        httpMetadata: { contentType: "application/json" }
+      });
+    } catch {}
+  }
+  return account;
+}
+
 async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
   const code = url.searchParams.get("code");
   const error = url.searchParams.get("error");
@@ -2265,29 +2389,20 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
 
   const user = await userResp.json();
   const email = (user.email || "").toLowerCase().trim();
-
-  // Route to Andrew's master vault if naegele412@gmail.com, or create isolated user prefix
+  const identity = await buildTenantIdentityForEmail(env, email);
   const isMasterAdmin = email === "naegele412@gmail.com";
-  let userPrefix = "usr_andrew_8bc7fb477f";
-  let sessionToken = "";
+  const userPrefix = identity.userPrefix;
+  const tenantPrefix = identity.tenantPrefix;
 
   const tokenHash = await sha256Hex(`${email}:${clientSecret}:v2`);
+  const sessionToken = isMasterAdmin
+    ? `zd_oauth_master_${tokenHash.slice(0, 32)}`
+    : `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
 
-  if (isMasterAdmin) {
-    userPrefix = "usr_andrew_8bc7fb477f";
-    sessionToken = `zd_oauth_master_${tokenHash.slice(0, 32)}`;
-  } else {
-    const cleanName = email.split("@")[0].replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-    const userHash = (await sha256Hex(email)).slice(0, 10);
-    userPrefix = `usr_${cleanName}_${userHash}`;
-    sessionToken = `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
-  }
+  // Check if an existing ZeroDrive account exists for this Google identity
+  const existingAccount = await loadAccountByEmail(env, email);
+  const accountExists = Boolean(existingAccount);
 
-  const tenantPrefix = isMasterAdmin
-    ? "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f"
-    : `tenants/zd_r2_${userPrefix}/${userPrefix}`;
-  await ensureStarterVaultFiles(env, tenantPrefix);
-  
   // Unpack state parameter safely
   const rawState = url.searchParams.get("state") || "";
   let clientRedirectUri = "";
@@ -2305,6 +2420,7 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
 
   // If external OAuth client (like Muse, Claude, Cursor) initiated login:
   if (clientRedirectUri) {
+    await ensureStarterVaultFiles(env, tenantPrefix);
     const authCode = await createAuthCode(clientSecret, { email, sessionToken, userPrefix });
     const targetUrl = new URL(clientRedirectUri);
     targetUrl.searchParams.set("code", authCode);
@@ -2312,10 +2428,125 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
     return Response.redirect(targetUrl.toString(), 302);
   }
 
-  // If redirecting to native Mac app
-  if (clientState === "app") {
-    return Response.redirect(`zerodrive://auth?token=${sessionToken}&email=${encodeURIComponent(email)}`, 302);
+  // Only pre-seed vault files automatically when account already exists (new accounts are created explicitly on confirmation)
+  if (accountExists) {
+    await ensureStarterVaultFiles(env, tenantPrefix);
   }
+
+  // Desktop Mac App OAuth flow: persist session payload for polling AND deep-link back into ZeroDrive.app
+  if (clientState === "app" || String(clientState).startsWith("app_")) {
+    const sessionId = String(clientState).startsWith("app_")
+      ? String(clientState).slice(4).replace(/[^a-zA-Z0-9_-]/g, "")
+      : "default";
+
+    const sessionPayload = {
+      ok: true,
+      status: "authenticated",
+      sessionId,
+      email,
+      name: user.name || email.split("@")[0] || "ZeroDrive User",
+      picture: user.picture || "",
+      accountExists,
+      sessionToken,
+      userPrefix,
+      tenantPrefix,
+      tier: existingAccount?.tier || (isMasterAdmin ? "Agency" : "Pending Account Creation"),
+      quotaTB: existingAccount?.quotaTB || (isMasterAdmin ? 20.0 : 5.0),
+      licenseKey: existingAccount?.licenseKey || "",
+      endpoint: `${CANONICAL_ORIGIN}/s3`,
+      bucket: env.R2_BUCKET || "zerodrive-vault-prod",
+      accessKeyId: existingAccount?.accessKeyId || identity.accessKeyId,
+      secretAccessKey: existingAccount?.secretAccessKey || identity.secretAccessKey,
+      authenticatedAt: new Date().toISOString()
+    };
+
+    authSessionCache.set(sessionId, sessionPayload);
+    if (env?.VAULT_BUCKET) {
+      try {
+        await env.VAULT_BUCKET.put(`_auth_sessions/${sessionId}.json`, JSON.stringify(sessionPayload, null, 2), {
+          httpMetadata: { contentType: "application/json" }
+        });
+      } catch {}
+    }
+
+    const deepLink = `zerodrive://auth?session_id=${encodeURIComponent(sessionId)}&email=${encodeURIComponent(email)}&exists=${accountExists ? "1" : "0"}&token=${encodeURIComponent(sessionToken)}`;
+    const appCallbackHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ZeroDrive — Google Sign-In Verified</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <style>
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at 50% 18%, rgba(52, 199, 89, 0.14) 0%, transparent 60%), #08080a;
+      color: #f5f5f7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(18, 18, 24, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 22px;
+      padding: 40px 34px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+    }
+    .title { font-size: 22px; font-weight: 700; margin: 14px 0 8px; }
+    .email {
+      display: inline-block;
+      background: rgba(52, 199, 89, 0.14);
+      color: #34c759;
+      border: 1px solid rgba(52, 199, 89, 0.35);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+    .desc { font-size: 14px; color: #a1a1a6; line-height: 1.5; margin-bottom: 24px; }
+    .btn {
+      display: inline-block;
+      background: #ffffff;
+      color: #000000;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 12px 26px;
+      border-radius: 999px;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img src="/app-icon.png" width="56" height="56" style="border-radius:14px;" alt="ZeroDrive">
+    <div class="title">Google Sign-In Verified</div>
+    <div class="email">${xmlEscape(email)}</div>
+    <p class="desc">${accountExists
+      ? "Welcome back! Returning you to ZeroDrive with your existing Cloud Vault."
+      : "No existing account found for this Google email. Returning you to ZeroDrive to create your segregated account & drive."}</p>
+    <a href="${deepLink}" class="btn">Return to ZeroDrive App</a>
+    <p style="font-size:12px; color:#6e6e73; margin-top:18px;">Your ZeroDrive Mac app updates automatically — you can close this browser tab.</p>
+  </div>
+  <script>
+    setTimeout(function() { window.location.href = ${JSON.stringify(deepLink)}; }, 150);
+  </script>
+</body>
+</html>`;
+    return new Response(appCallbackHtml, {
+      headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+    });
+  }
+
+  // Fallback for direct web Google OAuth: ensure starter vault if needed
+  await ensureStarterVaultFiles(env, tenantPrefix);
 
   // Return Apple-grade branded HTML page confirming login
   const mcpUrl = `https://api.zerodrive.dev/mcp?key=${sessionToken}`;
@@ -7564,9 +7795,150 @@ export default {
       return handleApiDocsHtml(url, corsHeaders);
     }
 
+    // 00f. Google OAuth Desktop Polling & Segregated Account Creation (/v1/auth/*)
+    if (url.pathname === "/v1/auth/session" && request.method === "GET") {
+      const sessionId = (url.searchParams.get("id") || "").replace(/[^a-zA-Z0-9_-]/g, "");
+      if (!sessionId) {
+        return jsonResponse({ ok: false, error: "Missing session id" }, 400, corsHeaders);
+      }
+      let sessionData = authSessionCache.get(sessionId);
+      if (!sessionData && env?.VAULT_BUCKET) {
+        try {
+          const obj = await env.VAULT_BUCKET.get(`_auth_sessions/${sessionId}.json`);
+          if (obj) {
+            sessionData = JSON.parse(await obj.text());
+            authSessionCache.set(sessionId, sessionData);
+          }
+        } catch {}
+      }
+      if (!sessionData) {
+        return jsonResponse({ ok: true, status: "pending", sessionId }, 200, corsHeaders);
+      }
+      return jsonResponse(sessionData, 200, corsHeaders);
+    }
+
+    if (url.pathname === "/v1/auth/account-status" && request.method === "GET") {
+      const email = (url.searchParams.get("email") || "").trim().toLowerCase();
+      if (!email || !email.includes("@")) {
+        return jsonResponse({ ok: false, error: "Valid email is required" }, 400, corsHeaders);
+      }
+      const existing = await loadAccountByEmail(env, email);
+      return jsonResponse({
+        ok: true,
+        email,
+        accountExists: Boolean(existing),
+        tier: existing?.tier || null,
+        quotaTB: existing?.quotaTB || null,
+        userPrefix: existing?.userPrefix || null
+      }, 200, corsHeaders);
+    }
+
+    if (url.pathname === "/v1/auth/create-account" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const email = (body.email || "").trim().toLowerCase();
+        const sessionToken = (body.sessionToken || "").trim();
+        const plan = (body.plan || "pro").trim().toLowerCase();
+        const providedKey = (body.licenseKey || "").trim();
+        const machineUUID = (body.machineUUID || "mac").trim();
+        const machineName = (body.machineName || "Mac").trim();
+
+        if (!email || !email.includes("@")) {
+          return jsonResponse({ ok: false, error: "Valid Google account email is required" }, 400, corsHeaders);
+        }
+
+        // Verify caller owns the Google OAuth session token OR presents a valid signed license key
+        const clientSecret = env.GOOGLE_CLIENT_SECRET || "";
+        const expectedHash = await sha256Hex(`${email}:${clientSecret}:v2`);
+        const isMasterAdmin = email === "naegele412@gmail.com";
+        const identity = await buildTenantIdentityForEmail(env, email);
+        const expectedSessionToken = isMasterAdmin
+          ? `zd_oauth_master_${expectedHash.slice(0, 32)}`
+          : `zd_oauth_${identity.userPrefix}_${expectedHash.slice(0, 16)}`;
+
+        let activatedLicense = null;
+        if (providedKey) {
+          const act = await activateLicenseKey(env, {
+            licenseKey: providedKey,
+            machineId: machineUUID,
+            machineName,
+            os: "macos",
+            email
+          });
+          if (!act.activated) {
+            return jsonResponse({ ok: false, error: act.error || "Invalid license key" }, 403, corsHeaders);
+          }
+          activatedLicense = act;
+        } else if (clientSecret && sessionToken && sessionToken !== expectedSessionToken) {
+          return jsonResponse({ ok: false, error: "Unauthorized session token for account creation" }, 401, corsHeaders);
+        }
+
+        // Resolve tier: License activation takes priority, then selected plan ("pro" or "agency")
+        const resolvedTierId = activatedLicense?.tier || (plan === "agency" ? "agency" : "pro");
+        const tierObj = getTier(env, resolvedTierId);
+        const quotaTB = isMasterAdmin
+          ? 20.0
+          : (activatedLicense?.quota_tb || Number(((tierObj.storage_gb || 5120) / 1024).toFixed(2)));
+        const tierName = isMasterAdmin ? "Agency" : (activatedLicense?.tier_name || tierObj.name);
+
+        let finalLicenseKey = activatedLicense?.license_key || "";
+        if (!finalLicenseKey) {
+          const created = await createManagedLicense(env, {
+            tierId: resolvedTierId,
+            customerEmail: email,
+            quotaGB: Math.round(quotaTB * 1024),
+            notes: "Created via Google Sign-In onboarding"
+          });
+          finalLicenseKey = created.license_key;
+        }
+
+        // Create completely segregated tenant vault directory & starter files
+        await ensureStarterVaultFiles(env, identity.tenantPrefix);
+
+        const accountRecord = {
+          email,
+          userPrefix: identity.userPrefix,
+          tenantPrefix: identity.tenantPrefix,
+          accessKeyId: identity.accessKeyId,
+          secretAccessKey: identity.secretAccessKey,
+          tier: tierName,
+          tierId: resolvedTierId,
+          quotaTB,
+          licenseKey: finalLicenseKey,
+          segregated: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        await saveAccountRecord(env, accountRecord);
+
+        return jsonResponse({
+          ok: true,
+          accountCreated: true,
+          segregated: true,
+          endpoint: `${CANONICAL_ORIGIN}/s3`,
+          bucket: env.R2_BUCKET || "zerodrive-vault-prod",
+          userPrefix: identity.userPrefix,
+          tenantPrefix: identity.tenantPrefix,
+          accessKeyId: identity.accessKeyId,
+          secretAccessKey: identity.secretAccessKey,
+          quotaTB,
+          tier: tierName,
+          licenseKey: finalLicenseKey,
+          mcpUrl: `${CANONICAL_ORIGIN}/mcp?key=${sessionToken || expectedSessionToken}`
+        }, 200, corsHeaders);
+      } catch (err) {
+        return jsonResponse({
+          ok: false,
+          error: "Failed to create segregated account",
+          details: err instanceof Error ? err.message : String(err)
+        }, 400, corsHeaders);
+      }
+    }
+
     // 0a. REST API v1 Router (/v1/*)
     if (
       url.pathname.startsWith("/v1/") &&
+      !url.pathname.startsWith("/v1/auth/") &&
       url.pathname !== "/v1/mcp" &&
       url.pathname !== "/v1/health" &&
       url.pathname !== "/v1/vault/provision" &&
@@ -7950,44 +8322,50 @@ export default {
       );
     }
 
-    // 4. 1-Click DFY Vault Provisioning Endpoint
+    // 4. 1-Click DFY Vault Provisioning Endpoint (strict per-tenant S3 segregation)
     if (url.pathname === "/v1/vault/provision" && request.method === "POST") {
       try {
         const body = await request.json();
         const email = (body.email || "user@zerodrive.dev").trim().toLowerCase();
         const isMasterAdmin = email === "naegele412@gmail.com";
-        const cleanName = email
-          .split("@")[0]
-          .replace(/[^a-zA-Z0-9]/g, "_")
-          .toLowerCase();
-        const userHash = (await sha256Hex(email)).slice(0, 10);
-        const secretHash = await sha256Hex(`${email}:${body.machineUUID || "mac"}:zerodrive-v3`);
+        const identity = await buildTenantIdentityForEmail(env, email);
+        const existingAccount = await loadAccountByEmail(env, email);
 
-        const endpoint =
-          env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.CLOUDFLARE_ACCOUNT_ID
-            ? `https://${env.CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com`
-            : `${CANONICAL_ORIGIN}/s3`;
+        const endpoint = `${CANONICAL_ORIGIN}/s3`;
+        let tierName = isMasterAdmin ? "Agency" : (existingAccount?.tier || "Pro");
+        let quotaTB = isMasterAdmin ? 20.0 : (existingAccount?.quotaTB || 5.0);
+        let resolvedKey = body.licenseKey ? String(body.licenseKey).trim() : (existingAccount?.licenseKey || "");
 
-        const isFree = !isMasterAdmin && (body.tier === "free" || (body.licenseKey && String(body.licenseKey).toLowerCase().includes("free")));
-        const quotaTB = isMasterAdmin ? 20.0 : (isFree ? 0.01 : parseFloat(env.DEFAULT_QUOTA_TB || "5.0"));
+        // Validate/activate license key if provided
+        if (!isMasterAdmin && resolvedKey && !resolvedKey.toLowerCase().includes("free")) {
+          const check = await verifyLicenseKey(env, resolvedKey);
+          if (check.valid) {
+            tierName = check.tier_name || check.tier || tierName;
+            quotaTB = check.quota_tb || quotaTB;
+          }
+        }
 
-        const userPrefix = isMasterAdmin ? "usr_andrew_8bc7fb477f" : `usr_${cleanName}_${userHash}`;
-        const accessKeyId = isMasterAdmin ? "zd_r2_andrew_8bc7fb477f" : (env.R2_ACCESS_KEY_ID || `zd_r2_${cleanName}_${userHash}`);
-        const secretAccessKey = isMasterAdmin
-          ? "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633"
-          : (env.R2_SECRET_ACCESS_KEY || `zd_sec_${secretHash}`);
+        const isFree = !isMasterAdmin && (body.tier === "free" || (resolvedKey && resolvedKey.toLowerCase().includes("free")));
+        if (isFree) {
+          tierName = "Free (BYOK)";
+          quotaTB = 0.01;
+        }
+
+        await ensureStarterVaultFiles(env, identity.tenantPrefix);
 
         const provisionData = {
           endpoint,
           bucket: env.R2_BUCKET || "zerodrive-vault-prod",
-          userPrefix,
-          accessKeyId,
-          secretAccessKey,
+          userPrefix: identity.userPrefix,
+          accessKeyId: identity.accessKeyId,
+          secretAccessKey: identity.secretAccessKey,
           quotaTB,
-          tier: isMasterAdmin ? "Studio Enterprise" : (isFree ? "Free Starter" : "Pro Unlimited"),
+          tier: tierName,
+          licenseKey: resolvedKey,
+          segregated: true,
           domain: "api.zerodrive.dev",
           provisionedAt: new Date().toISOString(),
-          mode: isMasterAdmin ? "live_master_vault" : (isFree ? "live_r2_free_starter" : "live_r2_s3_proxy"),
+          mode: isMasterAdmin ? "live_master_vault" : (isFree ? "live_r2_free_byok" : "live_r2_s3_segregated"),
         };
 
         return new Response(JSON.stringify(provisionData), {

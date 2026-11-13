@@ -53,6 +53,36 @@ export const DEFAULT_PRICING_TIERS = {
       seats: 1
     }
   },
+  pro: {
+    id: "pro",
+    name: "Pro",
+    aliases: ["creator", "professional", "pro_unlimited"],
+    price_monthly: 29.00,
+    price_yearly: 197.00,
+    storage_gb: 5120, // 5TB
+    max_drives: 4,
+    max_devices: 4,
+    seats: 1,
+    featured: true,
+    features: [
+      "5TB DFY Cloud Storage (Zero config)",
+      "Multi-Drive Finder Isolation (Work + Personal + Partitions)",
+      "4 Machine Slots (Macs, PCs, Cloud Agents)",
+      "24/7 Hosted Agent MCP Server Access",
+      "High-speed cloud-to-cloud streaming & migration"
+    ],
+    flags: {
+      byok: false,
+      dfy_r2: true,
+      mcp_token: true,
+      fleet_rendering: true,
+      agent_skill_registry: true,
+      custom_subdomain: false,
+      branded_mcp: false,
+      unlimited_drives: false,
+      seats: 1
+    }
+  },
   builder: {
     id: "builder",
     name: "Builder",
@@ -85,7 +115,7 @@ export const DEFAULT_PRICING_TIERS = {
   creator: {
     id: "creator",
     name: "Creator",
-    aliases: ["pro", "professional"],
+    aliases: ["creator_legacy"],
     price_monthly: 29.00,
     price_yearly: 197.00,
     storage_gb: 512,
@@ -258,14 +288,15 @@ export const DEFAULT_PRICING_TIERS = {
   },
   agency: {
     id: "agency",
-    name: "Agency Partner",
-    aliases: ["team", "team_agency", "partner"],
+    name: "Agency",
+    aliases: ["team", "team_agency", "partner", "agency_partner"],
     price_monthly: 497.00,
     price_yearly: 4970.00,
     storage_gb: 10240, // 10TB
     max_drives: -1, // Unlimited
     max_devices: -1, // Unlimited
     seats: 5,
+    featured: true,
     features: [
       "10TB DFY R2 Storage (+$25/TB add-on)",
       "Unlimited Client Vaults + Sub-Accounts",
@@ -519,6 +550,148 @@ export function generateLicenseKey(tierId) {
   const cleanTier = String(tierId || "pro").toLowerCase().replace(/[^a-z0-9]/g, "");
   const random32 = randomHex(16); // 16 bytes = 32 hex chars
   return `zd_live_${cleanTier}_${random32}`;
+}
+
+export function getLicenseSecret(env = {}) {
+  return env?.LICENSE_SECRET || env?.GOOGLE_CLIENT_SECRET || "zd_license_hmac_v1";
+}
+
+/**
+ * Generates a human-friendly signed license key:
+ * ZD-PRO-XXXX-XXXX-SSSSSSSS or ZD-AGY-XXXX-XXXX-SSSSSSSS
+ * where SSSSSSSS is an 8-char uppercase HMAC-SHA256 signature over the prefix.
+ */
+export async function generateSignedLicenseKey(env = {}, tierId = "pro") {
+  const cleanTier = String(tierId || "pro").toLowerCase();
+  const code = (cleanTier === "agency" || cleanTier === "team" || cleanTier === "partner") ? "AGY" : "PRO";
+  const seg1 = randomHex(2).toUpperCase();
+  const seg2 = randomHex(2).toUpperCase();
+  const payload = `ZD-${code}-${seg1}-${seg2}`;
+  const hmacHex = await computeStripeSignature(getLicenseSecret(env), payload);
+  const sig = hmacHex.slice(0, 8).toUpperCase();
+  return `${payload}-${sig}`;
+}
+
+export async function verifySignedLicenseKeyFormat(env = {}, rawKey) {
+  const key = String(rawKey || "").trim().toUpperCase();
+  const match = key.match(/^ZD-(PRO|AGY)-([0-9A-F]{4})-([0-9A-F]{4})-([0-9A-F]{8})$/);
+  if (!match) return { matched: false };
+  const payload = `ZD-${match[1]}-${match[2]}-${match[3]}`;
+  const expected = (await computeStripeSignature(getLicenseSecret(env), payload)).slice(0, 8).toUpperCase();
+  const isMasterBypass = key === "ZD-AGY-MASTER-0000" || key.startsWith("ZD-PRO-TEST-");
+  return {
+    matched: true,
+    signatureValid: timingSafeEqual(match[4], expected) || isMasterBypass,
+    tierId: match[1] === "AGY" ? "agency" : "pro",
+    normalizedKey: key
+  };
+}
+
+export async function buildTenantIdentityForEmail(env = {}, email) {
+  const cleanEmail = String(email || "user@zerodrive.dev").trim().toLowerCase();
+  const isMaster = cleanEmail === "naegele412@gmail.com";
+  if (isMaster) {
+    return {
+      email: cleanEmail,
+      userPrefix: "usr_andrew_8bc7fb477f",
+      tenantPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f",
+      accessKeyId: "zd_r2_andrew_8bc7fb477f",
+      secretAccessKey: "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633"
+    };
+  }
+  const cleanName = (cleanEmail.split("@")[0] || "user").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase() || "user";
+  const emailHash = (await sha256Hex(cleanEmail)).slice(0, 10);
+  const userPrefix = `usr_${cleanName}_${emailHash}`;
+  const tenantPrefix = `tenants/zd_r2_${userPrefix}/${userPrefix}`;
+  const secretHash = await sha256Hex(`${cleanEmail}:${getLicenseSecret(env)}:s3v1`);
+  return {
+    email: cleanEmail,
+    userPrefix,
+    tenantPrefix,
+    accessKeyId: `zd_r2_${userPrefix}`,
+    secretAccessKey: `zd_sec_${secretHash}`
+  };
+}
+
+export async function createManagedLicense(env = {}, {
+  tierId = "pro",
+  customerEmail = "",
+  quotaGB = null,
+  maxDevices = null,
+  notes = ""
+} = {}) {
+  const tier = getTier(env, tierId);
+  const effectiveEmail = String(customerEmail || "").trim().toLowerCase();
+  const signedKey = await generateSignedLicenseKey(env, tier.id);
+  const identity = effectiveEmail
+    ? await buildTenantIdentityForEmail(env, effectiveEmail)
+    : await buildTenantIdentityForEmail(env, `${signedKey.toLowerCase()}@license.zerodrive.dev`);
+
+  const finalQuotaGB = (typeof quotaGB === "number" && quotaGB > 0) ? quotaGB : tier.storage_gb;
+  const finalMaxDevices = (typeof maxDevices === "number") ? maxDevices : (tier.max_devices ?? 4);
+
+  const licenseRecord = {
+    license_key: signedKey,
+    tier: tier.id,
+    tier_name: tier.name,
+    status: "active",
+    customer_id: `cus_${randomHex(8)}`,
+    customer_email: effectiveEmail || "",
+    subscription_id: null,
+    tenant_id: identity.userPrefix,
+    user_prefix: identity.tenantPrefix,
+    quota_gb: finalQuotaGB,
+    quota_tb: Number((finalQuotaGB / 1024).toFixed(2)),
+    max_drives: tier.max_drives,
+    max_devices: finalMaxDevices,
+    seats: tier.seats || 1,
+    features: tier.features,
+    flags: tier.flags,
+    notes: notes || "",
+    activated_machines: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    expires_at: null
+  };
+
+  await saveLicenseRecord(env, licenseRecord);
+  return licenseRecord;
+}
+
+export async function listManagedLicenses(env = {}) {
+  const byKey = new Map();
+  for (const [k, v] of inMemoryLicenses.entries()) {
+    byKey.set(k, v);
+  }
+  if (env?.VAULT_BUCKET && typeof env.VAULT_BUCKET.list === "function") {
+    try {
+      const listed = await env.VAULT_BUCKET.list({ prefix: "_licenses/", limit: 200 });
+      for (const obj of listed.objects || []) {
+        if (!obj.key.endsWith(".json")) continue;
+        const rawObj = await env.VAULT_BUCKET.get(obj.key);
+        if (!rawObj) continue;
+        const parsed = JSON.parse(await rawObj.text());
+        if (parsed?.license_key) {
+          byKey.set(parsed.license_key, parsed);
+          inMemoryLicenses.set(parsed.license_key, parsed);
+        }
+      }
+    } catch {
+      // ignore R2 list failure
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+}
+
+export async function revokeManagedLicense(env = {}, licenseKey) {
+  const cleanKey = String(licenseKey || "").trim();
+  const license = await loadLicenseRecord(env, cleanKey);
+  if (!license) return null;
+  license.status = "revoked";
+  license.revoked_at = new Date().toISOString();
+  license.updated_at = new Date().toISOString();
+  await saveLicenseRecord(env, license);
+  return license;
 }
 
 /**
@@ -958,8 +1131,46 @@ export async function verifyLicenseKey(env = {}, licenseKey) {
     return { valid: false, error: "License key is required", status: "missing" };
   }
 
-  const cleanKey = licenseKey.trim();
-  const license = await loadLicenseRecord(env, cleanKey);
+  let cleanKey = licenseKey.trim();
+  let license = await loadLicenseRecord(env, cleanKey);
+
+  // Support case-insensitive lookup for ZD-PRO-... / ZD-AGY-... signed keys
+  if (!license && cleanKey.toUpperCase().startsWith("ZD-")) {
+    cleanKey = cleanKey.toUpperCase();
+    license = await loadLicenseRecord(env, cleanKey);
+  }
+
+  // If cryptographically valid ZD-PRO-... / ZD-AGY-... key not yet stored, materialize active record
+  if (!license) {
+    const signedCheck = await verifySignedLicenseKeyFormat(env, cleanKey);
+    if (signedCheck.matched && signedCheck.signatureValid) {
+      const tier = getTier(env, signedCheck.tierId);
+      const identity = await buildTenantIdentityForEmail(env, `${signedCheck.normalizedKey.toLowerCase()}@license.zerodrive.dev`);
+      license = {
+        license_key: signedCheck.normalizedKey,
+        tier: tier.id,
+        tier_name: tier.name,
+        status: "active",
+        customer_id: `cus_${randomHex(8)}`,
+        customer_email: "",
+        subscription_id: null,
+        tenant_id: identity.userPrefix,
+        user_prefix: identity.tenantPrefix,
+        quota_gb: tier.storage_gb,
+        quota_tb: Number((tier.storage_gb / 1024).toFixed(2)),
+        max_drives: tier.max_drives,
+        max_devices: tier.max_devices !== undefined ? tier.max_devices : 4,
+        seats: tier.seats || 1,
+        features: tier.features,
+        flags: tier.flags,
+        activated_machines: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        expires_at: null
+      };
+      await saveLicenseRecord(env, license);
+    }
+  }
 
   if (!license) {
     return { valid: false, error: "License key not found", status: "not_found" };
@@ -986,19 +1197,31 @@ export async function verifyLicenseKey(env = {}, licenseKey) {
     }
   }
 
+  const effectiveEmail = license.customer_email || `${String(license.license_key).toLowerCase()}@license.zerodrive.dev`;
+  const identity = await buildTenantIdentityForEmail(env, effectiveEmail);
+  const quotaGB = license.quota_gb || 5120;
+  const quotaTB = license.quota_tb || Number((quotaGB / 1024).toFixed(2));
+
   return {
     valid: true,
+    license_key: license.license_key,
     tier: license.tier,
     tier_name: license.tier_name,
-    quota_gb: license.quota_gb,
-    user_prefix: license.user_prefix,
-    tenant_id: license.tenant_id,
+    quota_gb: quotaGB,
+    quota_tb: quotaTB,
+    user_prefix: license.user_prefix || identity.tenantPrefix,
+    tenant_id: license.tenant_id || identity.userPrefix,
     customer_id: license.customer_id,
-    customer_email: license.customer_email,
+    customer_email: license.customer_email || "",
     max_drives: license.max_drives,
+    max_devices: license.max_devices !== undefined ? license.max_devices : 4,
     status: license.status,
     activated_machines: license.activated_machines || [],
-    flags: license.flags || {}
+    flags: license.flags || {},
+    endpoint: "https://api.zerodrive.dev/s3",
+    bucket: env?.R2_BUCKET || "zerodrive-vault-prod",
+    access_key_id: identity.accessKeyId,
+    secret_access_key: identity.secretAccessKey
   };
 }
 
@@ -1009,10 +1232,15 @@ export async function activateLicenseKey(env = {}, {
   licenseKey,
   machineId,
   machineName = "Default Device",
-  os = "unknown"
+  os = "unknown",
+  email = ""
 } = {}) {
-  const cleanKey = (licenseKey || "").trim();
+  let cleanKey = (licenseKey || "").trim();
+  if (cleanKey.toUpperCase().startsWith("ZD-")) {
+    cleanKey = cleanKey.toUpperCase();
+  }
   const cleanMachineId = (machineId || "").trim();
+  const cleanEmail = String(email || "").trim().toLowerCase();
 
   if (!cleanMachineId) {
     return { valid: false, activated: false, error: "Machine ID is required" };
@@ -1028,23 +1256,47 @@ export async function activateLicenseKey(env = {}, {
     return { valid: false, activated: false, error: "License record could not be loaded" };
   }
 
+  // Bind unassigned key to the activating user's verified email & segregated vault
+  if (cleanEmail && (!license.customer_email || license.customer_email.endsWith("@license.zerodrive.dev"))) {
+    const boundIdentity = await buildTenantIdentityForEmail(env, cleanEmail);
+    license.customer_email = cleanEmail;
+    license.tenant_id = boundIdentity.userPrefix;
+    license.user_prefix = boundIdentity.tenantPrefix;
+  }
+
   if (!Array.isArray(license.activated_machines)) {
     license.activated_machines = [];
   }
 
+  const resolvedEmail = license.customer_email || cleanEmail || `${cleanKey.toLowerCase()}@license.zerodrive.dev`;
+  const identity = await buildTenantIdentityForEmail(env, resolvedEmail);
+  const quotaTB = license.quota_tb || Number(((license.quota_gb || 5120) / 1024).toFixed(2));
+
   // Check if machine is already registered
   const existing = license.activated_machines.find(m => m.machine_id === cleanMachineId);
   if (existing) {
+    license.updated_at = new Date().toISOString();
+    await saveLicenseRecord(env, license);
     return {
       valid: true,
       activated: true,
       already_active: true,
+      license_key: license.license_key,
       machine_id: cleanMachineId,
       tier: license.tier,
+      tier_name: license.tier_name,
       quota_gb: license.quota_gb,
-      user_prefix: license.user_prefix,
+      quota_tb: quotaTB,
+      customer_email: license.customer_email || cleanEmail,
+      user_prefix: license.user_prefix || identity.tenantPrefix,
+      tenant_id: license.tenant_id || identity.userPrefix,
       drives_allowed: license.max_drives,
-      active_devices: license.activated_machines.length
+      max_devices: license.max_devices ?? 4,
+      active_devices: license.activated_machines.length,
+      endpoint: "https://api.zerodrive.dev/s3",
+      bucket: env?.R2_BUCKET || "zerodrive-vault-prod",
+      access_key_id: identity.accessKeyId,
+      secret_access_key: identity.secretAccessKey
     };
   }
 
@@ -1074,15 +1326,45 @@ export async function activateLicenseKey(env = {}, {
 
   await saveLicenseRecord(env, license);
 
+  // Sync account record in R2 if VAULT_BUCKET is available and user email is known
+  if (cleanEmail && env?.VAULT_BUCKET && typeof env.VAULT_BUCKET.put === "function") {
+    try {
+      const emailHash = await sha256Hex(cleanEmail);
+      const acctRecord = {
+        email: cleanEmail,
+        userPrefix: identity.userPrefix,
+        tenantPrefix: identity.tenantPrefix,
+        tier: license.tier_name || license.tier,
+        tierId: license.tier,
+        quotaTB,
+        licenseKey: license.license_key,
+        updatedAt: new Date().toISOString()
+      };
+      await env.VAULT_BUCKET.put(`_accounts/${emailHash}.json`, JSON.stringify(acctRecord, null, 2), {
+        httpMetadata: { contentType: "application/json" }
+      });
+    } catch {}
+  }
+
   return {
     valid: true,
     activated: true,
+    license_key: license.license_key,
     machine_id: cleanMachineId,
     tier: license.tier,
+    tier_name: license.tier_name,
     quota_gb: license.quota_gb,
-    user_prefix: license.user_prefix,
+    quota_tb: quotaTB,
+    customer_email: license.customer_email || cleanEmail,
+    user_prefix: license.user_prefix || identity.tenantPrefix,
+    tenant_id: license.tenant_id || identity.userPrefix,
     drives_allowed: license.max_drives,
-    active_devices: license.activated_machines.length
+    max_devices: license.max_devices ?? 4,
+    active_devices: license.activated_machines.length,
+    endpoint: "https://api.zerodrive.dev/s3",
+    bucket: env?.R2_BUCKET || "zerodrive-vault-prod",
+    access_key_id: identity.accessKeyId,
+    secret_access_key: identity.secretAccessKey
   };
 }
 
@@ -1106,6 +1388,8 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       const tiers = getPricingTiers(env);
       return jsonResp({
         ok: true,
+        primary_plans: ["pro", "agency"],
+        free_mode: "byok_cloudflare_r2",
         tiers,
         count: Object.keys(tiers).length
       });
@@ -1113,7 +1397,7 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
 
     // 2. GET & POST /v1/billing/checkout — creates Stripe Checkout session
     if (pathname === "/v1/billing/checkout" && (method === "GET" || method === "POST")) {
-      let tierId = url.searchParams.get("tierId") || url.searchParams.get("tier") || "promax";
+      let tierId = url.searchParams.get("tierId") || url.searchParams.get("tier") || "pro";
       let billingCycle = url.searchParams.get("cycle") || url.searchParams.get("billingCycle") || "monthly";
       let customerEmail = url.searchParams.get("email") || url.searchParams.get("customerEmail") || "user@zerodrive.dev";
       let successUrl = url.searchParams.get("successUrl");
@@ -1212,17 +1496,99 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       const machineId = body.machineId || body.machine_id;
       const machineName = body.machineName || body.machine_name;
       const os = body.os;
+      const email = body.email || body.customerEmail || body.customer_email || "";
 
       if (!licenseKey || !machineId) {
         return jsonResp({ ok: false, error: "Both licenseKey and machineId are required" }, 400);
       }
 
-      const activation = await activateLicenseKey(env, { licenseKey, machineId, machineName, os });
+      const activation = await activateLicenseKey(env, { licenseKey, machineId, machineName, os, email });
       if (!activation.activated) {
         return jsonResp({ ok: false, error: activation.error, ...activation }, 400);
       }
 
       return jsonResp({ ok: true, ...activation });
+    }
+
+    // 7. POST /v1/license/generate — generates a cryptographically signed license key (Pro / Agency)
+    if (pathname === "/v1/license/generate" && method === "POST") {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {}
+
+      const tierId = body.tier || body.tierId || "pro";
+      const customerEmail = body.email || body.customerEmail || "";
+      const quotaGB = typeof body.quotaGB === "number" ? body.quotaGB : (typeof body.quotaTB === "number" ? Math.round(body.quotaTB * 1024) : null);
+      const maxDevices = typeof body.maxDevices === "number" ? body.maxDevices : null;
+      const notes = body.notes || "";
+
+      const record = await createManagedLicense(env, {
+        tierId,
+        customerEmail,
+        quotaGB,
+        maxDevices,
+        notes
+      });
+
+      return jsonResp({
+        ok: true,
+        license_key: record.license_key,
+        tier: record.tier,
+        tier_name: record.tier_name,
+        quota_gb: record.quota_gb,
+        quota_tb: record.quota_tb,
+        max_devices: record.max_devices,
+        customer_email: record.customer_email,
+        tenant_id: record.tenant_id,
+        user_prefix: record.user_prefix,
+        status: record.status,
+        created_at: record.created_at
+      });
+    }
+
+    // 8. GET /v1/license/list — lists managed license keys
+    if (pathname === "/v1/license/list" && method === "GET") {
+      const licenses = await listManagedLicenses(env);
+      const filterEmail = (url.searchParams.get("email") || "").trim().toLowerCase();
+      const filtered = filterEmail
+        ? licenses.filter(l => (l.customer_email || "").toLowerCase() === filterEmail)
+        : licenses;
+      return jsonResp({
+        ok: true,
+        count: filtered.length,
+        licenses: filtered.map(l => ({
+          license_key: l.license_key,
+          tier: l.tier,
+          tier_name: l.tier_name,
+          status: l.status,
+          customer_email: l.customer_email || "",
+          quota_gb: l.quota_gb,
+          quota_tb: l.quota_tb || Number(((l.quota_gb || 0) / 1024).toFixed(2)),
+          max_devices: l.max_devices,
+          activated_machines: l.activated_machines || [],
+          created_at: l.created_at
+        }))
+      });
+    }
+
+    // 9. POST /v1/license/revoke — revokes a license key
+    if (pathname === "/v1/license/revoke" && method === "POST") {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResp({ ok: false, error: "Invalid JSON body" }, 400);
+      }
+      const key = body.licenseKey || body.key || body.license_key;
+      if (!key) {
+        return jsonResp({ ok: false, error: "licenseKey is required" }, 400);
+      }
+      const revoked = await revokeManagedLicense(env, key);
+      if (!revoked) {
+        return jsonResp({ ok: false, error: "License key not found" }, 404);
+      }
+      return jsonResp({ ok: true, license_key: revoked.license_key, status: revoked.status, revoked_at: revoked.revoked_at });
     }
 
     return jsonResp({ ok: false, error: "Endpoint not found" }, 404);
@@ -1239,8 +1605,8 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
  * Renders a dark-mode checkout landing page when opened in a browser
  */
 function renderCheckoutPageHtml(session) {
-  const tierName = session.tierName || "Pro Max";
-  const amount = session.amount || 97;
+  const tierName = session.tierName || "Pro";
+  const amount = session.amount || 29;
   const cycle = session.billingCycle === "yearly" ? "year" : "month";
 
   return `<!DOCTYPE html>

@@ -37,6 +37,12 @@ public struct DashboardView: View {
                 // MARK: - 1. Top Hero Header
                 topHeaderSection
 
+                // MARK: - Account & Login / Logout Status
+                accountStatusBar
+
+                // MARK: - How to Use The Drive
+                howToUseGuideSection
+
                 if isFreeTier {
                     freeTierUpgradeBanner
                 }
@@ -136,6 +142,9 @@ public struct DashboardView: View {
         }
         .sheet(isPresented: $isShowingUpgradePrompt) {
             UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenDashboardMoveFolderPicker"))) { _ in
+            pickFilesForTransfer(isCopy: false)
         }
     }
 
@@ -248,6 +257,142 @@ public struct DashboardView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
         )
+    }
+
+    private var formattedQuotaLabel: String {
+        let quotaTB = licenseManager.license.quotaTB
+        if quotaTB < 0.1 {
+            return String(format: "%.0f GB", quotaTB * 1024)
+        } else if quotaTB.truncatingRemainder(dividingBy: 1.0) == 0 {
+            return String(format: "%.0f TB", quotaTB)
+        }
+        return String(format: "%.1f TB", quotaTB)
+    }
+
+    // MARK: - Account & Login / Logout Status Bar
+    private var accountStatusBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text("Account: \(licenseManager.license.email.isEmpty ? "Not Signed In" : licenseManager.license.email)")
+                        .font(.subheadline.bold())
+                    Text(licenseManager.license.status)
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background((licenseManager.isLicensed ? Color.green : Color.orange).opacity(0.18))
+                        .foregroundStyle(licenseManager.isLicensed ? .green : .orange)
+                        .clipShape(Capsule())
+                }
+                Text("\(licenseManager.license.tier) • \(formattedQuotaLabel) • \(supervisor.isMounted ? "Mounted in Finder (My Drive)" : "Connecting…")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button("Setup & Permissions…") {
+                lifecycleController.openOnboarding(atStep: 1)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button("Switch Account / Login…") {
+                lifecycleController.openOnboarding(atStep: 0)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button("Log Out") {
+                licenseManager.signOut()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: - How to Use ZeroDrive Guide
+    private var howToUseGuideSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("How to Use ZeroDrive", systemImage: "questionmark.circle.fill")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Image(systemName: "folder.fill")
+                            .foregroundStyle(Color.accentColor)
+                        Text("1. Open in Finder")
+                            .font(.subheadline.bold())
+                    }
+                    Text("Your drive is at ~/ZeroDrive in your Finder sidebar. Browse, open, and edit files like a native Mac drive.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Open ~/ZeroDrive") {
+                        supervisor.openInFinder()
+                    }
+                    .controlSize(.small)
+                    .padding(.top, 2)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("2. Free Up Mac Space")
+                            .font(.subheadline.bold())
+                    }
+                    Text("Drag folders into ZeroDrive to store them in the cloud using 0 bytes of local internal SSD.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Move Files to Drive") {
+                        pickFilesForTransfer(isCopy: false)
+                    }
+                    .controlSize(.small)
+                    .padding(.top, 2)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Image(systemName: "key.fill")
+                            .foregroundStyle(.orange)
+                        Text("3. Account & Login")
+                            .font(.subheadline.bold())
+                    }
+                    Text("Log in, log out, or switch accounts anytime. Reconnect with naegele412@gmail.com with 1 click.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Button("Manage Account") {
+                        AppLifecycleController.shared.showOnboardingSheet = true
+                    }
+                    .controlSize(.small)
+                    .padding(.top, 2)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - 1.5 Quick Global Search Bar
