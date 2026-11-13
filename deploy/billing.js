@@ -726,19 +726,21 @@ export async function createCheckoutSession(env = {}, {
     };
   }
 
-  // If Stripe secret key is absent or mock, return mock checkout session
+  // If Stripe secret key is absent or mock, return ZeroDrive self-serve checkout completion URL
   const stripeKey = env?.STRIPE_SECRET_KEY;
   if (!stripeKey || stripeKey.startsWith("mock") || stripeKey === "dummy") {
     const sessionId = `cs_mock_${randomHex(16)}`;
     const defaultSuccess = successUrl || `https://zerodrive.dev/checkout/success?session_id=${sessionId}`;
     return {
       id: sessionId,
-      url: `https://checkout.stripe.com/mock/${tier.id}?session_id=${sessionId}`,
+      url: `https://api.zerodrive.dev/v1/billing/checkout/complete?tier=${encodeURIComponent(tier.id)}&cycle=${encodeURIComponent(cycle)}&email=${encodeURIComponent(customerEmail || "")}&session_id=${encodeURIComponent(sessionId)}`,
       successUrl: defaultSuccess,
       tierId: tier.id,
       tierName: tier.name,
       billingCycle: cycle,
       amount: price,
+      storageGB: tier.storage_gb,
+      features: Array.isArray(tier.features) ? tier.features : [],
       customerEmail,
       mock: true
     };
@@ -784,6 +786,8 @@ export async function createCheckoutSession(env = {}, {
     tierName: tier.name,
     billingCycle: cycle,
     amount: price,
+    storageGB: tier.storage_gb,
+    features: Array.isArray(tier.features) ? tier.features : [],
     customerEmail,
     stripeSession: sessionData
   };
@@ -1438,6 +1442,83 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       return jsonResp({ ok: true, session });
     }
 
+    // 2b. GET & POST /v1/billing/checkout/complete — issues signed key & updates account quota
+    if (pathname === "/v1/billing/checkout/complete" && (method === "GET" || method === "POST")) {
+      let tier = url.searchParams.get("tierId") || url.searchParams.get("tier") || "pro";
+      let cycle = url.searchParams.get("cycle") || url.searchParams.get("billingCycle") || "monthly";
+      let email = url.searchParams.get("email") || url.searchParams.get("customerEmail") || "";
+
+      if (method === "POST") {
+        const ctype = request.headers.get("content-type") || "";
+        if (ctype.includes("application/json")) {
+          const body = await request.json().catch(() => ({}));
+          if (body.tierId || body.tier) tier = body.tierId || body.tier;
+          if (body.cycle || body.billingCycle) cycle = body.cycle || body.billingCycle;
+          if (body.email || body.customerEmail) email = body.email || body.customerEmail;
+        } else {
+          try {
+            const fd = await request.formData();
+            if (fd.get("tier")) tier = String(fd.get("tier"));
+            if (fd.get("cycle")) cycle = String(fd.get("cycle"));
+            if (fd.get("email")) email = String(fd.get("email"));
+          } catch {}
+        }
+      }
+
+      const cleanEmail = String(email || "").trim().toLowerCase();
+      const record = await createManagedLicense(env, {
+        tierId: tier,
+        customerEmail: cleanEmail,
+        notes: `Self-serve checkout upgrade (${cycle})`
+      });
+
+      if (cleanEmail && env?.VAULT_BUCKET) {
+        try {
+          const identity = await buildTenantIdentityForEmail(env, cleanEmail);
+          const emailHash = await sha256Hex(cleanEmail);
+          let existing = {};
+          try {
+            const existingObj = await env.VAULT_BUCKET.get(`_accounts/${emailHash}.json`);
+            if (existingObj) existing = JSON.parse(await existingObj.text());
+          } catch {}
+          const updatedAccount = {
+            ...existing,
+            email: cleanEmail,
+            userPrefix: record.tenant_id || identity.userPrefix,
+            tenantPrefix: record.user_prefix || identity.tenantPrefix,
+            accessKeyId: existing.accessKeyId || identity.accessKeyId,
+            secretAccessKey: existing.secretAccessKey || identity.secretAccessKey,
+            tier: record.tier_name,
+            tierId: record.tier,
+            quotaTB: record.quota_tb,
+            licenseKey: record.license_key,
+            updatedAt: new Date().toISOString()
+          };
+          await env.VAULT_BUCKET.put(`_accounts/${emailHash}.json`, JSON.stringify(updatedAccount, null, 2), {
+            httpMetadata: { contentType: "application/json" }
+          });
+        } catch {}
+      }
+
+      const acceptHeader = request.headers.get("accept") || "";
+      if (acceptHeader.includes("application/json")) {
+        return jsonResp({
+          ok: true,
+          license_key: record.license_key,
+          tier: record.tier,
+          tier_name: record.tier_name,
+          quota_gb: record.quota_gb,
+          quota_tb: record.quota_tb,
+          customer_email: record.customer_email
+        });
+      }
+
+      return new Response(renderCheckoutCompleteHtml(record), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+      });
+    }
+
     // 3. POST /v1/billing/webhook — handles incoming Stripe webhook events
     if (pathname === "/v1/billing/webhook" && method === "POST") {
       return handleStripeWebhook(request, env);
@@ -1601,20 +1682,46 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
   }
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /**
  * Renders a dark-mode checkout landing page when opened in a browser
  */
 function renderCheckoutPageHtml(session) {
+  const tierId = session.tierId || "pro";
   const tierName = session.tierName || "Pro";
   const amount = session.amount || 29;
   const cycle = session.billingCycle === "yearly" ? "year" : "month";
+  const billingCycle = session.billingCycle === "yearly" ? "yearly" : "monthly";
+  const customerEmail = session.customerEmail === "user@zerodrive.dev" ? "" : (session.customerEmail || "");
+  const features = Array.isArray(session.features) && session.features.length > 0
+    ? session.features
+    : [
+        `${session.storageGB ? (session.storageGB >= 1024 ? `${Math.round(session.storageGB / 1024)} TB` : `${session.storageGB} GB`) : "1 TB"} DFY Cloud Storage`,
+        "Multi-Drive Isolation in Finder",
+        "Unlimited Computers (Mac, Windows, Cloud Servers)",
+        "24/7 Hosted Agent MCP Server Access"
+      ];
+
+  const featureItemsHtml = features.map(feat => `
+      <li>
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span>${escapeHtml(feat)}</span>
+      </li>`).join("");
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Checkout — ZeroDrive ${tierName}</title>
+  <title>Checkout — ZeroDrive ${escapeHtml(tierName)}</title>
   <style>
     :root {
       --bg: #0d0f12;
@@ -1706,7 +1813,7 @@ function renderCheckoutPageHtml(session) {
       border-top: 1px solid var(--border);
       border-bottom: 1px solid var(--border);
       padding: 20px 0;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
     }
     .features li {
       display: flex;
@@ -1724,6 +1831,23 @@ function renderCheckoutPageHtml(session) {
       stroke-width: 2.5;
       fill: none;
       flex-shrink: 0;
+    }
+    .field-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .email-input {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d0f12;
+      color: #ffffff;
+      font-size: 14px;
+      margin-bottom: 16px;
     }
     .btn {
       display: block;
@@ -1755,41 +1879,125 @@ function renderCheckoutPageHtml(session) {
       <div class="brand-icon">Z</div>
       <div class="brand-name">ZeroDrive</div>
     </div>
-    <div class="badge">Founder Tier</div>
-    <div class="title">ZeroDrive ${tierName}</div>
-    <p style="color: var(--text-muted); font-size: 14px;">Instant multi-drive cloud partition with unthrottled streaming speed.</p>
+    <div class="badge">${tierId === "agency" ? "White-Label Tier" : "Founder Tier"}</div>
+    <div class="title">ZeroDrive ${escapeHtml(tierName)}</div>
+    <p style="color: var(--text-muted); font-size: 14px;">Instant segregated cloud drive provisioning with unthrottled streaming and 24/7 MCP access.</p>
     
     <div class="price-row">
-      <span class="price-val">$${amount}</span>
-      <span class="price-cycle">/ ${cycle}</span>
+      <span class="price-val">$${escapeHtml(amount)}</span>
+      <span class="price-cycle">/ ${escapeHtml(cycle)}</span>
     </div>
 
-    <ul class="features">
-      <li>
-        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <strong>3 TB Dedicated Cloud Storage</strong> (Zero setup, unthrottled)
-      </li>
-      <li>
-        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <strong>Unlimited Independent Drives</strong> in Finder & File Explorer
-      </li>
-      <li>
-        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <strong>Unlimited Fleet Machines</strong> (Mac, Windows, Minis)
-      </li>
-      <li>
-        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <strong>24/7 Agent MCP Token</strong> & skill registry access
-      </li>
-      <li>
-        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <strong>Zero Egress Fees</strong> & direct multi-cloud streaming
-      </li>
+    <ul class="features">${featureItemsHtml}
     </ul>
 
-    <a href="${session.url || '#'}" class="btn">Proceed to Stripe Checkout</a>
-    <div class="note">Encrypted & secure billing powered by Stripe. Cancel anytime in 1-click.</div>
+    <form method="GET" action="/v1/billing/checkout/complete">
+      <input type="hidden" name="tier" value="${escapeHtml(tierId)}">
+      <input type="hidden" name="cycle" value="${escapeHtml(billingCycle)}">
+      <input type="hidden" name="session_id" value="${escapeHtml(session.id || "")}">
+      <label class="field-label" for="email">Account Email (binds your license &amp; vault)</label>
+      <input class="email-input" id="email" name="email" type="email" value="${escapeHtml(customerEmail)}" placeholder="you@example.com" required>
+      <button type="submit" class="btn">Complete Upgrade &amp; Activate ZeroDrive ${escapeHtml(tierName)}</button>
+    </form>
+    <div class="note">Issues a signed ZeroDrive license key immediately and activates your Mac app.</div>
   </div>
+</body>
+</html>`;
+}
+
+function renderCheckoutCompleteHtml(record) {
+  const tierName = record.tier_name || "Pro";
+  const quotaTB = record.quota_tb || 1;
+  const email = record.customer_email || "";
+  const licenseKey = record.license_key || "";
+  const deepLink = `zerodrive://license-activate?key=${encodeURIComponent(licenseKey)}&email=${encodeURIComponent(email)}`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZeroDrive ${escapeHtml(tierName)} Activated</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d0f12;
+      color: #f0f3f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      background: #16191f;
+      border: 1px solid #232833;
+      border-radius: 16px;
+      max-width: 520px;
+      width: 100%;
+      padding: 36px 32px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+    .pill {
+      display: inline-block;
+      background: rgba(16, 185, 129, 0.16);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 14px;
+    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    .sub { color: #8b949e; font-size: 14px; margin-bottom: 20px; }
+    .key-box {
+      background: #0d0f12;
+      border: 1px solid #2b3140;
+      border-radius: 10px;
+      padding: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 16px;
+      font-weight: 700;
+      color: #34d399;
+      margin-bottom: 14px;
+      word-break: break-all;
+    }
+    .row { display: flex; gap: 10px; justify-content: center; }
+    .btn {
+      display: inline-block;
+      padding: 12px 20px;
+      background: #2563eb;
+      color: #ffffff;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-secondary {
+      background: #232833;
+      color: #f0f3f6;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="pill">UPGRADE COMPLETE • ${escapeHtml(tierName).toUpperCase()} (${escapeHtml(quotaTB)} TB)</div>
+    <h1>ZeroDrive ${escapeHtml(tierName)} Ready</h1>
+    <p class="sub">${email ? `Bound to <strong>${escapeHtml(email)}</strong>` : "License key generated"}</p>
+    <div class="key-box" id="licenseKey">${escapeHtml(licenseKey)}</div>
+    <div class="row">
+      <button class="btn btn-secondary" onclick="navigator.clipboard.writeText(document.getElementById('licenseKey').textContent); this.textContent='Copied!';">Copy Key</button>
+      <a class="btn" href="${deepLink}">Activate in ZeroDrive Mac App</a>
+    </div>
+  </div>
+  <script>
+    setTimeout(function() { window.location.href = ${JSON.stringify(deepLink)}; }, 250);
+  </script>
 </body>
 </html>`;
 }

@@ -10,7 +10,8 @@ import {
   verifyLicenseKey,
   activateLicenseKey,
   revokeManagedLicense,
-  buildTenantIdentityForEmail
+  buildTenantIdentityForEmail,
+  createCheckoutSession
 } from "./billing.js";
 
 function createMockBucket() {
@@ -95,4 +96,12 @@ test("Strict client drive segregation prevents master vault leakage", async () =
   assert.notEqual(clientAndrew.accessKeyId, master.accessKeyId);
   assert.notEqual(clientAndrew.secretAccessKey, master.secretAccessKey);
   assert.ok(clientAndrew.tenantPrefix.startsWith("tenants/zd_r2_usr_andrew_"));
+});
+
+test("Checkout session never returns AccessDenied checkout.stripe.com/mock URL when Stripe key unset", async () => {
+  const session = await createCheckoutSession({}, { tierId: "agency", customerEmail: "client@acme.com" });
+  assert.equal(session.tierId, "agency");
+  assert.equal(session.amount, 497);
+  assert.ok(!session.url.includes("checkout.stripe.com/mock"));
+  assert.ok(session.url.startsWith("https://api.zerodrive.dev/v1/billing/checkout/complete"));
 });

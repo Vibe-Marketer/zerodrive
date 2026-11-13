@@ -448,6 +448,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 presentMainWindow()
                 continue
             }
+            if url.host == "license-activate" {
+                if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                    let key = comps.queryItems?.first(where: { $0.name == "key" })?.value ?? ""
+                    let email = comps.queryItems?.first(where: { $0.name == "email" })?.value
+                    if !key.isEmpty {
+                        Task { @MainActor in
+                            try? await ManageLicensing.shared.activateLicenseKey(key, email: email)
+                        }
+                    }
+                }
+                presentMainWindow()
+                continue
+            }
             guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
             let cmd = components.queryItems?.first(where: { $0.name == "cmd" })?.value ?? "move"
             let paths = components.queryItems?.filter({ $0.name == "path" }).compactMap({ $0.value }) ?? []
