@@ -18,12 +18,7 @@ public struct AccountLicensingView: View {
     @State private var newDriveQuotaGB: Double = 100.0
     @State private var feedbackMessage: String = ""
     @State private var driveActionFeedback: String = ""
-    @State private var isShowingUpgradeAccountSheet: Bool = false
-    @State private var upgradeEmail: String = ""
-    @State private var upgradeLicenseKey: String = ""
-    @State private var upgradeMigrateFiles: Bool = true
-    @State private var upgradeFeedbackMessage: String = ""
-    @State private var isUpgrading: Bool = false
+    @State private var isShowingBYOKSheet: Bool = false
     @State private var showKeyManager: Bool = false
     @State private var issueClientEmail: String = ""
     @State private var issuePlanTier: String = "pro"
@@ -99,7 +94,7 @@ public struct AccountLicensingView: View {
 
                         statPill(
                             title: "ACTIVATED MACHINES",
-                            value: isFreeTier ? "1 of 2 Slots" : "1 of 4 Slots",
+                            value: isFreeTier ? "1 of 2 Slots" : "Unlimited Slots",
                             subtitle: licensing.license.machineName,
                             color: .green
                         )
@@ -427,9 +422,9 @@ public struct AccountLicensingView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Upgrade Account")
+                            Text("Upgrade to Pro or Agency")
                                 .font(.body.weight(.medium))
-                            Text("Upgrade from Free BYOK to Pro or Agency. Migrates all files automatically to your upgraded vault with 0 data loss.")
+                            Text("Choose Pro ($29/mo • 1 TB) or Agency ($497/mo • 10 TB), or activate a license key.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -437,10 +432,10 @@ public struct AccountLicensingView: View {
                         Spacer()
 
                         Button {
-                            upgradeFeedbackMessage = ""
-                            isShowingUpgradeAccountSheet = true
+                            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) for zero-config managed storage and 24/7 hosted MCP."
+                            isShowingUpgradePrompt = true
                         } label: {
-                            Label("Upgrade Account…", systemImage: "sparkles")
+                            Label("View Plans & Upgrade…", systemImage: "sparkles")
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
@@ -450,9 +445,9 @@ public struct AccountLicensingView: View {
 
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Need to switch account or re-provision?")
+                            Text("Switch Account")
                                 .font(.body.weight(.medium))
-                            Text("Log into a different ZeroDrive account or configure a new cloud vault.")
+                            Text("Sign in with Google to switch accounts or provision a new segregated drive.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -464,6 +459,17 @@ public struct AccountLicensingView: View {
                         }
                         .controlSize(.regular)
                     }
+
+                    Divider()
+
+                    Button {
+                        isShowingBYOKSheet = true
+                    } label: {
+                        Text("Using your own Cloudflare R2 bucket? Configure Free BYOK API keys →")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.vertical, 2)
             }
@@ -473,8 +479,8 @@ public struct AccountLicensingView: View {
         .sheet(isPresented: $isShowingSwitchAccountSheet) {
             switchAccountModal
         }
-        .sheet(isPresented: $isShowingUpgradeAccountSheet) {
-            upgradeAccountModal
+        .sheet(isPresented: $isShowingBYOKSheet) {
+            UpgradePromptSheet(initialBYOKMode: true)
         }
         .sheet(isPresented: $isShowingAddDriveSheet) {
             AddNewDriveSheet(isPresented: $isShowingAddDriveSheet) { createdName in
@@ -485,7 +491,8 @@ public struct AccountLicensingView: View {
             UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Pro")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenUpgradeAccountModal"))) { _ in
-            isShowingUpgradeAccountSheet = true
+            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) for zero-config managed storage and 24/7 hosted MCP."
+            isShowingUpgradePrompt = true
         }
     }
 
@@ -612,99 +619,6 @@ public struct AccountLicensingView: View {
         }
         .padding(24)
         .frame(width: 380)
-    }
-
-    private var upgradeAccountModal: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 38))
-                .foregroundStyle(Color.accentColor)
-
-            Text("Upgrade to Pro or Agency")
-                .font(.title3.bold())
-
-            Text("Seamlessly upgrade to ZeroDrive Pro or Agency. All files in your current vault will be safely moved to your upgraded storage with zero downtime.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Paid Account Email")
-                        .font(.caption.bold())
-                    TextField("you@example.com", text: $upgradeEmail)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Master License Key")
-                        .font(.caption.bold())
-                    TextField("zd_live_creator_... (optional)", text: $upgradeLicenseKey)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                Toggle(isOn: $upgradeMigrateFiles) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Migrate all files to upgraded vault")
-                            .font(.subheadline.weight(.medium))
-                        Text("Automatically moves all existing files into your upgraded cloud storage.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .toggleStyle(.checkbox)
-                .padding(.top, 4)
-            }
-            .frame(maxWidth: 360)
-
-            if !upgradeFeedbackMessage.isEmpty {
-                Text(upgradeFeedbackMessage)
-                    .font(.caption)
-                    .foregroundStyle(upgradeFeedbackMessage.contains("failed") ? .red : Color.accentColor)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
-            }
-
-            HStack {
-                Button("Cancel") {
-                    isShowingUpgradeAccountSheet = false
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                Button {
-                    Task {
-                        isUpgrading = true
-                        upgradeFeedbackMessage = "Upgrading account and migrating files…"
-                        do {
-                            try await licensing.transferAccountAndMigrate(
-                                newEmail: upgradeEmail,
-                                newLicenseKey: upgradeLicenseKey,
-                                migrateFiles: upgradeMigrateFiles
-                            )
-                            isUpgrading = false
-                            isShowingUpgradeAccountSheet = false
-                            upgradeEmail = ""
-                            upgradeLicenseKey = ""
-                            feedbackMessage = "Account successfully upgraded!"
-                        } catch {
-                            isUpgrading = false
-                            upgradeFeedbackMessage = "Upgrade failed: \(error.localizedDescription)"
-                        }
-                    }
-                } label: {
-                    Text(isUpgrading ? "Upgrading & Migrating…" : "Upgrade Account Now")
-                        .bold()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isUpgrading || upgradeEmail.isEmpty || !upgradeEmail.contains("@"))
-            }
-            .frame(maxWidth: 360)
-        }
-        .padding(24)
-        .frame(width: 420)
     }
 
     private func maskedLicenseKey(_ key: String) -> String {

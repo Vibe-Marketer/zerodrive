@@ -172,7 +172,7 @@ public struct MainStudioWindow: View {
         .sheet(isPresented: $showVersionUpdatePopup) {
             UpgradePromptSheet(
                 triggerReason: "What's New in ZeroDrive v3.0 — Paid Feature Release for AI Agents & Multi-Drive.",
-                requiredTier: "Creator"
+                requiredTier: "Pro"
             )
         }
         .onAppear {

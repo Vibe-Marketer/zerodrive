@@ -134,14 +134,14 @@ public struct DashboardView: View {
         .sheet(isPresented: $showUpgradeModal) {
             UpgradePromptSheet(
                 triggerReason: "What's New in ZeroDrive v3.0 — Paid Feature Release for AI Agents & Multi-Drive.",
-                requiredTier: "Creator"
+                requiredTier: "Pro"
             )
         }
         .sheet(isPresented: $isShowingAddDriveSheet) {
             AddNewDriveSheet(isPresented: $isShowingAddDriveSheet) { _ in }
         }
         .sheet(isPresented: $isShowingUpgradePrompt) {
-            UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Creator")
+            UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Pro")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenDashboardMoveFolderPicker"))) { _ in
             pickFilesForTransfer(isCopy: false)
@@ -166,7 +166,7 @@ public struct DashboardView: View {
                         .foregroundStyle(Color.accentColor)
                         .clipShape(Capsule())
                 }
-                Text("Upgrade to Creator or Studio to unlock Multi-Drive isolation, 24/7 Agent MCP tokens, and up to 1TB DFY storage.")
+                Text("Upgrade to Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) to unlock zero-config storage, free drive partitioning, and 24/7 hosted MCP.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
