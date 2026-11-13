@@ -529,7 +529,7 @@ public struct OnboardingView: View {
                     id: "pro",
                     title: "Pro",
                     price: "$29/mo",
-                    detail: "5 TB Segregated Vault • Multi-Drive Finder • 4 Machines • 24/7 MCP"
+                    detail: "1 TB Segregated Vault • Free Drive Partitions • Unlimited Computers • 24/7 MCP"
                 )
                 selectablePlanBox(
                     id: "agency",
@@ -718,10 +718,10 @@ public struct OnboardingView: View {
                     badge: "RECOMMENDED",
                     isFeatured: true,
                     features: [
-                        "5 TB DFY Cloud Storage (Zero config)",
-                        "Multi-Drive Finder Isolation (Work + Personal)",
-                        "4 Machine Slots (Macs + Cloud Agents)",
-                        "24/7 Hosted Agent MCP Server Token",
+                        "1 TB DFY Cloud Storage (Zero config)",
+                        "Free Drive Partitioning (Work, Clients, Personal)",
+                        "Unlimited Computers (Mac, Windows, Cloud Servers)",
+                        "24/7 Hosted Agent MCP + API Access",
                         "Zero-config setup (no R2 keys required)"
                     ],
                     onSelect: {

@@ -70,7 +70,7 @@ public struct AccountLicensingView: View {
 
                         if isFreeTier {
                             Button {
-                                upgradePromptReason = "Upgrade to ZeroDrive Pro or Agency to unlock 5 TB–10 TB managed storage, multi-drive Finder isolation, and 24/7 Agent MCP access."
+                                upgradePromptReason = "Upgrade to ZeroDrive Pro (1 TB) or Agency (10 TB) to unlock managed storage, free drive partitioning, and 24/7 Agent MCP access."
                                 isShowingUpgradePrompt = true
                             } label: {
                                 Label("Upgrade to Pro / Agency", systemImage: "sparkles")
@@ -283,7 +283,7 @@ public struct AccountLicensingView: View {
                                     .textFieldStyle(.roundedBorder)
 
                                 Picker("Plan", selection: $issuePlanTier) {
-                                    Text("Pro (5 TB)").tag("pro")
+                                    Text("Pro (1 TB)").tag("pro")
                                     Text("Agency (10 TB)").tag("agency")
                                 }
                                 .labelsHidden()

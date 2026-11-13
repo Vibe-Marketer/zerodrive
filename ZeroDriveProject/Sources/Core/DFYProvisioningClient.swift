@@ -43,7 +43,7 @@ public struct GoogleAuthSessionStatus: Codable, Sendable {
             userPrefix: userPrefix,
             accessKeyId: accessKeyId,
             secretAccessKey: secretAccessKey,
-            quotaTB: quotaTB ?? 5.0
+            quotaTB: quotaTB ?? 1.0
         )
     }
 }
@@ -109,7 +109,7 @@ public struct LicenseActivationResponse: Codable, Sendable {
             userPrefix: userPrefix,
             accessKeyId: accessKeyId,
             secretAccessKey: secretAccessKey,
-            quotaTB: quota_tb ?? 5.0
+            quotaTB: quota_tb ?? 1.0
         )
     }
 }
@@ -356,7 +356,7 @@ public actor DFYProvisioningClient {
             userPrefix: "usr_\(safeName)",
             accessKeyId: "zd_dfy_r2_acc_" + UUID().uuidString.prefix(12),
             secretAccessKey: "zd_dfy_r2_sec_" + UUID().uuidString.replacingOccurrences(of: "-", with: ""),
-            quotaTB: isFreeTier ? 0.01 : 5.0
+            quotaTB: isFreeTier ? 0.01 : 1.0
         )
     }
 }

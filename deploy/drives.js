@@ -134,7 +134,7 @@ export async function calculateDriveStats(env, userPrefix, driveId) {
  */
 export async function listDrives(env, userPrefix, options = {}) {
   const savedDrives = await getSystemJson(env, userPrefix, "drives.json", []);
-  const defaultQuotaGb = Number(env?.DEFAULT_QUOTA_TB || 5.0) * 1024;
+  const defaultQuotaGb = Number(env?.DEFAULT_QUOTA_TB || 1.0) * 1024;
 
   const defaultDrive = {
     id: "primary",

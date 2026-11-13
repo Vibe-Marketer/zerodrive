@@ -42,10 +42,10 @@ public struct UpgradePromptSheet: View {
                     badge: "MOST POPULAR",
                     isFeatured: true,
                     features: [
-                        "5 TB DFY Cloud Storage (Zero config)",
-                        "Multi-Drive in Finder (Work + Personal)",
-                        "4 Machine Slots (Mac, PC, VPS, Mini)",
-                        "24/7 Hosted Agent MCP Server Token",
+                        "1 TB DFY Cloud Storage (Zero config)",
+                        "Free Drive Partitioning (Work, Clients, Personal)",
+                        "Unlimited Computers (Mac, Windows, Cloud Servers)",
+                        "24/7 Hosted Agent MCP + API Access",
                         "High-speed cloud-to-cloud streaming"
                     ],
                     onSelect: {

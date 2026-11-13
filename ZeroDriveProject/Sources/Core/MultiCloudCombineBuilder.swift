@@ -82,7 +82,7 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
             preset: .cloudflareR2,
             bucketAndPrefix: defaultBucketPath,
             displayLabel: "ZeroDrive Cloud Vault",
-            quotaTB: 5.0,
+            quotaTB: 1.0,
             spoolCapGB: 50,
             minFreeSpaceGB: 15,
             includeConfigDotFiles: true,

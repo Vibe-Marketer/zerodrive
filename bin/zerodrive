@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 ZeroDrive CLI (zd / zerodrive)
 High-performance command-line interface for ZeroDrive cloud vaults.

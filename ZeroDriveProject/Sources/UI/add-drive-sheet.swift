@@ -37,7 +37,7 @@ public enum DriveProvisioningMode: String, CaseIterable, Identifiable {
     public var description: String {
         switch self {
         case .partition:
-            return "Carves out an isolated drive folder from your existing 5.0 TB plan quota without adding any extra charges."
+            return "Carves out an isolated drive folder from your existing plan quota without adding any extra charges."
         case .dedicated:
             return "Adds fresh, independent cloud storage capacity that does not consume your current plan's vault quota."
         }
@@ -108,7 +108,7 @@ public struct AddNewDriveSheet: View {
 
     private var metaQuotaTB: Double {
         let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
-        return meta.quotaTB > 0 ? meta.quotaTB : 5.0
+        return meta.quotaTB > 0 ? meta.quotaTB : 1.0
     }
 
     private var availableFreeBytes: Int64 {

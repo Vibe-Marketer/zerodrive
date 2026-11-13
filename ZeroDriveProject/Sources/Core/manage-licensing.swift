@@ -17,7 +17,7 @@ public struct LicenseRecord: Codable, Sendable {
         email: String,
         licenseKey: String,
         tier: String = "Pro Unlimited",
-        quotaTB: Double = 5.0,
+        quotaTB: Double = 1.0,
         status: String = "Active & Verified",
         hardwareUUID: String = "",
         machineName: String = Host.current().localizedName ?? "Mac",
@@ -87,7 +87,7 @@ public final class ManageLicensing: ObservableObject {
                     email: "naegele412@gmail.com",
                     licenseKey: "zd_live_pro_8bc7fb477f10",
                     tier: "Pro Unlimited",
-                    quotaTB: meta.quotaTB > 0 ? meta.quotaTB : 5.0,
+                    quotaTB: meta.quotaTB > 0 ? meta.quotaTB : 1.0,
                     status: "Active & Verified",
                     hardwareUUID: hardware,
                     machineName: hostName,
@@ -241,7 +241,7 @@ public final class ManageLicensing: ObservableObject {
                 let resolvedKey = (session.licenseKey?.isEmpty == false ? session.licenseKey! : nil)
                     ?? (isMaster ? "zd_live_agency_master_8bc7fb477f" : "zd_live_pro_\(UUID().uuidString.prefix(12).lowercased())")
                 let resolvedTier = session.tier ?? (isMaster ? "Agency" : "Pro")
-                let resolvedQuota = session.quotaTB ?? (isMaster ? 20.0 : 5.0)
+                let resolvedQuota = session.quotaTB ?? (isMaster ? 20.0 : 1.0)
 
                 let record = LicenseRecord(
                     email: cleanEmail,
@@ -514,7 +514,7 @@ public final class ManageLicensing: ObservableObject {
             quota = 20.0
         } else if cleanKey.contains("_creator_") || cleanKey.contains("_pro_") {
             tier = "Creator"
-            quota = 5.0
+            quota = 1.0
         } else if cleanKey.contains("_builder_") {
             tier = "Builder"
             quota = 2.0
@@ -589,7 +589,7 @@ public final class ManageLicensing: ObservableObject {
             let resolvedEmail = (activation.customer_email?.isEmpty == false ? activation.customer_email! : nil)
                 ?? (targetEmail.isEmpty ? license.email : targetEmail)
             let resolvedTier = activation.tier_name ?? activation.tier ?? "Pro"
-            let resolvedQuota = activation.quota_tb ?? 5.0
+            let resolvedQuota = activation.quota_tb ?? 1.0
 
             license.email = resolvedEmail
             license.licenseKey = activation.license_key ?? trimmedKey
@@ -619,7 +619,7 @@ public final class ManageLicensing: ObservableObject {
             }
 
             var tier = "Pro"
-            var quota = 5.0
+            var quota = 1.0
             if upper.hasPrefix("ZD-AGY-") || trimmedKey.contains("_agency_") || trimmedKey.contains("_studio_") {
                 tier = "Agency"
                 quota = 10.0

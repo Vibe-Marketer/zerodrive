@@ -40,7 +40,7 @@ test("Pro and Agency primary plans + backwards-compatible tiers", () => {
   const tiers = getPricingTiers();
   assert.equal(tiers.pro.id, "pro");
   assert.equal(tiers.pro.price_monthly, 29);
-  assert.equal(tiers.pro.storage_gb, 5120);
+  assert.equal(tiers.pro.storage_gb, 1024);
   assert.equal(tiers.agency.id, "agency");
   assert.equal(tiers.agency.price_monthly, 497);
   assert.equal(tiers.agency.storage_gb, 10240);

@@ -44,7 +44,7 @@ export const DEFAULT_PRICING_TIERS = {
     flags: {
       byok: true,
       dfy_r2: false,
-      mcp_token: false,
+      mcp_token: true,
       fleet_rendering: false,
       agent_skill_registry: false,
       custom_subdomain: false,
@@ -59,16 +59,16 @@ export const DEFAULT_PRICING_TIERS = {
     aliases: ["creator", "professional", "pro_unlimited"],
     price_monthly: 29.00,
     price_yearly: 197.00,
-    storage_gb: 5120, // 5TB
+    storage_gb: 1024, // 1TB (Founders $29/mo locked, list $49/mo)
     max_drives: 4,
-    max_devices: 4,
+    max_devices: -1,
     seats: 1,
     featured: true,
     features: [
-      "5TB DFY Cloud Storage (Zero config)",
-      "Multi-Drive Finder Isolation (Work + Personal + Partitions)",
-      "4 Machine Slots (Macs, PCs, Cloud Agents)",
-      "24/7 Hosted Agent MCP Server Access",
+      "1TB DFY Cloud Storage (Zero config)",
+      "Free Drive Partitioning (Work, Clients, Personal)",
+      "Unlimited Computers (Mac, Windows, Cloud Servers)",
+      "24/7 Hosted Agent MCP + API Access",
       "High-speed cloud-to-cloud streaming & migration"
     ],
     flags: {
@@ -1199,7 +1199,7 @@ export async function verifyLicenseKey(env = {}, licenseKey) {
 
   const effectiveEmail = license.customer_email || `${String(license.license_key).toLowerCase()}@license.zerodrive.dev`;
   const identity = await buildTenantIdentityForEmail(env, effectiveEmail);
-  const quotaGB = license.quota_gb || 5120;
+  const quotaGB = license.quota_gb || 1024;
   const quotaTB = license.quota_tb || Number((quotaGB / 1024).toFixed(2));
 
   return {
@@ -1270,7 +1270,7 @@ export async function activateLicenseKey(env = {}, {
 
   const resolvedEmail = license.customer_email || cleanEmail || `${cleanKey.toLowerCase()}@license.zerodrive.dev`;
   const identity = await buildTenantIdentityForEmail(env, resolvedEmail);
-  const quotaTB = license.quota_tb || Number(((license.quota_gb || 5120) / 1024).toFixed(2));
+  const quotaTB = license.quota_tb || Number(((license.quota_gb || 1024) / 1024).toFixed(2));
 
   // Check if machine is already registered
   const existing = license.activated_machines.find(m => m.machine_id === cleanMachineId);

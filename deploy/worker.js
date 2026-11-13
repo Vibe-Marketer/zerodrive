@@ -2316,7 +2316,7 @@ async function loadAccountByEmail(env, email) {
           secretAccessKey: identity.secretAccessKey,
           tier: "Pro",
           tierId: "pro",
-          quotaTB: 5.0,
+          quotaTB: 1.0,
           licenseKey: `zd_live_pro_${emailHash.slice(0, 16)}`,
           createdAt: new Date().toISOString()
         };
@@ -2451,7 +2451,7 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
       userPrefix,
       tenantPrefix,
       tier: existingAccount?.tier || (isMasterAdmin ? "Agency" : "Pending Account Creation"),
-      quotaTB: existingAccount?.quotaTB || (isMasterAdmin ? 20.0 : 5.0),
+      quotaTB: existingAccount?.quotaTB || (isMasterAdmin ? 20.0 : 1.0),
       licenseKey: existingAccount?.licenseKey || "",
       endpoint: `${CANONICAL_ORIGIN}/s3`,
       bucket: env.R2_BUCKET || "zerodrive-vault-prod",
@@ -7878,7 +7878,7 @@ export default {
         const tierObj = getTier(env, resolvedTierId);
         const quotaTB = isMasterAdmin
           ? 20.0
-          : (activatedLicense?.quota_tb || Number(((tierObj.storage_gb || 5120) / 1024).toFixed(2)));
+          : (activatedLicense?.quota_tb || Number(((tierObj.storage_gb || 1024) / 1024).toFixed(2)));
         const tierName = isMasterAdmin ? "Agency" : (activatedLicense?.tier_name || tierObj.name);
 
         let finalLicenseKey = activatedLicense?.license_key || "";
@@ -8333,7 +8333,7 @@ export default {
 
         const endpoint = `${CANONICAL_ORIGIN}/s3`;
         let tierName = isMasterAdmin ? "Agency" : (existingAccount?.tier || "Pro");
-        let quotaTB = isMasterAdmin ? 20.0 : (existingAccount?.quotaTB || 5.0);
+        let quotaTB = isMasterAdmin ? 20.0 : (existingAccount?.quotaTB || 1.0);
         let resolvedKey = body.licenseKey ? String(body.licenseKey).trim() : (existingAccount?.licenseKey || "");
 
         // Validate/activate license key if provided

@@ -887,7 +887,7 @@ public struct DashboardView: View {
 
     private var cloudStorageBreakdownCard: some View {
         let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
-        let quotaTB = meta.quotaTB > 0 ? meta.quotaTB : 5.0
+        let quotaTB = meta.quotaTB > 0 ? meta.quotaTB : 1.0
         let totalQuotaBytes = Int64(quotaTB * 1024 * 1024 * 1024 * 1024)
         let usedBytes = vaultStats.liveTotalBytes ?? vaultStats.totalBytes ?? (turbo.ledger?.totalMovedToVaultBytes ?? 0)
         let freeBytes = max(0, totalQuotaBytes - usedBytes)

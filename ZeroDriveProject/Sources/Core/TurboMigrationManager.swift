@@ -726,7 +726,7 @@ public final class TurboMigrationManager: ObservableObject {
 
         // 2. ZeroDrive Cloud Vaults & Drives
         let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
-        let quotaTB = meta.quotaTB > 0 ? meta.quotaTB : 5.0
+        let quotaTB = meta.quotaTB > 0 ? meta.quotaTB : 1.0
         let totalVaultBytes = Int64(quotaTB * 1024 * 1024 * 1024 * 1024)
         let baseVaultBytes = VaultStats.shared.totalBytes ?? ledger?.totalMovedToVaultBytes ?? 0
         let activeMoved = telemetry.isRunning ? telemetry.movedBytes : 0

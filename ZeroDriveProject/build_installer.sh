@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ZeroDrive Build & DMG Installer Generation Script (v3.0 Production)
-# Target OS: macOS 13.0 (Ventura) or newer (Universal Binary arm64 + x86_64)
+# Target OS: macOS 13.0 (Ventura) or newer (Native Apple Silicon arm64)
 # ==============================================================================
 set -euo pipefail
 
@@ -29,14 +29,9 @@ echo "==> [2/6] Acquiring official CGO-enabled rclone engine with nfsmount..."
 mkdir -p "${RCLONE_CACHE_DIR}"
 RCLONE_LOCAL_BIN="${RCLONE_CACHE_DIR}/rclone"
 
-if [ ! -f "${RCLONE_LOCAL_BIN}" ]; then
-  ARCH="$(uname -m)"
-  if [ "${ARCH}" = "arm64" ]; then
-    RCLONE_URL="https://downloads.rclone.org/rclone-current-osx-arm64.zip"
-  else
-    RCLONE_URL="https://downloads.rclone.org/rclone-current-osx-amd64.zip"
-  fi
-  echo "    Downloading official CGO rclone binary (${ARCH}) from ${RCLONE_URL}..."
+if [ ! -f "${RCLONE_LOCAL_BIN}" ] || ! file "${RCLONE_LOCAL_BIN}" | grep -q "arm64"; then
+  RCLONE_URL="https://downloads.rclone.org/rclone-current-osx-arm64.zip"
+  echo "    Downloading official CGO rclone binary (arm64) from ${RCLONE_URL}..."
   curl -fsSL "${RCLONE_URL}" -o "${RCLONE_CACHE_DIR}/rclone.zip"
   unzip -q -o "${RCLONE_CACHE_DIR}/rclone.zip" -d "${RCLONE_CACHE_DIR}"
   find "${RCLONE_CACHE_DIR}" -name "rclone" -type f -perm +111 -exec cp {} "${RCLONE_LOCAL_BIN}" \;
@@ -53,14 +48,11 @@ echo "    rclone nfsmount verified successfully!"
 cp "${RCLONE_LOCAL_BIN}" "${APP_BUNDLE}/Contents/Resources/rclone"
 chmod +x "${APP_BUNDLE}/Contents/Resources/rclone"
 
-echo "==> [3/6] Compiling Swift sources into Universal Binary (arm64 + x86_64)..."
+echo "==> [3/6] Compiling Swift sources into Native Apple Silicon Binary (arm64)..."
 SWIFT_FILES=()
 while IFS= read -r line; do
   SWIFT_FILES+=("$line")
 done < <(find Sources -name "*.swift")
-
-ARM64_BIN="${BUILD_DIR}/${APP_NAME}-arm64"
-X86_64_BIN="${BUILD_DIR}/${APP_NAME}-x86_64"
 
 echo "    -> Compiling arm64-apple-macos13.0..."
 swiftc -O \
@@ -73,26 +65,8 @@ swiftc -O \
   -framework IOKit \
   -framework CryptoKit \
   -framework FileProvider \
-  -o "${ARM64_BIN}" \
+  -o "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}" \
   "${SWIFT_FILES[@]}"
-
-echo "    -> Compiling x86_64-apple-macos13.0..."
-swiftc -O \
-  -target x86_64-apple-macos13.0 \
-  -parse-as-library \
-  -framework SwiftUI \
-  -framework AppKit \
-  -framework Charts \
-  -framework AVFoundation \
-  -framework IOKit \
-  -framework CryptoKit \
-  -framework FileProvider \
-  -o "${X86_64_BIN}" \
-  "${SWIFT_FILES[@]}"
-
-echo "    -> Merging architectures via lipo..."
-lipo -create -output "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}" "${ARM64_BIN}" "${X86_64_BIN}"
-rm -f "${ARM64_BIN}" "${X86_64_BIN}"
 
 echo "==> [4/6] Compiling embedded Finder Sync Extension (ZeroDriveFinderSync.appex) & copying Assets..."
 if [ -f "Assets/Info.plist" ]; then
@@ -130,23 +104,8 @@ if [ -f "FinderSyncExtension/ZeroDriveFinderSync.swift" ]; then
     -framework Cocoa \
     -framework FinderSync \
     -Xlinker -e -Xlinker _NSExtensionMain \
-    -o "${BUILD_DIR}/ZeroDriveFinderSync-arm64" \
+    -o "${APPEX_BUNDLE}/Contents/MacOS/ZeroDriveFinderSync" \
     FinderSyncExtension/ZeroDriveFinderSync.swift
-
-  swiftc -O \
-    -target x86_64-apple-macos13.0 \
-    -parse-as-library \
-    -module-name ZeroDriveFinderSync \
-    -framework Cocoa \
-    -framework FinderSync \
-    -Xlinker -e -Xlinker _NSExtensionMain \
-    -o "${BUILD_DIR}/ZeroDriveFinderSync-x86_64" \
-    FinderSyncExtension/ZeroDriveFinderSync.swift
-
-  lipo -create -output "${APPEX_BUNDLE}/Contents/MacOS/ZeroDriveFinderSync" \
-    "${BUILD_DIR}/ZeroDriveFinderSync-arm64" \
-    "${BUILD_DIR}/ZeroDriveFinderSync-x86_64"
-  rm -f "${BUILD_DIR}/ZeroDriveFinderSync-arm64" "${BUILD_DIR}/ZeroDriveFinderSync-x86_64"
 fi
 
 if [ -f "ZeroDriveFileProvider/file-provider-extension.swift" ]; then
@@ -168,24 +127,8 @@ if [ -f "ZeroDriveFileProvider/file-provider-extension.swift" ]; then
     -framework FileProvider \
     -framework UniformTypeIdentifiers \
     -Xlinker -e -Xlinker _NSExtensionMain \
-    -o "${BUILD_DIR}/ZeroDriveFileProvider-arm64" \
+    -o "${FP_BUNDLE}/Contents/MacOS/ZeroDriveFileProvider" \
     "${FP_SWIFT_FILES[@]}"
-
-  swiftc -O \
-    -target x86_64-apple-macos13.0 \
-    -parse-as-library \
-    -module-name ZeroDriveFileProvider \
-    -framework Cocoa \
-    -framework FileProvider \
-    -framework UniformTypeIdentifiers \
-    -Xlinker -e -Xlinker _NSExtensionMain \
-    -o "${BUILD_DIR}/ZeroDriveFileProvider-x86_64" \
-    "${FP_SWIFT_FILES[@]}"
-
-  lipo -create -output "${FP_BUNDLE}/Contents/MacOS/ZeroDriveFileProvider" \
-    "${BUILD_DIR}/ZeroDriveFileProvider-arm64" \
-    "${BUILD_DIR}/ZeroDriveFileProvider-x86_64"
-  rm -f "${BUILD_DIR}/ZeroDriveFileProvider-arm64" "${BUILD_DIR}/ZeroDriveFileProvider-x86_64"
 fi
 
 echo "==> [5/6] Code signing ZeroDrive.app with identity: ${SIGN_IDENTITY}..."
@@ -234,9 +177,14 @@ if [ "${SIGN_IDENTITY}" != "-" ]; then
   codesign --force ${TIMESTAMP_FLAG} --sign "${SIGN_IDENTITY}" "${DMG_PATH}"
 fi
 
+if find "${APP_BUNDLE}" -type f -perm +111 -exec file {} + | grep -q "x86_64"; then
+  echo "ERROR: Found x86_64 Intel slice inside ${APP_BUNDLE}!"
+  exit 1
+fi
+
 echo "=============================================================================="
 echo " BUILD SUCCESSFUL!"
-echo " Universal Binary Verified: $(lipo -archs "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}")"
+echo " Native Apple Silicon Binary Verified: $(lipo -archs "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}")"
 echo " DMG Created: ${DMG_PATH}"
 echo " Install to Mac: Open ${DMG_PATH} and drag ZeroDrive to /Applications"
 echo "=============================================================================="
