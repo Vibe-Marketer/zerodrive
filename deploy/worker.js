@@ -2026,7 +2026,13 @@ function handleGoogleAuthStart(request, env, url) {
   }
 
   const encodedState = base64UrlEncode(JSON.stringify(statePayload));
-  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=select_account&state=${encodeURIComponent(encodedState)}`;
+  const requestedScope = url.searchParams.get("scope") || "";
+  const isDriveScope = requestedScope === "drive" || String(clientState).startsWith("gdrive_");
+  const scopeStr = isDriveScope
+    ? "openid email profile https://www.googleapis.com/auth/drive"
+    : "openid email profile";
+  const promptStr = isDriveScope ? "consent select_account" : "select_account";
+  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scopeStr)}&access_type=offline&prompt=${encodeURIComponent(promptStr)}&state=${encodeURIComponent(encodedState)}`;
   return Response.redirect(googleAuthUrl, 302);
 }
 
@@ -2431,6 +2437,113 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
   // Only pre-seed vault files automatically when account already exists (new accounts are created explicitly on confirmation)
   if (accountExists) {
     await ensureStarterVaultFiles(env, tenantPrefix);
+  }
+
+  // Google Drive Cloud-Import OAuth flow (uses ZeroDrive OAuth app instead of rclone's built-in client)
+  if (String(clientState).startsWith("gdrive_")) {
+    const sessionId = String(clientState).replace(/[^a-zA-Z0-9_-]/g, "");
+    const expiryIso = new Date(Date.now() + (Number(tokenData.expires_in || 3599) * 1000)).toISOString();
+    const rcloneTokenObj = {
+      access_token: tokenData.access_token,
+      token_type: tokenData.token_type || "Bearer",
+      refresh_token: tokenData.refresh_token || "",
+      expiry: expiryIso
+    };
+    const driveSessionPayload = {
+      ok: true,
+      status: "authenticated",
+      mode: "google_drive",
+      sessionId,
+      email,
+      name: user.name || email.split("@")[0] || "Google Drive User",
+      picture: user.picture || "",
+      rcloneTokenJson: JSON.stringify(rcloneTokenObj),
+      googleClientId: clientId,
+      googleClientSecret: clientSecret,
+      authenticatedAt: new Date().toISOString()
+    };
+
+    authSessionCache.set(sessionId, driveSessionPayload);
+    if (env?.VAULT_BUCKET) {
+      try {
+        await env.VAULT_BUCKET.put(`_auth_sessions/${sessionId}.json`, JSON.stringify(driveSessionPayload, null, 2), {
+          httpMetadata: { contentType: "application/json" }
+        });
+      } catch {}
+    }
+
+    const driveDeepLink = `zerodrive://gdrive-auth?session_id=${encodeURIComponent(sessionId)}&email=${encodeURIComponent(email)}`;
+    const driveCallbackHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ZeroDrive — Google Drive Connected</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/app-icon.png">
+  <style>
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at 50% 18%, rgba(52, 199, 89, 0.14) 0%, transparent 60%), #08080a;
+      color: #f5f5f7;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(18, 18, 24, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 22px;
+      padding: 40px 34px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+    }
+    .title { font-size: 22px; font-weight: 700; margin: 14px 0 8px; }
+    .email {
+      display: inline-block;
+      background: rgba(52, 199, 89, 0.14);
+      color: #34c759;
+      border: 1px solid rgba(52, 199, 89, 0.35);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+    .desc { font-size: 14px; color: #a1a1a6; line-height: 1.5; margin-bottom: 24px; }
+    .btn {
+      display: inline-block;
+      background: #ffffff;
+      color: #000000;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 12px 26px;
+      border-radius: 999px;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img src="/app-icon.png" width="56" height="56" style="border-radius:14px;" alt="ZeroDrive">
+    <div class="title">Google Drive Connected to ZeroDrive</div>
+    <div class="email">${xmlEscape(email)}</div>
+    <p class="desc">Your Google Drive is authorized via ZeroDrive. Returning to the Mac app to finish scanning.</p>
+    <a href="${driveDeepLink}" class="btn">Return to ZeroDrive App</a>
+    <p style="font-size:12px; color:#6e6e73; margin-top:18px;">Your ZeroDrive Mac app updates automatically — you can close this browser tab.</p>
+  </div>
+  <script>
+    setTimeout(function() { window.location.href = ${JSON.stringify(driveDeepLink)}; }, 150);
+  </script>
+</body>
+</html>`;
+    return new Response(driveCallbackHtml, {
+      headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+    });
   }
 
   // Desktop Mac App OAuth flow: persist session payload for polling AND deep-link back into ZeroDrive.app

@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 public final class MultiCloudCombineBuilder: @unchecked Sendable {
     public static let shared = MultiCloudCombineBuilder()
@@ -254,13 +255,17 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         }
     }
 
-    /// Launches browser OAuth flow via `rclone config create` for Google Drive, Dropbox, or OneDrive
+    /// Launches browser OAuth flow via ZeroDrive OAuth (Google Drive) or `rclone config create` (Dropbox, OneDrive)
     public func connectExternalCloudOAuth(
         provider: ExternalCloudProvider,
         rcloneURL: URL,
         customClientId: String? = nil,
         customClientSecret: String? = nil
     ) async -> (Bool, String) {
+        if provider == .googleDrive {
+            return await connectGoogleDriveViaZeroDriveOAuth()
+        }
+
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
@@ -314,6 +319,56 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func connectGoogleDriveViaZeroDriveOAuth() async -> (Bool, String) {
+        let killer = Process()
+        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killer.arguments = ["-f", "rclone config create"]
+        try? killer.run()
+        killer.waitUntilExit()
+
+        let sessionId = "gdrive_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(20)
+        guard let authURL = URL(string: "https://api.zerodrive.dev/auth/google?state=\(sessionId)&scope=drive") else {
+            return (false, "Invalid Google Drive OAuth URL")
+        }
+
+        await MainActor.run {
+            NSWorkspace.shared.open(authURL)
+        }
+
+        for _ in 0..<120 {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if let session = try? await DFYProvisioningClient.shared.pollGoogleAuthSession(sessionId: String(sessionId)),
+               session.isAuthenticated,
+               let tokenJson = session.rcloneTokenJson, !tokenJson.isEmpty {
+                var sections = self.parseConfigSections()
+                var lines: [String] = [
+                    "type = drive",
+                    "scope = drive",
+                    "chunk_size = 32M",
+                    "pacer_min_sleep = 10ms"
+                ]
+                if let cid = session.googleClientId, !cid.isEmpty {
+                    lines.append("client_id = \(cid)")
+                }
+                if let csec = session.googleClientSecret, !csec.isEmpty {
+                    lines.append("client_secret = \(csec)")
+                }
+                lines.append("token = \(tokenJson)")
+                sections[ExternalCloudProvider.googleDrive.sectionName] = lines
+
+                if let email = session.email, !email.isEmpty {
+                    self.saveAccountEmail(email, for: .googleDrive)
+                }
+
+                let meta = self.loadVaultMetadata()
+                try? self.writeSectionsAndRebuildCombine(&sections, primaryBucketPath: meta.bucketAndPrefix)
+                return (true, "Connected Google Drive")
+            }
+        }
+
+        return (false, "Google Drive OAuth timed out. Please complete sign-in in your browser.")
     }
 
     public func getAccountEmail(for provider: ExternalCloudProvider) -> String? {

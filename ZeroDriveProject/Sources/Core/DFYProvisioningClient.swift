@@ -28,6 +28,14 @@ public struct GoogleAuthSessionStatus: Codable, Sendable {
     public let bucket: String?
     public let accessKeyId: String?
     public let secretAccessKey: String?
+    public let mode: String?
+    public let rcloneTokenJson: String?
+    public let googleClientId: String?
+    public let googleClientSecret: String?
+
+    public var isAuthenticated: Bool {
+        ok && status == "authenticated"
+    }
 
     public func toDFYProvisionResult() -> DFYProvisionResult? {
         guard let endpoint = endpoint,

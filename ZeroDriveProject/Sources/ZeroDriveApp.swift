@@ -444,6 +444,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 presentMainWindow()
                 continue
             }
+            if url.host == "gdrive-auth" {
+                presentMainWindow()
+                continue
+            }
             guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { continue }
             let cmd = components.queryItems?.first(where: { $0.name == "cmd" })?.value ?? "move"
             let paths = components.queryItems?.filter({ $0.name == "path" }).compactMap({ $0.value }) ?? []
