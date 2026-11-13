@@ -424,7 +424,7 @@ public struct AccountLicensingView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Upgrade to Pro or Agency")
                                 .font(.body.weight(.medium))
-                            Text("Choose Pro ($29/mo • 1 TB) or Agency ($497/mo • 10 TB), or activate a license key.")
+                            Text("Choose Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB), or activate a license key.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -432,7 +432,7 @@ public struct AccountLicensingView: View {
                         Spacer()
 
                         Button {
-                            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) for zero-config managed storage and 24/7 hosted MCP."
+                            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB) for zero-config managed storage and 24/7 hosted MCP."
                             isShowingUpgradePrompt = true
                         } label: {
                             Label("View Plans & Upgrade…", systemImage: "sparkles")
@@ -491,7 +491,7 @@ public struct AccountLicensingView: View {
             UpgradePromptSheet(triggerReason: upgradePromptReason, requiredTier: "Pro")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenUpgradeAccountModal"))) { _ in
-            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) for zero-config managed storage and 24/7 hosted MCP."
+            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB) for zero-config managed storage and 24/7 hosted MCP."
             isShowingUpgradePrompt = true
         }
     }

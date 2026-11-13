@@ -528,13 +528,13 @@ public struct OnboardingView: View {
                 selectablePlanBox(
                     id: "pro",
                     title: "Pro",
-                    price: "$29/mo",
+                    price: "$29/mo (Reg. $49)",
                     detail: "1 TB Segregated Vault • Free Drive Partitions • Unlimited Computers • 24/7 MCP"
                 )
                 selectablePlanBox(
                     id: "agency",
                     title: "Agency",
-                    price: "$497/mo",
+                    price: "$297/mo (Reg. $497)",
                     detail: "10 TB Vault • Unlimited Client Vaults • White-Label MCP • 5 Seats"
                 )
             }
@@ -714,8 +714,9 @@ public struct OnboardingView: View {
                 OnboardingPlanCard(
                     title: "Pro",
                     price: "$29/mo",
-                    subprice: "or $197/year (Save 43%)",
-                    badge: "RECOMMENDED",
+                    originalPrice: "$49/mo",
+                    subprice: "Founders Rate (Reg. $49/mo) • or $197/yr",
+                    badge: "FOUNDERS ($29 NOW)",
                     isFeatured: true,
                     features: [
                         "1 TB DFY Cloud Storage (Zero config)",
@@ -732,9 +733,10 @@ public struct OnboardingView: View {
 
                 OnboardingPlanCard(
                     title: "Agency",
-                    price: "$497/mo",
-                    subprice: "or $4,970/year",
-                    badge: "WHITE-LABEL",
+                    price: "$297/mo",
+                    originalPrice: "$497/mo",
+                    subprice: "Founding Agency (Reg. $497/mo) • or $2,970/yr",
+                    badge: "FOUNDING ($297 NOW)",
                     isFeatured: false,
                     features: [
                         "10 TB DFY Cloud Storage (+$25/TB add-on)",
@@ -789,7 +791,7 @@ public struct OnboardingView: View {
 
                 Spacer()
 
-                Button("Upgrade to Pro ($29/mo) instead →") {
+                Button("Upgrade to Pro ($29/mo — Reg. $49/mo) instead →") {
                     currentStep = .planSelection
                 }
                 .buttonStyle(.plain)
@@ -1768,6 +1770,7 @@ public struct OnboardingView: View {
 public struct OnboardingPlanCard: View {
     public let title: String
     public let price: String
+    public var originalPrice: String? = nil
     public let subprice: String
     public let badge: String
     public let isFeatured: Bool
@@ -1819,7 +1822,15 @@ public struct OnboardingPlanCard: View {
 
     private var priceRow: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(price).font(.title2.bold())
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let originalPrice, !originalPrice.isEmpty {
+                    Text(originalPrice)
+                        .font(.subheadline.weight(.semibold))
+                        .strikethrough(true, color: .secondary)
+                        .foregroundStyle(.secondary)
+                }
+                Text(price).font(.title2.bold())
+            }
             Text(subprice).font(.caption2).foregroundStyle(.secondary)
         }
     }

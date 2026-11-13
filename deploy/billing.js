@@ -58,8 +58,11 @@ export const DEFAULT_PRICING_TIERS = {
     name: "Pro",
     aliases: ["creator", "professional", "pro_unlimited"],
     price_monthly: 29.00,
+    list_price_monthly: 49.00,
+    founder_price_monthly: 29.00,
     price_yearly: 197.00,
-    storage_gb: 1024, // 1TB (Founders $29/mo locked, list $49/mo)
+    list_price_yearly: 490.00,
+    storage_gb: 1024, // 1TB (Founders $29/mo now, Reg. $49/mo)
     max_drives: 4,
     max_devices: -1,
     seats: 1,
@@ -290,9 +293,12 @@ export const DEFAULT_PRICING_TIERS = {
     id: "agency",
     name: "Agency",
     aliases: ["team", "team_agency", "partner", "agency_partner"],
-    price_monthly: 497.00,
-    price_yearly: 4970.00,
-    storage_gb: 10240, // 10TB
+    price_monthly: 297.00,
+    list_price_monthly: 497.00,
+    founder_price_monthly: 297.00,
+    price_yearly: 2970.00,
+    list_price_yearly: 4970.00,
+    storage_gb: 10240, // 10TB (Founding Agency $297/mo now, Reg. $497/mo)
     max_drives: -1, // Unlimited
     max_devices: -1, // Unlimited
     seats: 5,
@@ -708,6 +714,7 @@ export async function createCheckoutSession(env = {}, {
   const tier = getTier(env, tierId);
   const cycle = billingCycle === "yearly" ? "yearly" : "monthly";
   const price = cycle === "yearly" ? tier.price_yearly : tier.price_monthly;
+  const listPrice = cycle === "yearly" ? (tier.list_price_yearly || price) : (tier.list_price_monthly || price);
   const isFree = tier.id === "free" || price === 0;
 
   // Handle Free Starter Tier
@@ -739,6 +746,7 @@ export async function createCheckoutSession(env = {}, {
       tierName: tier.name,
       billingCycle: cycle,
       amount: price,
+      listAmount: listPrice,
       storageGB: tier.storage_gb,
       features: Array.isArray(tier.features) ? tier.features : [],
       customerEmail,
@@ -786,6 +794,7 @@ export async function createCheckoutSession(env = {}, {
     tierName: tier.name,
     billingCycle: cycle,
     amount: price,
+    listAmount: listPrice,
     storageGB: tier.storage_gb,
     features: Array.isArray(tier.features) ? tier.features : [],
     customerEmail,
@@ -1698,6 +1707,7 @@ function renderCheckoutPageHtml(session) {
   const tierId = session.tierId || "pro";
   const tierName = session.tierName || "Pro";
   const amount = session.amount || 29;
+  const listAmount = session.listAmount || (tierId === "agency" ? 497 : 49);
   const cycle = session.billingCycle === "yearly" ? "year" : "month";
   const billingCycle = session.billingCycle === "yearly" ? "yearly" : "monthly";
   const customerEmail = session.customerEmail === "user@zerodrive.dev" ? "" : (session.customerEmail || "");
@@ -1884,9 +1894,11 @@ function renderCheckoutPageHtml(session) {
     <p style="color: var(--text-muted); font-size: 14px;">Instant segregated cloud drive provisioning with unthrottled streaming and 24/7 MCP access.</p>
     
     <div class="price-row">
+      ${listAmount > amount ? `<span style="font-size: 22px; font-weight: 700; color: var(--text-muted); text-decoration: line-through; margin-right: 6px;">$${escapeHtml(listAmount)}</span>` : ""}
       <span class="price-val">$${escapeHtml(amount)}</span>
       <span class="price-cycle">/ ${escapeHtml(cycle)}</span>
     </div>
+    ${listAmount > amount ? `<div style="margin-top: -12px; margin-bottom: 18px; font-size: 12px; font-weight: 600; color: #6ee7b7;">Founders Rate Locked Now (Reg. $${escapeHtml(listAmount)}/${escapeHtml(cycle)})</div>` : ""}
 
     <ul class="features">${featureItemsHtml}
     </ul>

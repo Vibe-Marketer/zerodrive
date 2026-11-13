@@ -41,9 +41,11 @@ test("Pro and Agency primary plans + backwards-compatible tiers", () => {
   const tiers = getPricingTiers();
   assert.equal(tiers.pro.id, "pro");
   assert.equal(tiers.pro.price_monthly, 29);
+  assert.equal(tiers.pro.list_price_monthly, 49);
   assert.equal(tiers.pro.storage_gb, 1024);
   assert.equal(tiers.agency.id, "agency");
-  assert.equal(tiers.agency.price_monthly, 497);
+  assert.equal(tiers.agency.price_monthly, 297);
+  assert.equal(tiers.agency.list_price_monthly, 497);
   assert.equal(tiers.agency.storage_gb, 10240);
   assert.ok(tiers.free);
   assert.equal(getTier({}, "pro").id, "pro");
@@ -101,7 +103,8 @@ test("Strict client drive segregation prevents master vault leakage", async () =
 test("Checkout session never returns AccessDenied checkout.stripe.com/mock URL when Stripe key unset", async () => {
   const session = await createCheckoutSession({}, { tierId: "agency", customerEmail: "client@acme.com" });
   assert.equal(session.tierId, "agency");
-  assert.equal(session.amount, 497);
+  assert.equal(session.amount, 297);
+  assert.equal(session.listAmount, 497);
   assert.ok(!session.url.includes("checkout.stripe.com/mock"));
   assert.ok(session.url.startsWith("https://api.zerodrive.dev/v1/billing/checkout/complete"));
 });

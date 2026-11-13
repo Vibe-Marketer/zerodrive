@@ -166,7 +166,7 @@ public struct DashboardView: View {
                         .foregroundStyle(Color.accentColor)
                         .clipShape(Capsule())
                 }
-                Text("Upgrade to Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) to unlock zero-config storage, free drive partitioning, and 24/7 hosted MCP.")
+                Text("Upgrade to Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB) to unlock zero-config storage, free drive partitioning, and 24/7 hosted MCP.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

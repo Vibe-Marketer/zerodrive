@@ -21,7 +21,7 @@ public struct UpgradePromptSheet: View {
     @State private var isConnectingBYOK: Bool = false
 
     public init(
-        triggerReason: String = "Choose ZeroDrive Pro ($29/mo, 1 TB) or Agency ($497/mo, 10 TB) for zero-config managed storage and 24/7 hosted MCP.",
+        triggerReason: String = "Choose ZeroDrive Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB) for zero-config managed storage and 24/7 hosted MCP.",
         requiredTier: String = "Pro",
         initialBYOKMode: Bool = false
     ) {
@@ -67,8 +67,9 @@ public struct UpgradePromptSheet: View {
                 UpgradeTierCard(
                     title: "Pro",
                     price: "$29/mo",
-                    subprice: "or $197/year (Save 43%)",
-                    badge: "MOST POPULAR",
+                    originalPrice: "$49/mo",
+                    subprice: "Founders Special (Reg. $49/mo) • Locked, or $197/yr",
+                    badge: "FOUNDERS ($29 NOW)",
                     isFeatured: true,
                     features: [
                         "1 TB DFY Cloud Storage (Zero config)",
@@ -85,9 +86,10 @@ public struct UpgradePromptSheet: View {
 
                 UpgradeTierCard(
                     title: "Agency",
-                    price: "$497/mo",
-                    subprice: "or $4,970/year",
-                    badge: "WHITE-LABEL",
+                    price: "$297/mo",
+                    originalPrice: "$497/mo",
+                    subprice: "Founding Agency (Reg. $497/mo) • 10 TB + White-Label",
+                    badge: "FOUNDING ($297 NOW)",
                     isFeatured: false,
                     features: [
                         "10 TB DFY Cloud Storage (+$25/TB add-on)",
@@ -151,7 +153,7 @@ public struct UpgradePromptSheet: View {
                     openStripeCheckout(tier: "pro")
                     dismiss()
                 } label: {
-                    Label("Upgrade to Pro ($29/mo)", systemImage: "bolt.fill")
+                    Label("Upgrade to Pro ($29/mo — Reg. $49/mo)", systemImage: "bolt.fill")
                         .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)
@@ -380,6 +382,7 @@ public struct UpgradePromptSheet: View {
 public struct UpgradeTierCard: View {
     public let title: String
     public let price: String
+    public var originalPrice: String? = nil
     public let subprice: String
     public let badge: String
     public let isFeatured: Bool
@@ -431,7 +434,15 @@ public struct UpgradeTierCard: View {
 
     private var priceSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(price).font(.title.bold())
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let originalPrice, !originalPrice.isEmpty {
+                    Text(originalPrice)
+                        .font(.callout.weight(.semibold))
+                        .strikethrough(true, color: .secondary)
+                        .foregroundStyle(.secondary)
+                }
+                Text(price).font(.title.bold())
+            }
             Text(subprice).font(.caption2).foregroundStyle(.secondary)
         }
     }
