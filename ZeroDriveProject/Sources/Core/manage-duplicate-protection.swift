@@ -115,21 +115,150 @@ public final class ManageDuplicateProtection: ObservableObject {
         }
     }
 
-    /// Scans a directory (typically My Drive) for duplicate content
+    /// Scans ZeroDrive cloud metadata directly via S3 hashes (`--hash --fast-list`) without crawling or downloading through the live NFS mount!
     public func startDuplicateScan(targetDirectory: URL? = nil) {
         guard !isScanning && !isCleaning else { return }
         isScanning = true
-        scanProgress = 0.0
-        statusMessage = "Scanning for files…"
+        scanProgress = 0.05
+        statusMessage = "Fetching cloud metadata & S3 hashes (0 bytes downloaded)…"
 
-        let scanURL: URL
+        let mountRootPath = RcloneDaemonSupervisor.shared.mountPoint.path
+        let symlinkPath = RcloneDaemonSupervisor.shared.userSymlinkURL.path
+        let isCloudScan: Bool
         if let dir = targetDirectory {
-            scanURL = dir
+            let p = dir.path
+            isCloudScan = p.hasPrefix(mountRootPath) || p.hasPrefix(symlinkPath)
         } else {
-            scanURL = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
+            isCloudScan = true
         }
 
-        Task.detached(priority: .userInitiated) {
+        let rcloneBin = RcloneDaemonSupervisor.shared.resolveRcloneBinary()
+        let configPath = MultiCloudCombineBuilder.shared.configPath.path
+        let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
+        let mountMyDrive = RcloneDaemonSupervisor.shared.mountPoint.appendingPathComponent("My Drive")
+
+        Task.detached(priority: .utility) {
+            if isCloudScan, let rcloneURL = rcloneBin {
+                var subpath = ""
+                if let dir = targetDirectory {
+                    let p = dir.path
+                    if p.hasPrefix(mountMyDrive.path + "/") {
+                        subpath = "/" + String(p.dropFirst(mountMyDrive.path.count + 1))
+                    } else if p.hasPrefix(symlinkPath + "/") {
+                        subpath = "/" + String(p.dropFirst(symlinkPath.count + 1))
+                    }
+                }
+                let remoteTarget = "primary_vault:\(meta.bucketAndPrefix)\(subpath)"
+                let proc = Process()
+                proc.executableURL = rcloneURL
+                proc.arguments = [
+                    "lsjson",
+                    remoteTarget,
+                    "--config=\(configPath)",
+                    "--recursive",
+                    "--files-only",
+                    "--hash",
+                    "--fast-list",
+                    "--no-mimetype"
+                ]
+                let outPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError = FileHandle.nullDevice
+
+                do {
+                    try proc.run()
+                    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
+
+                    var scannedCount = 0
+                    var hashBuckets: [String: [DuplicateFileItem]] = [:]
+                    let iso = ISO8601DateFormatter()
+
+                    if let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                        for entry in list {
+                            guard let relPath = entry["Path"] as? String else { continue }
+                            let baseName = (relPath as NSString).lastPathComponent
+                            if baseName.hasPrefix(".") || relPath.hasPrefix("_SYSTEM/") { continue }
+                            let size = (entry["Size"] as? Int64) ?? Int64((entry["Size"] as? Int) ?? 0)
+                            guard size > 0 else { continue }
+
+                            scannedCount += 1
+                            let hashes = entry["Hashes"] as? [String: String]
+                            let rawHash = hashes?["md5"] ?? hashes?["MD5"] ?? ""
+                            guard !rawHash.isEmpty, !rawHash.contains("-") else { continue }
+
+                            let modStr = (entry["ModTime"] as? String) ?? ""
+                            let mdate = iso.date(from: modStr) ?? Date()
+                            let baseURL = targetDirectory ?? mountMyDrive
+                            let itemURL = baseURL.appendingPathComponent(relPath)
+                            let key = "\(size):\(rawHash)"
+                            hashBuckets[key, default: []].append(
+                                DuplicateFileItem(url: itemURL, sizeBytes: size, modifiedDate: mdate)
+                            )
+                        }
+                    }
+
+                    var groups: [DuplicateGroup] = []
+                    var wasted: Int64 = 0
+                    var duplicateCount = 0
+
+                    for (key, matchingItems) in hashBuckets where matchingItems.count > 1 {
+                        let sorted = matchingItems.sorted { $0.modifiedDate < $1.modifiedDate }
+                        guard let original = sorted.first else { continue }
+                        let duplicates = Array(sorted.dropFirst())
+                        let cleanHash = key.components(separatedBy: ":").last ?? key
+                        let group = DuplicateGroup(
+                            fileHash: cleanHash,
+                            fileSize: original.sizeBytes,
+                            fileName: original.name,
+                            original: original,
+                            duplicates: duplicates
+                        )
+                        groups.append(group)
+                        wasted += group.wastedBytes
+                        duplicateCount += duplicates.count
+                    }
+
+                    groups.sort { $0.wastedBytes > $1.wastedBytes }
+                    let finalGroups = groups
+                    let finalDuplicates = duplicateCount
+                    let finalWasted = wasted
+                    let finalScanned = scannedCount
+
+                    await MainActor.run {
+                        self.duplicateGroups = finalGroups
+                        self.totalDuplicateFiles = finalDuplicates
+                        self.totalWastedBytes = finalWasted
+                        self.totalFilesScanned = finalScanned
+                        self.lastScanDate = Date()
+                        self.isScanning = false
+                        self.scanProgress = 1.0
+                        if finalDuplicates == 0 {
+                            self.statusMessage = "Shield Active • 0 duplicates found in \(finalScanned) files"
+                        } else {
+                            let formattedWasted = ByteCountFormatter.string(fromByteCount: finalWasted, countStyle: .file)
+                            self.statusMessage = "Found \(finalDuplicates) duplicate files (\(formattedWasted) wasted)"
+                        }
+                        self.savePersistedStats()
+                    }
+                    return
+                } catch {
+                    await MainActor.run {
+                        self.isScanning = false
+                        self.statusMessage = "Cloud scan failed: \(error.localizedDescription)"
+                    }
+                    return
+                }
+            }
+
+            guard let scanURL = targetDirectory else {
+                await MainActor.run {
+                    self.isScanning = false
+                    self.statusMessage = "Scan completed"
+                }
+                return
+            }
+
             var scannedCount = 0
             var filesBySize: [Int64: [DuplicateFileItem]] = [:]
 

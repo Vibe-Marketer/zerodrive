@@ -59,6 +59,29 @@ public final class MultiCloudCombineBuilder: @unchecked Sendable {
         return sections["primary_vault"] != nil && sections["ZeroDriveUnified"] != nil
     }
 
+    /// Resolves the active ZeroDrive API endpoint and authentication token from rclone.conf for live SSE / delta sync
+    public func resolveActiveApiCredentials() -> (endpoint: String, token: String)? {
+        let sections = parseConfigSections()
+        guard let primary = sections["primary_vault"] else { return nil }
+        let rawEndpoint = primary
+            .first(where: { $0.hasPrefix("endpoint") })?
+            .components(separatedBy: "=")
+            .last?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let accessKey = primary
+            .first(where: { $0.hasPrefix("access_key_id") })?
+            .components(separatedBy: "=")
+            .last?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard !accessKey.isEmpty else { return nil }
+        let lowerEp = rawEndpoint.lowercased()
+        guard lowerEp.contains("zerodrive.dev") || lowerEp.contains("zerodrive.aisimple.co") else {
+            return nil
+        }
+        return (endpoint: "https://api.zerodrive.dev", token: accessKey)
+    }
+
     public func loadVaultMetadata() -> PrimaryVaultMetadata {
         let sections = parseConfigSections()
         let accessKey = sections["primary_vault"]?

@@ -170,10 +170,11 @@ await test("All configured tiers exist with correct prices, quotas, and feature 
   assert.equal(tiers.studio_max.storage_gb, 3072);
   assert.equal(tiers.studio_max.max_drives, 8);
 
-  // 6. Agency Partner ($497/mo, $4,970/yr)
+  // 6. Agency Partner ($297/mo launch, $497/mo reg, $2,970/yr)
   assert.equal(tiers.agency.id, "agency");
-  assert.equal(tiers.agency.price_monthly, 497.00);
-  assert.equal(tiers.agency.price_yearly, 4970.00);
+  assert.equal(tiers.agency.price_monthly, 297.00);
+  assert.equal(tiers.agency.list_price_monthly, 497.00);
+  assert.equal(tiers.agency.price_yearly, 2970.00);
   assert.equal(tiers.agency.storage_gb, 10240);
   assert.equal(tiers.agency.seats, 5);
   assert.equal(tiers.agency.flags.custom_subdomain, true);
@@ -186,8 +187,9 @@ await test("All configured tiers exist with correct prices, quotas, and feature 
   assert.equal(tiers.byok_lifetime.flags.byok, true);
 });
 
-await test("Resolves tiers case-insensitively and by aliases (pro -> creator, team -> agency)", () => {
-  assert.equal(getTier({}, "PRO").id, "creator");
+await test("Resolves tiers case-insensitively and by aliases (PRO -> pro, creator_legacy -> creator)", () => {
+  assert.equal(getTier({}, "PRO").id, "pro");
+  assert.equal(getTier({}, "creator_legacy").id, "creator");
   assert.equal(getTier({}, "builder").id, "builder");
   assert.equal(getTier({}, "studio").id, "studio");
   assert.equal(getTier({}, "studio_max").id, "studio_max");
@@ -244,7 +246,8 @@ await test("createCheckoutSession provides mock session URL when STRIPE_SECRET_K
 
   assert.equal(session.mock, true);
   assert.ok(session.id.startsWith("cs_mock_"));
-  assert.ok(session.url.includes("https://checkout.stripe.com/mock/builder"));
+  assert.ok(session.url.includes("/v1/billing/checkout/complete?"));
+  assert.ok(session.url.includes("tier=builder"));
   assert.equal(session.amount, 19.00);
   assert.equal(session.tierId, "builder");
   assert.equal(session.customerEmail, "alice@zerodrive.dev");
@@ -639,7 +642,7 @@ await test("GET /v1/billing/tiers returns live pricing and feature flags", async
   assert.ok(data.tiers.dedicated_2tb !== undefined);
   assert.ok(data.tiers.agency !== undefined);
   assert.ok(data.tiers.byok_lifetime !== undefined);
-  assert.equal(data.count, 10);
+  assert.equal(data.count, 11);
 });
 
 await test("POST /v1/billing/checkout returns checkout session", async () => {
@@ -658,21 +661,20 @@ await test("POST /v1/billing/checkout returns checkout session", async () => {
 
   const data = await res.json();
   assert.equal(data.ok, true);
-  assert.ok(data.session.url.includes("checkout.stripe.com"));
+  assert.ok(data.session.url.includes("/v1/billing/checkout/complete?"));
   assert.equal(data.session.tierId, "builder");
 });
 
-await test("GET /v1/billing/checkout?tier=promax handles browser navigation", async () => {
+await test("GET /v1/billing/checkout?tier=promax returns 503 when Stripe key and ALLOW_MOCK_CHECKOUT are unset", async () => {
   const req = new Request("https://api.zerodrive.dev/v1/billing/checkout?tier=promax", {
     method: "GET",
     headers: { "Accept": "text/html" }
   });
 
   const res = await worker.fetch(req, testEnv);
-  assert.equal(res.status, 200);
+  assert.equal(res.status, 503);
   const text = await res.text();
-  assert.ok(text.includes("ZeroDrive Pro Max"));
-  assert.ok(text.includes("$97"));
+  assert.ok(text.includes("Card Billing Setup Pending") || text.includes("Stripe"));
 });
 
 await test("GET /v1/billing/portal returns portal session URL", async () => {

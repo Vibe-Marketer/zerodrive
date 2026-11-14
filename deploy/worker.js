@@ -43,9 +43,21 @@ import {
   verifyLicenseKey,
   activateLicenseKey,
   buildTenantIdentityForEmail,
+  resolveTenantSecretKey,
+  timingSafeEqual,
   createManagedLicense,
   getLicenseSecret
 } from "./billing.js";
+import {
+  handleReleasesRequest,
+  parseSemver,
+  compareSemver,
+  parseReleaseNotesMarkdown,
+  computeMissedReleases,
+  generateSparkleAppcastXml,
+  parseByteRange,
+  loadReleaseManifest
+} from "./releases.js";
 
 /**
  * ZeroDrive Cloudflare Worker — Production Multi-Tenant R2 S3 Proxy, Provisioner & DMG Host
@@ -283,11 +295,202 @@ function matchesIfRange(ifRangeHeader, currentEtag, uploadedDate) {
   return false;
 }
 
-async function handleS3Proxy(request, env, url) {
+const s3ActivityDebounceMap = new Map();
+
+function awsEncodeURIComponent(str) {
+  return encodeURIComponent(str).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+async function hmacSha256Raw(keyBytes, message) {
+  const key = typeof keyBytes === "string" ? new TextEncoder().encode(keyBytes) : keyBytes;
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(message));
+  return new Uint8Array(sig);
+}
+
+async function bytesSha256Hex(data) {
+  const buf = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function formatCanonicalQueryPairs(pairs) {
+  return pairs
+    .filter(([k]) => k !== "X-Amz-Signature")
+    .map(([k, v]) => [awsEncodeURIComponent(k), awsEncodeURIComponent(v)])
+    .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) : a[0] < b[0] ? -1 : 1))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+}
+
+async function verifyS3RequestSignature(request, url, secretAccessKey) {
+  if (!secretAccessKey) return false;
+  const auth = request.headers.get("Authorization") || "";
+  let credential = "";
+  let signedHeadersRaw = "";
+  let providedSig = "";
+  let isPresigned = false;
+
+  if (auth.startsWith("AWS4-HMAC-SHA256 ")) {
+    const credMatch = auth.match(/Credential=([^,\s]+)/);
+    const shMatch = auth.match(/SignedHeaders=([^,\s]+)/);
+    const sigMatch = auth.match(/Signature=([a-fA-F0-9]+)/);
+    if (!credMatch || !shMatch || !sigMatch) return false;
+    credential = credMatch[1];
+    signedHeadersRaw = shMatch[1];
+    providedSig = sigMatch[1].toLowerCase();
+  } else if (url.searchParams.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256") {
+    isPresigned = true;
+    credential = url.searchParams.get("X-Amz-Credential") || "";
+    signedHeadersRaw = url.searchParams.get("X-Amz-SignedHeaders") || "";
+    providedSig = (url.searchParams.get("X-Amz-Signature") || "").toLowerCase();
+    if (!credential || !signedHeadersRaw || !/^[a-f0-9]+$/.test(providedSig)) return false;
+  } else {
+    return false;
+  }
+
+  const credParts = credential.split("/");
+  if (credParts.length !== 5 || credParts[4] !== "aws4_request") return false;
+  const [, dateStamp, region, service] = credParts;
+  if (!/^\d{8}$/.test(dateStamp) || !region || !service) return false;
+
+  const amzDate = isPresigned
+    ? (url.searchParams.get("X-Amz-Date") || "")
+    : (request.headers.get("x-amz-date") || request.headers.get("date") || "");
+  if (!amzDate) return false;
+  if (/^\d{8}T\d{6}Z$/.test(amzDate) && amzDate.slice(0, 8) !== dateStamp) return false;
+
+  if (isPresigned) {
+    const expiresRaw = url.searchParams.get("X-Amz-Expires");
+    if (expiresRaw !== null && /^\d{8}T\d{6}Z$/.test(amzDate)) {
+      const expiresSec = Number(expiresRaw);
+      if (!Number.isFinite(expiresSec) || expiresSec < 0) return false;
+      const iso = `${amzDate.slice(0, 4)}-${amzDate.slice(4, 6)}-${amzDate.slice(6, 8)}T${amzDate.slice(9, 11)}:${amzDate.slice(11, 13)}:${amzDate.slice(13, 15)}Z`;
+      const issuedMs = Date.parse(iso);
+      if (Number.isFinite(issuedMs) && Date.now() > issuedMs + expiresSec * 1000) {
+        return false;
+      }
+    }
+  }
+
+  const signedHeaders = signedHeadersRaw.split(";").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (signedHeaders.length === 0) return false;
+  const buildCanonicalHeaders = (acceptEncodingOverride = null) => signedHeaders
+    .map((h) => {
+      let val;
+      if (h === "host") {
+        val = request.headers.get("host") || url.host;
+      } else if (h === "accept-encoding" && acceptEncodingOverride !== null) {
+        val = acceptEncodingOverride;
+      } else {
+        val = request.headers.get(h) || "";
+      }
+      return `${h}:${val.trim().replace(/\s+/g, " ")}\n`;
+    })
+    .join("");
+  // Cloudflare edge proxies normalize Accept-Encoding (e.g. identity -> gzip, br), so check standard candidates when signed.
+  const canonicalHeadersCandidates = signedHeaders.includes("accept-encoding")
+    ? Array.from(new Set([
+        (request.headers.get("accept-encoding") || "").trim(),
+        "identity",
+        "gzip",
+        "gzip, deflate",
+        ""
+      ])).map((ae) => buildCanonicalHeaders(ae))
+    : [buildCanonicalHeaders()];
+  const signedHeadersList = signedHeaders.join(";");
+
+  let payloadHash = request.headers.get("x-amz-content-sha256");
+  if (!payloadHash) {
+    if (isPresigned) {
+      payloadHash = "UNSIGNED-PAYLOAD";
+    } else if (!request.body || request.method === "GET" || request.method === "HEAD" || request.method === "DELETE") {
+      payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    } else {
+      payloadHash = await bytesSha256Hex(await request.clone().arrayBuffer());
+    }
+  }
+
+  const rawPathname = url.pathname || "/";
+  const rfcPathname = rawPathname
+    .split("/")
+    .map((seg) => {
+      try {
+        return awsEncodeURIComponent(decodeURIComponent(seg));
+      } catch {
+        return awsEncodeURIComponent(seg);
+      }
+    })
+    .join("/");
+  const uriCandidates = Array.from(new Set([rawPathname, rfcPathname]));
+
+  const searchParamsPairs = Array.from(url.searchParams.entries());
+  const rawQueryPairs = url.search && url.search.length > 1
+    ? url.search.slice(1).split("&").filter(Boolean).map((part) => {
+        const eq = part.indexOf("=");
+        const rawK = eq === -1 ? part : part.slice(0, eq);
+        const rawV = eq === -1 ? "" : part.slice(eq + 1);
+        try {
+          return [decodeURIComponent(rawK), decodeURIComponent(rawV)];
+        } catch {
+          return [rawK, rawV];
+        }
+      })
+    : [];
+  const queryCandidates = Array.from(new Set([
+    formatCanonicalQueryPairs(rawQueryPairs),
+    formatCanonicalQueryPairs(searchParamsPairs)
+  ]));
+
+  const kDate = await hmacSha256Raw(`AWS4${secretAccessKey}`, dateStamp);
+  const kRegion = await hmacSha256Raw(kDate, region);
+  const kService = await hmacSha256Raw(kRegion, service);
+  const kSigning = await hmacSha256Raw(kService, "aws4_request");
+  const scope = `${dateStamp}/${region}/${service}/aws4_request`;
+
+  for (const canonicalUri of uriCandidates) {
+    for (const canonicalQuery of queryCandidates) {
+      for (const canonicalHeaders of canonicalHeadersCandidates) {
+        const canonicalRequest = [
+          request.method.toUpperCase(),
+          canonicalUri,
+          canonicalQuery,
+          canonicalHeaders,
+          signedHeadersList,
+          payloadHash
+        ].join("\n");
+        const canonicalRequestHash = await bytesSha256Hex(canonicalRequest);
+        const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${canonicalRequestHash}`;
+        const sigBytes = await hmacSha256Raw(kSigning, stringToSign);
+        const expectedSig = Array.from(sigBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+        if (timingSafeEqual(expectedSig, providedSig)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+async function handleS3Proxy(request, env, url, ctx = null) {
   const tenantId = extractTenantFromAuth(request, url);
   if (!tenantId || tenantId === "default_tenant") {
     return new Response(
       `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Missing or invalid S3 tenant credentials.</Message></Error>`,
+      { status: 403, headers: { "Content-Type": "application/xml" } }
+    );
+  }
+  const secretKey = await resolveTenantSecretKey(env, tenantId);
+  const sigOk = secretKey ? await verifyS3RequestSignature(request, url, secretKey) : false;
+  if (!sigOk) {
+    return new Response(
+      `<?xml version="1.0" encoding="UTF-8"?><Error><Code>SignatureDoesNotMatch</Code><Message>The request signature we calculated does not match the signature you provided.</Message></Error>`,
       { status: 403, headers: { "Content-Type": "application/xml" } }
     );
   }
@@ -446,6 +649,25 @@ async function handleS3Proxy(request, env, url) {
       path: relPath,
       etag: etagVal,
     });
+    const lastSlash = relPath.lastIndexOf("/");
+    const parentDir = lastSlash === -1 ? "" : relPath.slice(0, lastSlash);
+    const debounceKey = `${s3UserPrefix}::${parentDir}`;
+    const nowMs = Date.now();
+    const prevMs = s3ActivityDebounceMap.get(debounceKey) || 0;
+    if (nowMs - prevMs >= 1500) {
+      s3ActivityDebounceMap.set(debounceKey, nowMs);
+      if (s3ActivityDebounceMap.size > 500) {
+        const oldestKey = s3ActivityDebounceMap.keys().next().value;
+        s3ActivityDebounceMap.delete(oldestKey);
+      }
+      const logPromise = logActivity(env, s3UserPrefix, action, {
+        path: relPath,
+        etag: etagVal,
+      });
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(logPromise);
+      }
+    }
   };
 
   // 2. Object-level HEAD
@@ -947,7 +1169,7 @@ ZeroDrive is **NOT** limited to text. You have 3 ways to save binary files, vide
 - Run **\`run_vault_doctor\`** anytime to verify vault connectivity, check root collections, and review this guide.
 `;
 
-function authenticateMCPRequest(request, env, url) {
+async function authenticateMCPRequest(request, env, url) {
   const authHeader = request.headers.get("Authorization") || "";
   let token = "";
   if (authHeader.startsWith("Bearer ")) {
@@ -960,7 +1182,7 @@ function authenticateMCPRequest(request, env, url) {
     token = url.searchParams.get("access_token").trim();
   }
 
-    const cookieHeader = request.headers.get("Cookie") || "";
+  const cookieHeader = request.headers.get("Cookie") || "";
   if (!token && cookieHeader) {
     const cookieMatch = cookieHeader.match(/(?:zd_token|access_token|token)=([^;]+)/);
     if (cookieMatch) token = decodeURIComponent(cookieMatch[1].trim());
@@ -970,28 +1192,61 @@ function authenticateMCPRequest(request, env, url) {
     return { ok: false, error: "OAuth 2.0 authentication required." };
   }
 
-  // Check master vault key or user-specific prefix
+  // Check master vault key (server-side / test secret)
   const masterKey = env.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
-  if (token.startsWith("zd_oauth_master_") || token === masterKey || token === "zd_r2_andrew_8bc7fb477f" || token === "zd_oauth_master") {
+  if (timingSafeEqual(token, masterKey)) {
     return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
   }
 
-  if (token.startsWith("zd_oauth_usr_")) {
-    const match = token.match(/^zd_oauth_(usr_[a-zA-Z0-9_]+?)_[a-f0-9]+$/);
-    if (match && match[1]) {
+  // Cryptographically verify OAuth session tokens
+  const clientSecret = env.GOOGLE_CLIENT_SECRET || "";
+  if (clientSecret && token.startsWith("zd_oauth_master_")) {
+    const expectedV2 = `zd_oauth_master_${(await sha256Hex(`naegele412@gmail.com:${clientSecret}:v2`)).slice(0, 32)}`;
+    const expectedLegacy = `zd_oauth_master_${(await sha256Hex(`naegele412@gmail.com:${clientSecret}`)).slice(0, 32)}`;
+    if (timingSafeEqual(token, expectedV2) || timingSafeEqual(token, expectedLegacy)) {
+      return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
+    }
+    return { ok: false, error: "Invalid OAuth 2.0 token." };
+  }
+
+  if (clientSecret && token.startsWith("zd_oauth_usr_")) {
+    const match = token.match(/^zd_oauth_(usr_[a-zA-Z0-9_]+?)_([a-f0-9]+)$/);
+    if (match && match[1] && match[2]) {
       const tenant = match[1];
-      return { ok: true, userPrefix: `tenants/zd_r2_${tenant}/${tenant}` };
+      const expectedSig = (await sha256Hex(`${tenant}:${clientSecret}:v2`)).slice(0, 16);
+      if (timingSafeEqual(match[2].toLowerCase(), expectedSig)) {
+        return { ok: true, userPrefix: `tenants/zd_r2_${tenant}/${tenant}` };
+      }
+    }
+    return { ok: false, error: "Invalid OAuth 2.0 token." };
+  }
+
+  // Desktop client events/activity/devices polling uses R2 AccessKeyId on those read-only/sync telemetry endpoints only
+  const eventActivityPaths = new Set(["/v1/events", "/events", "/v1/activity", "/activity/stream", "/v1/devices"]);
+  if (eventActivityPaths.has(url.pathname)) {
+    if (token === "zd_r2_andrew_8bc7fb477f") {
+      return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
+    }
+    if (token.startsWith("zd_r2_usr_")) {
+      const clean = token.slice("zd_r2_".length).replace(/[^a-zA-Z0-9_]/g, "");
+      if (/^usr_[a-zA-Z0-9_]+$/.test(clean)) {
+        return { ok: true, userPrefix: `tenants/zd_r2_${clean}/${clean}` };
+      }
     }
   }
 
-  // Backwards compatibility for existing OAuth tokens
-  if (token.startsWith("zd_oauth_")) {
-    return { ok: true, userPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f" };
-  }
-
-  if (token.startsWith("usr_")) {
-    const clean = token.replace(/[^a-zA-Z0-9_]/g, "");
-    return { ok: true, userPrefix: `tenants/zd_r2_${clean}/${clean}` };
+  // Allow valid HMAC-signed license keys (ZD-PRO-..., ZD-AGY-..., zd_live_..., etc.) as Bearer credentials
+  const lowerToken = token.toLowerCase();
+  if ((lowerToken.startsWith("zd_") || lowerToken.startsWith("zd-")) && !lowerToken.startsWith("zd_oauth_") && !lowerToken.startsWith("zd_r2_")) {
+    const verified = await verifyLicenseKey(env, token);
+    if (verified && verified.valid) {
+      if (verified.user_prefix) {
+        return { ok: true, userPrefix: verified.user_prefix };
+      }
+      const email = verified.customer_email || `license_${(await sha256Hex(token)).slice(0, 10)}@zerodrive.dev`;
+      const identity = await buildTenantIdentityForEmail(env, email);
+      return { ok: true, userPrefix: identity.tenantPrefix };
+    }
   }
 
   return { ok: false, error: "Invalid OAuth 2.0 token." };
@@ -1900,7 +2155,7 @@ async function handleMCPRequest(request, env, url, corsHeaders) {
     !acceptHeader.includes("application/json") &&
     !acceptHeader.includes("text/event-stream");
 
-  const auth = authenticateMCPRequest(request, env, url);
+  const auth = await authenticateMCPRequest(request, env, url);
   if (!auth.ok) {
     // Only redirect if a human explicitly opens /mcp in a browser tab
     if (isBrowserNavigation) {
@@ -2259,7 +2514,7 @@ async function handleOAuthToken(request, env, url, corsHeaders) {
 }
 
 async function handleOAuthUserInfo(request, env, url, corsHeaders) {
-  const auth = authenticateMCPRequest(request, env, url);
+  const auth = await authenticateMCPRequest(request, env, url);
   if (!auth.ok) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
@@ -2400,7 +2655,7 @@ async function handleGoogleAuthCallback(request, env, url, corsHeaders) {
   const userPrefix = identity.userPrefix;
   const tenantPrefix = identity.tenantPrefix;
 
-  const tokenHash = await sha256Hex(`${email}:${clientSecret}:v2`);
+  const tokenHash = await sha256Hex(`${isMasterAdmin ? email : userPrefix}:${clientSecret}:v2`);
   const sessionToken = isMasterAdmin
     ? `zd_oauth_master_${tokenHash.slice(0, 32)}`
     : `zd_oauth_${userPrefix}_${tokenHash.slice(0, 16)}`;
@@ -3274,7 +3529,7 @@ async function handleRestV1Request(request, env, url, corsHeaders) {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-  const auth = authenticateMCPRequest(request, env, url);
+  const auth = await authenticateMCPRequest(request, env, url);
   if (!auth.ok) {
     return new Response(
       JSON.stringify({
@@ -7836,7 +8091,7 @@ function handleWebExplorerHtml(url, corsHeaders) {
 
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     const corsHeaders = {
@@ -7891,6 +8146,16 @@ export default {
     // 00e. Stripe Billing & Dynamic Licensing Engine (/v1/billing/* and /v1/license/*)
     if (url.pathname.startsWith("/v1/billing/") || url.pathname.startsWith("/v1/license/")) {
       return handleBillingAndLicenseRequest(request, env, url, corsHeaders);
+    }
+
+    // 00f. Cross-Platform Auto-Update, Changelog & Appcast Engine
+    if (
+      url.pathname.startsWith("/v1/releases/") ||
+      url.pathname.startsWith("/v1/updates/") ||
+      url.pathname === "/appcast.xml"
+    ) {
+      const releaseRes = await handleReleasesRequest(request, env, url, corsHeaders);
+      if (releaseRes) return releaseRes;
     }
 
     // 0. Interactive API Documentation (/docs, /v1/docs, /api-docs)
@@ -7962,12 +8227,16 @@ export default {
 
         // Verify caller owns the Google OAuth session token OR presents a valid signed license key
         const clientSecret = env.GOOGLE_CLIENT_SECRET || "";
-        const expectedHash = await sha256Hex(`${email}:${clientSecret}:v2`);
         const isMasterAdmin = email === "naegele412@gmail.com";
         const identity = await buildTenantIdentityForEmail(env, email);
+        const expectedEmailHash = await sha256Hex(`${email}:${clientSecret}:v2`);
+        const expectedUserHash = await sha256Hex(`${identity.userPrefix}:${clientSecret}:v2`);
         const expectedSessionToken = isMasterAdmin
-          ? `zd_oauth_master_${expectedHash.slice(0, 32)}`
-          : `zd_oauth_${identity.userPrefix}_${expectedHash.slice(0, 16)}`;
+          ? `zd_oauth_master_${expectedEmailHash.slice(0, 32)}`
+          : `zd_oauth_${identity.userPrefix}_${expectedUserHash.slice(0, 16)}`;
+        const legacySessionToken = isMasterAdmin
+          ? `zd_oauth_master_${(await sha256Hex(`${email}:${clientSecret}`)).slice(0, 32)}`
+          : `zd_oauth_${identity.userPrefix}_${expectedEmailHash.slice(0, 16)}`;
 
         let activatedLicense = null;
         if (providedKey) {
@@ -7982,20 +8251,40 @@ export default {
             return jsonResponse({ ok: false, error: act.error || "Invalid license key" }, 403, corsHeaders);
           }
           activatedLicense = act;
-        } else if (clientSecret && sessionToken && sessionToken !== expectedSessionToken) {
+        } else if (clientSecret && sessionToken && !timingSafeEqual(sessionToken, expectedSessionToken) && !timingSafeEqual(sessionToken, legacySessionToken)) {
           return jsonResponse({ ok: false, error: "Unauthorized session token for account creation" }, 401, corsHeaders);
         }
 
-        // Resolve tier: License activation takes priority, then selected plan ("pro" or "agency")
-        const resolvedTierId = activatedLicense?.tier || (plan === "agency" ? "agency" : "pro");
-        const tierObj = getTier(env, resolvedTierId);
+        const existingAccount = await loadAccountByEmail(env, email);
+        if (!isMasterAdmin && !activatedLicense && !existingAccount?.licenseKey && plan !== "free" && env.ALLOW_MOCK_CHECKOUT !== "1") {
+          const checkoutTier = plan === "agency" ? "agency" : "pro";
+          return jsonResponse({
+            ok: false,
+            payment_required: true,
+            error: "An active paid subscription or valid license key is required for Pro/Agency plans.",
+            checkout_url: `${CANONICAL_ORIGIN}/v1/billing/checkout?tier=${checkoutTier}&email=${encodeURIComponent(email)}`
+          }, 402, corsHeaders);
+        }
+
+        // Resolve tier: License activation takes priority, then existing paid account, free starter, or paid plan
+        const isFreePlan = !isMasterAdmin && !activatedLicense && !existingAccount?.licenseKey && plan === "free";
+        const resolvedTierId = activatedLicense?.tier || (isFreePlan ? "free" : (plan === "agency" ? "agency" : "pro"));
+        const tierObj = isFreePlan ? null : getTier(env, resolvedTierId);
         const quotaTB = isMasterAdmin
           ? 20.0
-          : (activatedLicense?.quota_tb || Number(((tierObj.storage_gb || 1024) / 1024).toFixed(2)));
-        const tierName = isMasterAdmin ? "Agency" : (activatedLicense?.tier_name || tierObj.name);
+          : (isFreePlan
+            ? 0.01
+            : (activatedLicense?.quota_tb || existingAccount?.quotaTB || Number(((tierObj?.storage_gb || 1024) / 1024).toFixed(2))));
+        const tierName = isMasterAdmin
+          ? "Agency"
+          : (isFreePlan
+            ? "Free Starter (BYOK)"
+            : (activatedLicense?.tier_name || existingAccount?.tier || tierObj?.name || "Pro"));
 
-        let finalLicenseKey = activatedLicense?.license_key || "";
-        if (!finalLicenseKey) {
+        let finalLicenseKey = activatedLicense?.license_key || existingAccount?.licenseKey || "";
+        if (isFreePlan && !finalLicenseKey) {
+          finalLicenseKey = `zd_free_${identity.userPrefix}`;
+        } else if (!finalLicenseKey) {
           const created = await createManagedLicense(env, {
             tierId: resolvedTierId,
             customerEmail: email,
@@ -8069,7 +8358,7 @@ export default {
        url.pathname === "/activity/stream" || url.pathname === "/activity/stream/") &&
       request.method === "GET"
     ) {
-      const auth = authenticateMCPRequest(request, env, url);
+      const auth = await authenticateMCPRequest(request, env, url);
       if (!auth.ok) {
         return new Response(JSON.stringify({ ok: false, error: auth.error }), {
           status: 401,
@@ -8181,7 +8470,7 @@ export default {
 
     // 1. S3-Compatible Multi-Tenant R2 Proxy
     if (url.pathname === "/s3" || url.pathname.startsWith("/s3/")) {
-      return handleS3Proxy(request, env, url);
+      return handleS3Proxy(request, env, url, ctx);
     }
 
     // 1b. Hosted 24/7 AI Agent MCP Server Endpoint (/mcp or /v1/mcp)
@@ -8211,7 +8500,7 @@ export default {
           mimeType = verified.mime || guessMimeType(targetPath);
         }
       } else {
-        const auth = authenticateMCPRequest(request, env, url);
+        const auth = await authenticateMCPRequest(request, env, url);
         if (!auth.ok) {
           return new Response(JSON.stringify({ error: auth.error }), {
             status: 401,
@@ -8271,7 +8560,7 @@ export default {
           targetKey = verified.key;
           targetPath = verified.path || "";
         } else {
-          const auth = authenticateMCPRequest(request, env, url);
+          const auth = await authenticateMCPRequest(request, env, url);
           if (auth.ok) {
             targetPath = (url.searchParams.get("path") || "").replace(/^\/+/, "");
             if (!targetPath) {
@@ -8283,7 +8572,7 @@ export default {
           }
         }
       } else {
-        const auth = authenticateMCPRequest(request, env, url);
+        const auth = await authenticateMCPRequest(request, env, url);
         if (!auth.ok) {
           return new Response(auth.error, { status: 401, headers: corsHeaders });
         }
@@ -8344,31 +8633,13 @@ export default {
       });
     }
 
-    // 2. Direct DMG Installer Download from R2
+    // 2. Direct Resumable Release Binary & Installer Downloads from R2 (/download/*)
     if (
-      url.pathname === "/download/ZeroDrive-Installer.dmg" &&
+      url.pathname.startsWith("/download/") &&
       (request.method === "GET" || request.method === "HEAD")
     ) {
-      const dmgObj =
-        request.method === "HEAD"
-          ? await env.VAULT_BUCKET.head("releases/ZeroDrive-Installer.dmg")
-          : await env.VAULT_BUCKET.get("releases/ZeroDrive-Installer.dmg");
-      if (!dmgObj) {
-        return new Response("ZeroDrive-Installer.dmg is currently being uploaded.", {
-          status: 404,
-          headers: corsHeaders,
-        });
-      }
-      return new Response(request.method === "HEAD" ? null : dmgObj.body, {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/x-apple-diskimage",
-          "Content-Disposition": 'attachment; filename="ZeroDrive-Installer.dmg"',
-          "Content-Length": String(dmgObj.size),
-          ETag: dmgObj.httpEtag || `"${dmgObj.etag}"`,
-        },
-      });
+      const downloadRes = await handleReleasesRequest(request, env, url, corsHeaders);
+      if (downloadRes) return downloadRes;
     }
 
     // 2c. Brand Logos & Favicons (broadcast across all standard icon paths)
@@ -8449,19 +8720,32 @@ export default {
         let quotaTB = isMasterAdmin ? 20.0 : (existingAccount?.quotaTB || 1.0);
         let resolvedKey = body.licenseKey ? String(body.licenseKey).trim() : (existingAccount?.licenseKey || "");
 
+        const isFree = !isMasterAdmin && (body.tier === "free" || (resolvedKey && resolvedKey.toLowerCase().includes("free")));
+        let hasValidLicense = false;
+
         // Validate/activate license key if provided
-        if (!isMasterAdmin && resolvedKey && !resolvedKey.toLowerCase().includes("free")) {
+        if (!isMasterAdmin && !isFree && resolvedKey) {
           const check = await verifyLicenseKey(env, resolvedKey);
           if (check.valid) {
+            hasValidLicense = true;
             tierName = check.tier_name || check.tier || tierName;
             quotaTB = check.quota_tb || quotaTB;
           }
         }
 
-        const isFree = !isMasterAdmin && (body.tier === "free" || (resolvedKey && resolvedKey.toLowerCase().includes("free")));
         if (isFree) {
           tierName = "Free (BYOK)";
           quotaTB = 0.01;
+        }
+
+        if (!isMasterAdmin && !existingAccount && !hasValidLicense && !isFree && env.ALLOW_MOCK_CHECKOUT !== "1") {
+          const checkoutTier = body.tier === "agency" ? "agency" : "pro";
+          return jsonResponse({
+            ok: false,
+            payment_required: true,
+            error: "An active paid subscription or valid license key is required to provision a ZeroDrive Cloud Vault.",
+            checkout_url: `${CANONICAL_ORIGIN}/v1/billing/checkout?tier=${checkoutTier}&email=${encodeURIComponent(email)}`
+          }, 402, corsHeaders);
         }
 
         await ensureStarterVaultFiles(env, identity.tenantPrefix);
@@ -8833,5 +9117,13 @@ export {
   handleStripeWebhook,
   verifyLicenseKey,
   activateLicenseKey,
-  handleBillingAndLicenseRequest
+  handleBillingAndLicenseRequest,
+  handleReleasesRequest,
+  parseSemver,
+  compareSemver,
+  parseReleaseNotesMarkdown,
+  computeMissedReleases,
+  generateSparkleAppcastXml,
+  parseByteRange,
+  loadReleaseManifest
 };

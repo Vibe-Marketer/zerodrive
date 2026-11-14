@@ -260,7 +260,7 @@ public final class SpoolAndGuardManager: ObservableObject {
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
                 guard let self = self else { break }
                 await self.pollOnce()
             }
@@ -276,10 +276,10 @@ public final class SpoolAndGuardManager: ObservableObject {
         _ = checkAPFSFreeSpace(forBytes: 0)
 
         async let coreStatsTask = RcloneRCClient.shared.fetchCoreStats()
-        async let vfsStatsTask = RcloneRCClient.shared.fetchVFSStats()
         async let queueItemsTask = RcloneRCClient.shared.fetchVFSQueue()
 
-        let (coreStats, vfsStats, queueDTOs) = await (coreStatsTask, vfsStatsTask, queueItemsTask)
+        let (coreStats, queueDTOs) = await (coreStatsTask, queueItemsTask)
+        let vfsStats = await RcloneRCClient.shared.fetchVFSStats(fromQueue: queueDTOs)
 
         if let core = coreStats {
             let mbps = max(0.0, core.speedBytesPerSec / (1024.0 * 1024.0))

@@ -10,3 +10,6 @@ coverage/
 .dev.vars*
 *client_secret*.json
 .wrangler/
+windows/bin/
+windows/obj/
+__pycache__/

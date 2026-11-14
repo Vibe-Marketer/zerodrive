@@ -37,6 +37,9 @@ public struct DashboardView: View {
                 // MARK: - 1. Top Hero Header
                 topHeaderSection
 
+                // MARK: - Software Update / What's New Banner
+                UpdateBannerCard()
+
                 // MARK: - Account & Login / Logout Status
                 accountStatusBar
 

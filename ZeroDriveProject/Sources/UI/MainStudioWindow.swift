@@ -9,6 +9,7 @@ public struct MainStudioWindow: View {
     @EnvironmentObject var indexer: RAMTreeIndexer
     @StateObject private var vaultStats = VaultStats.shared
     @ObservedObject private var turbo = TurboMigrationManager.shared
+    @ObservedObject private var updater = ManageAppUpdates.shared
 
     @State private var selectedTab: Int = 0
     @State private var isDropTargeted: Bool = false
@@ -145,6 +146,23 @@ public struct MainStudioWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    if updater.updateAvailable, let latest = updater.latestRelease {
+                        Button {
+                            updater.showUpdatePromptSheet = true
+                        } label: {
+                            Label("Update v\(latest.version)", systemImage: "arrow.down.circle.fill")
+                        }
+                        .tint(.accentColor)
+                        .help("Install ZeroDrive v\(latest.version)")
+                    }
+
+                    Button {
+                        updater.openChangelog()
+                    } label: {
+                        Label("What's New", systemImage: "sparkles")
+                    }
+                    .help("View release notes & version history (v\(updater.currentVersion))")
+
                     Button {
                         supervisor.openInFinder(supervisor.mountPoint.appendingPathComponent("My Drive"))
                     } label: {

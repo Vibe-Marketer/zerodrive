@@ -50,7 +50,7 @@ public actor RcloneRCClient {
         guard let url = URL(string: "core/pid", relativeTo: baseURL) else { return false }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 1.2
+        request.timeoutInterval = 6.0
 
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
@@ -158,27 +158,18 @@ public actor RcloneRCClient {
         )
     }
 
-    public func fetchVFSStats() async -> RcloneVFSStatsDTO? {
-        var bytesUsed: Int64 = 0
-        var inProgress = 0
-        var queued = 0
-
-        if let data = await postRPC("vfs/stats", [:], timeout: 1.5),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let diskCache = json["diskCache"] as? [String: Any] {
-            bytesUsed = (diskCache["bytesUsed"] as? Int64) ?? Int64((diskCache["bytesUsed"] as? Int) ?? 0)
-            inProgress = (diskCache["uploadsInProgress"] as? Int) ?? 0
-            queued = (diskCache["uploadsQueued"] as? Int) ?? 0
+    /// Computes upload queue stats WITHOUT calling `vfs/stats` (`vfs/stats` walks the entire VFS directory tree under an exclusive write mutex, starving NFS RPCs on large vaults!)
+    public func fetchVFSStats(fromQueue queueItems: [RcloneQueueItemDTO]? = nil) async -> RcloneVFSStatsDTO? {
+        let items: [RcloneQueueItemDTO]
+        if let provided = queueItems {
+            items = provided
+        } else {
+            items = await fetchVFSQueue()
         }
 
-        if let txData = await postRPC("core/stats", [:], timeout: 1.0, base: transferBaseURL),
-           let txJson = try? JSONSerialization.jsonObject(with: txData) as? [String: Any] {
-            let activeTx = (txJson["transferring"] as? [[String: Any]])?.count ?? 0
-            let totalTx = (txJson["totalTransfers"] as? Int) ?? 0
-            let doneTx = (txJson["transfers"] as? Int) ?? 0
-            inProgress += activeTx
-            queued += max(0, totalTx - doneTx - activeTx)
-        }
+        let inProgress = items.filter { $0.uploading }.count
+        let queued = items.filter { !$0.uploading }.count
+        let bytesUsed = items.reduce(Int64(0)) { $0 + max(0, $1.size) }
 
         return RcloneVFSStatsDTO(
             bytesUsed: bytesUsed,

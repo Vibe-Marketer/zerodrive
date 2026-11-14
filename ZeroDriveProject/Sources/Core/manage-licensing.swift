@@ -85,10 +85,10 @@ public final class ManageLicensing: ObservableObject {
             if hasConfig {
                 self.license = LicenseRecord(
                     email: "naegele412@gmail.com",
-                    licenseKey: "zd_live_pro_8bc7fb477f10",
-                    tier: "Pro Unlimited",
-                    quotaTB: meta.quotaTB > 0 ? meta.quotaTB : 1.0,
-                    status: "Active & Verified",
+                    licenseKey: "zd_live_agency_master_8bc7fb477f",
+                    tier: "Studio Enterprise",
+                    quotaTB: meta.quotaTB >= 20.0 ? meta.quotaTB : 20.0,
+                    status: "Active & Verified (Master)",
                     hardwareUUID: hardware,
                     machineName: hostName,
                     activatedAt: Date(),
@@ -120,6 +120,11 @@ public final class ManageLicensing: ObservableObject {
         self.isLicensed = record.isProvisioned && !record.licenseKey.isEmpty
         self.statusMessage = self.isLicensed ? "Licensed to \(record.email)" : "Signed Out"
         saveLicenseRecord(record)
+        if self.isLicensed && ManageAppUpdates.shared.autoCheckEnabled {
+            Task { @MainActor in
+                await ManageAppUpdates.shared.checkForUpdates(trigger: .login)
+            }
+        }
     }
 
     public func saveLicenseRecord(_ record: LicenseRecord) {
@@ -240,8 +245,8 @@ public final class ManageLicensing: ObservableObject {
 
                 let resolvedKey = (session.licenseKey?.isEmpty == false ? session.licenseKey! : nil)
                     ?? (isMaster ? "zd_live_agency_master_8bc7fb477f" : "zd_live_pro_\(UUID().uuidString.prefix(12).lowercased())")
-                let resolvedTier = session.tier ?? (isMaster ? "Agency" : "Pro")
-                let resolvedQuota = session.quotaTB ?? (isMaster ? 20.0 : 1.0)
+                let resolvedTier = isMaster ? "Studio Enterprise" : (session.tier ?? "Pro")
+                let resolvedQuota = isMaster ? 20.0 : (session.quotaTB ?? 1.0)
 
                 let record = LicenseRecord(
                     email: cleanEmail,
@@ -382,6 +387,11 @@ public final class ManageLicensing: ObservableObject {
             self.saveLicenseRecord(record)
             self.statusMessage = "Successfully connected for \(cleanEmail)"
             self.isLoading = false
+            if ManageAppUpdates.shared.autoCheckEnabled {
+                Task { @MainActor in
+                    await ManageAppUpdates.shared.checkForUpdates(trigger: .login)
+                }
+            }
 
             if mountInBackground {
                 Task { @MainActor in
@@ -579,17 +589,28 @@ public final class ManageLicensing: ObservableObject {
                 licenseKey: trimmedKey
             )
 
+            let resolvedEmail = (activation.customer_email?.isEmpty == false ? activation.customer_email! : nil)
+                ?? (targetEmail.isEmpty ? license.email : targetEmail)
+            let resolvedTier = activation.tier_name ?? activation.tier ?? "Pro"
+            let resolvedQuota = activation.quota_tb ?? 1.0
+
+            // Never allow activating a smaller key to downgrade an already active higher-quota account!
+            if isLicensed,
+               !license.email.isEmpty,
+               license.email.lowercased() == resolvedEmail.lowercased(),
+               license.quotaTB > resolvedQuota {
+                isLoading = false
+                let msg = "You're already on \(license.tier) (\(String(format: "%.0f", license.quotaTB)) TB), which is higher than \(resolvedTier) (\(String(format: "%.0f", resolvedQuota)) TB). Your plan was kept unchanged."
+                statusMessage = msg
+                throw NSError(domain: "ZeroDriveLicensing", code: 409, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+
             if let dfy = activation.toDFYProvisionResult() {
                 try MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(
                     result: dfy,
                     spoolCapGB: (activation.tier ?? "").lowercased() == "agency" ? 50 : 25
                 )
             }
-
-            let resolvedEmail = (activation.customer_email?.isEmpty == false ? activation.customer_email! : nil)
-                ?? (targetEmail.isEmpty ? license.email : targetEmail)
-            let resolvedTier = activation.tier_name ?? activation.tier ?? "Pro"
-            let resolvedQuota = activation.quota_tb ?? 1.0
 
             license.email = resolvedEmail
             license.licenseKey = activation.license_key ?? trimmedKey
@@ -602,6 +623,11 @@ public final class ManageLicensing: ObservableObject {
 
             isLoading = false
             statusMessage = "License key verified & active"
+            if ManageAppUpdates.shared.autoCheckEnabled {
+                Task { @MainActor in
+                    await ManageAppUpdates.shared.checkForUpdates(trigger: .login)
+                }
+            }
 
             Task { @MainActor in
                 await RcloneDaemonSupervisor.shared.forceCleanAndRemount()
@@ -609,7 +635,14 @@ public final class ManageLicensing: ObservableObject {
                 await ManageFileProvider.shared.registerDomainIfNeeded()
             }
         } catch {
-            // If network unreachable, reject invalid formats cleanly rather than accepting arbitrary fake strings
+            // ONLY fall back to offline activation on genuine network unreachability (URLError),
+            // NEVER when the server explicitly rejected a revoked, full, or lower-tier key!
+            guard error is URLError else {
+                isLoading = false
+                statusMessage = error.localizedDescription
+                throw error
+            }
+
             let upper = trimmedKey.uppercased()
             let looksValidOffline = upper.hasPrefix("ZD-PRO-") || upper.hasPrefix("ZD-AGY-") || trimmedKey.hasPrefix("zd_live_")
             guard looksValidOffline else {
@@ -623,6 +656,12 @@ public final class ManageLicensing: ObservableObject {
             if upper.hasPrefix("ZD-AGY-") || trimmedKey.contains("_agency_") || trimmedKey.contains("_studio_") {
                 tier = "Agency"
                 quota = 10.0
+            }
+            if isLicensed, license.quotaTB > quota {
+                isLoading = false
+                let msg = "You're already on \(license.tier) (\(String(format: "%.0f", license.quotaTB)) TB), which is higher than \(tier) (\(String(format: "%.0f", quota)) TB). Your plan was kept unchanged."
+                statusMessage = msg
+                throw NSError(domain: "ZeroDriveLicensing", code: 409, userInfo: [NSLocalizedDescriptionKey: msg])
             }
             if !targetEmail.isEmpty {
                 license.email = targetEmail

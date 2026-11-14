@@ -9,6 +9,7 @@ public struct MenuBarPopoverView: View {
     @ObservedObject private var turbo = TurboMigrationManager.shared
     @ObservedObject private var vaultStats = VaultStats.shared
     @ObservedObject private var licensing = ManageLicensing.shared
+    @ObservedObject private var updater = ManageAppUpdates.shared
 
     public init() {}
 
@@ -265,6 +266,32 @@ public struct MenuBarPopoverView: View {
             }
             .padding(.top, 2)
 
+            // MARK: - 5.5 Update Notice (When Available)
+            if updater.updateAvailable, let latest = updater.latestRelease {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Update v\(latest.version) Available")
+                            .font(.caption.bold())
+                        Text("Signed release ready to install")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Install") {
+                        lifecycleController.setStudioWindowVisible(true)
+                        NSApp.activate(ignoringOtherApps: true)
+                        updater.showUpdatePromptSheet = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                }
+                .padding(8)
+                .background(Color.accentColor.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
             Divider()
 
             // MARK: - 6. Footer
@@ -274,6 +301,15 @@ public struct MenuBarPopoverView: View {
                     NSApp.activate(ignoringOtherApps: true)
                 }
                 .controlSize(.small)
+
+                Button("What's New") {
+                    lifecycleController.setStudioWindowVisible(true)
+                    NSApp.activate(ignoringOtherApps: true)
+                    updater.openChangelog()
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
                 Spacer()
 

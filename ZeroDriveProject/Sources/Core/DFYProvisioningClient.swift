@@ -283,6 +283,14 @@ public actor DFYProvisioningClient {
         return decoded
     }
 
+    private func resolveAdminAuthToken() async -> String? {
+        if let creds = MultiCloudCombineBuilder.shared.resolveActiveApiCredentials(), !creds.token.isEmpty {
+            return creds.token
+        }
+        let activeKey = await MainActor.run { ManageLicensing.shared.license.licenseKey }
+        return activeKey.isEmpty ? nil : activeKey
+    }
+
     public func generateManagedLicenseKey(
         tier: String,
         clientEmail: String,
@@ -301,6 +309,9 @@ public actor DFYProvisioningClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await resolveAdminAuthToken() {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         req.timeoutInterval = 8.0
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
@@ -316,6 +327,9 @@ public actor DFYProvisioningClient {
         }
         guard let url = URL(string: urlStr) else { return [] }
         var req = URLRequest(url: url)
+        if let token = await resolveAdminAuthToken() {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         req.timeoutInterval = 6.0
         let (data, _) = try await URLSession.shared.data(for: req)
         let decoded = try JSONDecoder().decode(LicenseListEnvelope.self, from: data)
@@ -327,6 +341,9 @@ public actor DFYProvisioningClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = await resolveAdminAuthToken() {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         req.httpBody = try JSONSerialization.data(withJSONObject: ["licenseKey": licenseKey])
         let (_, resp) = try await URLSession.shared.data(for: req)
         return (resp as? HTTPURLResponse)?.statusCode == 200

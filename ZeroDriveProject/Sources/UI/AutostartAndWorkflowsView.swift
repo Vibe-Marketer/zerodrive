@@ -5,6 +5,7 @@ public struct AutostartAndWorkflowsView: View {
     @EnvironmentObject var supervisor: RcloneDaemonSupervisor
     @EnvironmentObject var spoolManager: SpoolAndGuardManager
     @ObservedObject private var onboardingSetup = ManageOnboardingSetup.shared
+    @ObservedObject private var updater = ManageAppUpdates.shared
 
     @State private var autoStartEnabled: Bool = false
     @State private var streamGuardEnabled: Bool = false
@@ -15,6 +16,68 @@ public struct AutostartAndWorkflowsView: View {
 
     public var body: some View {
         Form {
+            Section("Software Updates & Changelog") {
+                LabeledContent("Installed Version") {
+                    HStack(spacing: 8) {
+                        Text("v\(updater.currentVersion) (Build \(updater.currentBuild))")
+                            .font(.body.monospacedDigit())
+                        if updater.updateAvailable, let latest = updater.latestRelease {
+                            Button("Install v\(latest.version)…") {
+                                updater.showUpdatePromptSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+
+                Toggle("Automatically check for updates on launch & every 4 hours", isOn: $updater.autoCheckEnabled)
+
+                LabeledContent("Update Status") {
+                    HStack(spacing: 8) {
+                        if updater.isChecking {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Checking…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if !updater.errorMessage.isEmpty {
+                            Text(updater.errorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .lineLimit(2)
+                        } else if !updater.statusMessage.isEmpty {
+                            Text(updater.statusMessage)
+                                .font(.caption)
+                                .foregroundStyle(updater.updateAvailable ? Color.accentColor : .secondary)
+                        } else if let last = updater.lastCheckedAt {
+                            Text("Last checked \(last.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Ready")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Button("Check for Updates Now") {
+                            Task {
+                                await updater.checkForUpdates(trigger: .manual)
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(updater.isChecking || updater.isDownloading)
+                    }
+                }
+
+                LabeledContent("Release Notes & Version History") {
+                    Button("View Changelog (What's New)…") {
+                        updater.openChangelog()
+                    }
+                    .controlSize(.small)
+                }
+            }
+
             Section("Setup, Permissions & CLI Tools") {
                 LabeledContent("Onboarding & Permissions Wizard") {
                     Button("Open Setup Guide…") {

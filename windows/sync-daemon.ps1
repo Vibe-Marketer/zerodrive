@@ -58,7 +58,7 @@ Write-Host " API Base  : $ApiBase" -ForegroundColor White
 Write-Host " Device ID : $env:COMPUTERNAME (Windows)" -ForegroundColor White
 
 if (-not (Test-Path -LiteralPath $SyncRoot)) {
-    New-Item -ItemType Directory -LiteralPath $SyncRoot -Force | Out-Null
+    [System.IO.Directory]::CreateDirectory($SyncRoot) | Out-Null
     Write-Host "[Init] Created sync root folder: $SyncRoot" -ForegroundColor Green
 }
 
@@ -199,7 +199,7 @@ function Hydrate-ZeroDriveFile {
 
     $parentDir = [System.IO.Path]::GetDirectoryName($LocalPath)
     if (-not (Test-Path -LiteralPath $parentDir)) {
-        New-Item -ItemType Directory -LiteralPath $parentDir -Force | Out-Null
+        [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null
     }
 
     Write-Host "[Hydrate] Downloading: $RelativeVaultPath -> $LocalPath" -ForegroundColor Yellow
@@ -242,7 +242,7 @@ function Set-LocalPlaceholder {
     }
     $parent = [System.IO.Path]::GetDirectoryName($localPath)
     if (-not (Test-Path -LiteralPath $parent)) {
-        New-Item -ItemType Directory -LiteralPath $parent -Force | Out-Null
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
     }
 
     # If file exists and size is positive, it's already hydrated or modified locally
@@ -473,7 +473,7 @@ function Sync-InitialVaultTree {
         $driveLocalDir = [System.IO.Path]::Combine($SyncRoot, $driveName)
 
         if (-not (Test-Path -LiteralPath $driveLocalDir)) {
-            New-Item -ItemType Directory -LiteralPath $driveLocalDir -Force | Out-Null
+            [System.IO.Directory]::CreateDirectory($driveLocalDir) | Out-Null
             Write-Host "[Sync] Initialized drive folder: $driveLocalDir" -ForegroundColor Green
         }
 
@@ -495,7 +495,7 @@ function Sync-InitialVaultTree {
                 if ($d.path) {
                     $dirPath = [System.IO.Path]::Combine($driveLocalDir, $d.path.Replace('/', '\'))
                     if (-not (Test-Path -LiteralPath $dirPath)) {
-                        New-Item -ItemType Directory -LiteralPath $dirPath -Force | Out-Null
+                        [System.IO.Directory]::CreateDirectory($dirPath) | Out-Null
                     }
                 }
             }
@@ -709,6 +709,15 @@ $watcher = Start-LocalWatcher
 # Run initial background dehydration check on startup
 Invoke-ZeroDriveDehydration -OlderThanDays 7 -MinFreeSpaceGB 20.0
 
+# Check for updates on startup / logon
+$UpdaterScript = Join-Path $PSScriptRoot "update-zerodrive.ps1"
+$LastUpdateCheckUtc = [datetime]::UtcNow
+if (Test-Path -LiteralPath $UpdaterScript) {
+    try {
+        & $UpdaterScript -Trigger launch -ApiBase $ApiBase
+    } catch {}
+}
+
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host " ZeroDrive Sync Engine is running. Press Ctrl+C to stop." -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
@@ -724,6 +733,14 @@ try {
         if ($loopCount -ge 1200) {
             $loopCount = 0
             Invoke-ZeroDriveDehydration -OlderThanDays 7 -MinFreeSpaceGB 20.0
+        }
+
+        # Check for updates every 4 hours while running
+        if ((Test-Path -LiteralPath $UpdaterScript) -and (([datetime]::UtcNow - $LastUpdateCheckUtc).TotalHours -ge 4)) {
+            $LastUpdateCheckUtc = [datetime]::UtcNow
+            try {
+                & $UpdaterScript -Trigger periodic -ApiBase $ApiBase
+            } catch {}
         }
     }
 }

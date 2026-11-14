@@ -73,7 +73,7 @@ public enum DriveProvisioningTarget: String, CaseIterable, Identifiable {
         case .allFleet:
             return "Mounts into Finder and File Explorer across all connected computers in your fleet."
         case .thisMac:
-            return "Mounts exclusively on this MacBook Pro as an isolated local FileProvider container."
+            return "Mounts exclusively on this MacBook Pro inside ~/ZeroDrive."
         case .windowsPC:
             return "Provisions directly to Windows 11 and WSL2 (/zerodrive) for GPU rendering jobs."
         case .macMinis:

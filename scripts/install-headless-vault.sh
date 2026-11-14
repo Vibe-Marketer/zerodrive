@@ -305,8 +305,9 @@ ExecStart=$RCLONE_BIN_PATH mount primary_vault:$ZD_BUCKET $ZD_MOUNT_PATH \\
     --vfs-read-chunk-size 16M \\
     --vfs-read-chunk-size-limit 256M \\
     --buffer-size 32M \\
-    --dir-cache-time 15s \\
-    --attr-timeout 3s \\
+    --dir-cache-time 1h \\
+    --vfs-fast-fingerprint \\
+    --attr-timeout 15s \\
     --use-server-modtime \\
     --disable-http2 \\
     --s3-disable-http2 \\

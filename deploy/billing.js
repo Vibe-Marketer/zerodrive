@@ -563,34 +563,82 @@ export function getLicenseSecret(env = {}) {
 }
 
 /**
- * Generates a human-friendly signed license key:
- * ZD-PRO-XXXX-XXXX-SSSSSSSS or ZD-AGY-XXXX-XXXX-SSSSSSSS
- * where SSSSSSSS is an 8-char uppercase HMAC-SHA256 signature over the prefix.
+ * Generates a full-length cryptographically signed license key:
+ * ZD-PRO-XXXX-XXXX-XXXX-XXXX-SSSSSSSSSSSS or ZD-AGY-XXXX-XXXX-XXXX-XXXX-SSSSSSSSSSSS
+ * (64 bits random entropy across 4 groups + 48-bit HMAC-SHA256 signature = 39 chars total).
  */
 export async function generateSignedLicenseKey(env = {}, tierId = "pro") {
   const cleanTier = String(tierId || "pro").toLowerCase();
   const code = (cleanTier === "agency" || cleanTier === "team" || cleanTier === "partner") ? "AGY" : "PRO";
   const seg1 = randomHex(2).toUpperCase();
   const seg2 = randomHex(2).toUpperCase();
-  const payload = `ZD-${code}-${seg1}-${seg2}`;
+  const seg3 = randomHex(2).toUpperCase();
+  const seg4 = randomHex(2).toUpperCase();
+  const payload = `ZD-${code}-${seg1}-${seg2}-${seg3}-${seg4}`;
   const hmacHex = await computeStripeSignature(getLicenseSecret(env), payload);
-  const sig = hmacHex.slice(0, 8).toUpperCase();
+  const sig = hmacHex.slice(0, 12).toUpperCase();
   return `${payload}-${sig}`;
 }
 
 export async function verifySignedLicenseKeyFormat(env = {}, rawKey) {
   const key = String(rawKey || "").trim().toUpperCase();
-  const match = key.match(/^ZD-(PRO|AGY)-([0-9A-F]{4})-([0-9A-F]{4})-([0-9A-F]{8})$/);
-  if (!match) return { matched: false };
-  const payload = `ZD-${match[1]}-${match[2]}-${match[3]}`;
-  const expected = (await computeStripeSignature(getLicenseSecret(env), payload)).slice(0, 8).toUpperCase();
   const isMasterBypass = key === "ZD-AGY-MASTER-0000" || key.startsWith("ZD-PRO-TEST-");
-  return {
-    matched: true,
-    signatureValid: timingSafeEqual(match[4], expected) || isMasterBypass,
-    tierId: match[1] === "AGY" ? "agency" : "pro",
-    normalizedKey: key
-  };
+
+  // Full 4-segment + 12-char HMAC format: ZD-AGY-XXXX-XXXX-XXXX-XXXX-SSSSSSSSSSSS
+  const matchLong = key.match(/^ZD-(PRO|AGY)-([0-9A-F]{4})-([0-9A-F]{4})-([0-9A-F]{4})-([0-9A-F]{4})-([0-9A-F]{12})$/);
+  if (matchLong) {
+    const payload = `ZD-${matchLong[1]}-${matchLong[2]}-${matchLong[3]}-${matchLong[4]}-${matchLong[5]}`;
+    const expected = (await computeStripeSignature(getLicenseSecret(env), payload)).slice(0, 12).toUpperCase();
+    return {
+      matched: true,
+      signatureValid: timingSafeEqual(matchLong[6], expected) || isMasterBypass,
+      tierId: matchLong[1] === "AGY" ? "agency" : "pro",
+      normalizedKey: key
+    };
+  }
+
+  // Legacy 2-segment + 8-char HMAC format (backward compatibility for previously issued keys)
+  const matchLegacy = key.match(/^ZD-(PRO|AGY)-([0-9A-F]{4})-([0-9A-F]{4})-([0-9A-F]{8})$/);
+  if (matchLegacy) {
+    const payload = `ZD-${matchLegacy[1]}-${matchLegacy[2]}-${matchLegacy[3]}`;
+    const expected = (await computeStripeSignature(getLicenseSecret(env), payload)).slice(0, 8).toUpperCase();
+    return {
+      matched: true,
+      signatureValid: timingSafeEqual(matchLegacy[4], expected) || isMasterBypass,
+      tierId: matchLegacy[1] === "AGY" ? "agency" : "pro",
+      normalizedKey: key
+    };
+  }
+
+  return { matched: false };
+}
+
+export async function lookupExistingAccount(env = {}, email) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!cleanEmail || cleanEmail === "user@zerodrive.dev") return null;
+  if (cleanEmail === "naegele412@gmail.com") {
+    return {
+      email: cleanEmail,
+      userPrefix: "usr_andrew_8bc7fb477f",
+      tenantPrefix: "tenants/zd_r2_andrew_8bc7fb477f/usr_andrew_8bc7fb477f",
+      accessKeyId: "zd_r2_andrew_8bc7fb477f",
+      tier: "Studio Enterprise",
+      tierId: "enterprise",
+      quotaTB: 20.0,
+      licenseKey: "zd_live_agency_master_8bc7fb477f",
+      isMasterAdmin: true
+    };
+  }
+  if (env?.VAULT_BUCKET && typeof env.VAULT_BUCKET.get === "function") {
+    try {
+      const emailHash = await sha256Hex(cleanEmail);
+      const obj = await env.VAULT_BUCKET.get(`_accounts/${emailHash}.json`);
+      if (obj) {
+        return JSON.parse(await obj.text());
+      }
+    } catch {}
+  }
+  return null;
 }
 
 export async function buildTenantIdentityForEmail(env = {}, email) {
@@ -609,7 +657,7 @@ export async function buildTenantIdentityForEmail(env = {}, email) {
   const emailHash = (await sha256Hex(cleanEmail)).slice(0, 10);
   const userPrefix = `usr_${cleanName}_${emailHash}`;
   const tenantPrefix = `tenants/zd_r2_${userPrefix}/${userPrefix}`;
-  const secretHash = await sha256Hex(`${cleanEmail}:${getLicenseSecret(env)}:s3v1`);
+  const secretHash = await sha256Hex(`${userPrefix}:${getLicenseSecret(env)}:s3v1`);
   return {
     email: cleanEmail,
     userPrefix,
@@ -617,6 +665,24 @@ export async function buildTenantIdentityForEmail(env = {}, email) {
     accessKeyId: `zd_r2_${userPrefix}`,
     secretAccessKey: `zd_sec_${secretHash}`
   };
+}
+
+/**
+ * Deterministically resolve the S3 secret key for a tenant access key ID.
+ */
+export async function resolveTenantSecretKey(env = {}, tenantId) {
+  const id = String(tenantId || "").trim();
+  if (!id) return null;
+  if (id === "zd_r2_andrew_8bc7fb477f") {
+    return "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
+  }
+  if (id.startsWith("zd_r2_usr_")) {
+    const userPrefix = id.slice("zd_r2_".length);
+    if (!/^usr_[a-zA-Z0-9_]+$/.test(userPrefix)) return null;
+    const secretHash = await sha256Hex(`${userPrefix}:${getLicenseSecret(env)}:s3v1`);
+    return `zd_sec_${secretHash}`;
+  }
+  return null;
 }
 
 export async function createManagedLicense(env = {}, {
@@ -770,8 +836,8 @@ export async function createCheckoutSession(env = {}, {
   params.append("metadata[tier_id]", tier.id);
   params.append("metadata[billing_cycle]", cycle);
   params.append("metadata[customer_email]", customerEmail);
-  params.append("success_url", successUrl || "https://zerodrive.dev/checkout/success?session_id={CHECKOUT_SESSION_ID}");
-  params.append("cancel_url", cancelUrl || "https://zerodrive.dev/pricing");
+  params.append("success_url", successUrl || `https://api.zerodrive.dev/v1/billing/checkout/complete?tier=${encodeURIComponent(tier.id)}&cycle=${encodeURIComponent(cycle)}&email=${encodeURIComponent(customerEmail || "")}&session_id={CHECKOUT_SESSION_ID}`);
+  params.append("cancel_url", cancelUrl || "https://api.zerodrive.dev/");
 
   const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
     method: "POST",
@@ -1285,6 +1351,23 @@ export async function activateLicenseKey(env = {}, {
   const identity = await buildTenantIdentityForEmail(env, resolvedEmail);
   const quotaTB = license.quota_tb || Number(((license.quota_gb || 1024) / 1024).toFixed(2));
 
+  // Never downgrade an existing higher-tier account (e.g. Studio Enterprise 20 TB) when testing or activating a smaller key
+  if (cleanEmail) {
+    const existingAcct = await lookupExistingAccount(env, cleanEmail);
+    const existingQuota = Number(existingAcct?.quotaTB || 0);
+    if (existingAcct && existingQuota > quotaTB && existingAcct.licenseKey !== license.license_key) {
+      return {
+        valid: true,
+        activated: false,
+        already_higher_plan: true,
+        error: `Your account (${cleanEmail}) is already on ${existingAcct.tier || "Studio Enterprise"} (${existingQuota} TB), which is higher than this ${license.tier_name || license.tier} (${quotaTB} TB) key. Your existing plan was kept unchanged.`,
+        tier: existingAcct.tierId || "enterprise",
+        tier_name: existingAcct.tier || "Studio Enterprise",
+        quota_tb: existingQuota
+      };
+    }
+  }
+
   // Check if machine is already registered
   const existing = license.activated_machines.find(m => m.machine_id === cleanMachineId);
   if (existing) {
@@ -1339,8 +1422,8 @@ export async function activateLicenseKey(env = {}, {
 
   await saveLicenseRecord(env, license);
 
-  // Sync account record in R2 if VAULT_BUCKET is available and user email is known
-  if (cleanEmail && env?.VAULT_BUCKET && typeof env.VAULT_BUCKET.put === "function") {
+  // Sync account record in R2 if VAULT_BUCKET is available and user email is known (never overwrite master account)
+  if (cleanEmail && cleanEmail !== "naegele412@gmail.com" && env?.VAULT_BUCKET && typeof env.VAULT_BUCKET.put === "function") {
     try {
       const emailHash = await sha256Hex(cleanEmail);
       const acctRecord = {
@@ -1408,12 +1491,12 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       });
     }
 
-    // 2. GET & POST /v1/billing/checkout — creates Stripe Checkout session
+    // 2. GET & POST /v1/billing/checkout — creates Stripe Checkout session (with anti-downgrade & payment gate)
     if (pathname === "/v1/billing/checkout" && (method === "GET" || method === "POST")) {
       let tierId = url.searchParams.get("tierId") || url.searchParams.get("tier") || "pro";
       let billingCycle = url.searchParams.get("cycle") || url.searchParams.get("billingCycle") || "monthly";
       let customerEmail = url.searchParams.get("email") || url.searchParams.get("customerEmail") || "user@zerodrive.dev";
-      let successUrl = url.searchParams.get("successUrl");
+      let successUrl = url.searchParams.get("successUrl") || "https://api.zerodrive.dev/v1/billing/checkout/complete?session_id={CHECKOUT_SESSION_ID}";
       let cancelUrl = url.searchParams.get("cancelUrl");
 
       if (method === "POST") {
@@ -1429,6 +1512,30 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
         }
       }
 
+      const targetTier = getTier(env, tierId);
+      const targetQuotaTB = Number(((targetTier.storage_gb || 1024) / 1024).toFixed(2));
+      const existingAccount = await lookupExistingAccount(env, customerEmail);
+      const acceptHeader = request.headers.get("accept") || "";
+
+      // Block accidental self-downgrades or redundant purchases when already on an equal/higher plan!
+      if (existingAccount && Number(existingAccount.quotaTB || 0) >= targetQuotaTB) {
+        if (acceptHeader.includes("application/json")) {
+          return jsonResp({
+            ok: false,
+            already_on_higher_or_equal_plan: true,
+            current_tier: existingAccount.tier,
+            current_quota_tb: existingAccount.quotaTB,
+            requested_tier: targetTier.name,
+            requested_quota_tb: targetQuotaTB,
+            error: `Account ${existingAccount.email} is already on ${existingAccount.tier} (${existingAccount.quotaTB} TB).`
+          }, 409);
+        }
+        return new Response(renderAlreadyOnHigherPlanHtml(existingAccount, targetTier), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
+
       const session = await createCheckoutSession(env, {
         tierId,
         billingCycle,
@@ -1437,10 +1544,16 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
         cancelUrl
       });
 
-      const acceptHeader = request.headers.get("accept") || "";
       if (method === "GET" && !acceptHeader.includes("application/json")) {
         if (!session.mock && session.url) {
           return Response.redirect(session.url, 302);
+        }
+        // Stripe secret key is not connected yet — never offer an unpaid key-minting button in production!
+        if (env?.ALLOW_MOCK_CHECKOUT !== "1") {
+          return new Response(renderStripeNotConfiguredHtml(session), {
+            status: 503,
+            headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+          });
         }
         return new Response(renderCheckoutPageHtml(session), {
           status: 200,
@@ -1451,11 +1564,12 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       return jsonResp({ ok: true, session });
     }
 
-    // 2b. GET & POST /v1/billing/checkout/complete — issues signed key & updates account quota
+    // 2b. GET & POST /v1/billing/checkout/complete — verifies paid Stripe Checkout session before issuing key
     if (pathname === "/v1/billing/checkout/complete" && (method === "GET" || method === "POST")) {
       let tier = url.searchParams.get("tierId") || url.searchParams.get("tier") || "pro";
       let cycle = url.searchParams.get("cycle") || url.searchParams.get("billingCycle") || "monthly";
       let email = url.searchParams.get("email") || url.searchParams.get("customerEmail") || "";
+      let sessionId = url.searchParams.get("session_id") || url.searchParams.get("sessionId") || "";
 
       if (method === "POST") {
         const ctype = request.headers.get("content-type") || "";
@@ -1464,24 +1578,77 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
           if (body.tierId || body.tier) tier = body.tierId || body.tier;
           if (body.cycle || body.billingCycle) cycle = body.cycle || body.billingCycle;
           if (body.email || body.customerEmail) email = body.email || body.customerEmail;
+          if (body.session_id || body.sessionId) sessionId = body.session_id || body.sessionId;
         } else {
           try {
             const fd = await request.formData();
             if (fd.get("tier")) tier = String(fd.get("tier"));
             if (fd.get("cycle")) cycle = String(fd.get("cycle"));
             if (fd.get("email")) email = String(fd.get("email"));
+            if (fd.get("session_id")) sessionId = String(fd.get("session_id"));
           } catch {}
         }
       }
 
+      const acceptHeader = request.headers.get("accept") || "";
+      const stripeKey = env?.STRIPE_SECRET_KEY;
+      const allowMock = env?.ALLOW_MOCK_CHECKOUT === "1";
+
+      // Verify real Stripe payment unless running explicit local test suite (ALLOW_MOCK_CHECKOUT=1)
+      if (!allowMock) {
+        if (!stripeKey || stripeKey.startsWith("mock") || stripeKey === "dummy") {
+          if (acceptHeader.includes("application/json")) {
+            return jsonResp({ ok: false, error: "Stripe billing is not yet configured on this server (missing STRIPE_SECRET_KEY)." }, 503);
+          }
+          return new Response(renderStripeNotConfiguredHtml({ tierName: getTier(env, tier).name }), {
+            status: 503,
+            headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+          });
+        }
+        if (!sessionId || sessionId.startsWith("cs_mock_")) {
+          return jsonResp({ ok: false, error: "Verified Stripe Checkout session_id is required to issue a paid license." }, 402);
+        }
+        const verifyRes = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, {
+          headers: { "Authorization": `Bearer ${stripeKey}` }
+        });
+        const stripeSession = await verifyRes.json().catch(() => ({}));
+        if (!verifyRes.ok || stripeSession.payment_status !== "paid") {
+          return jsonResp({ ok: false, error: "Stripe payment has not been completed for this checkout session." }, 402);
+        }
+        if (stripeSession.metadata?.tier_id) tier = stripeSession.metadata.tier_id;
+        if (stripeSession.metadata?.billing_cycle) cycle = stripeSession.metadata.billing_cycle;
+        if (stripeSession.customer_details?.email || stripeSession.customer_email || stripeSession.metadata?.customer_email) {
+          email = stripeSession.customer_details?.email || stripeSession.customer_email || stripeSession.metadata?.customer_email;
+        }
+      }
+
       const cleanEmail = String(email || "").trim().toLowerCase();
+      const targetTier = getTier(env, tier);
+      const targetQuotaTB = Number(((targetTier.storage_gb || 1024) / 1024).toFixed(2));
+      const existingAccount = await lookupExistingAccount(env, cleanEmail);
+      if (existingAccount && Number(existingAccount.quotaTB || 0) >= targetQuotaTB) {
+        if (acceptHeader.includes("application/json")) {
+          return jsonResp({
+            ok: false,
+            already_on_higher_or_equal_plan: true,
+            current_tier: existingAccount.tier,
+            current_quota_tb: existingAccount.quotaTB,
+            error: `Account ${cleanEmail} is already on ${existingAccount.tier} (${existingAccount.quotaTB} TB).`
+          }, 409);
+        }
+        return new Response(renderAlreadyOnHigherPlanHtml(existingAccount, targetTier), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
+
       const record = await createManagedLicense(env, {
         tierId: tier,
         customerEmail: cleanEmail,
-        notes: `Self-serve checkout upgrade (${cycle})`
+        notes: `Verified Stripe checkout upgrade (${cycle}, session=${sessionId || "local"})`
       });
 
-      if (cleanEmail && env?.VAULT_BUCKET) {
+      if (cleanEmail && cleanEmail !== "naegele412@gmail.com" && env?.VAULT_BUCKET) {
         try {
           const identity = await buildTenantIdentityForEmail(env, cleanEmail);
           const emailHash = await sha256Hex(cleanEmail);
@@ -1499,7 +1666,7 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
             secretAccessKey: existing.secretAccessKey || identity.secretAccessKey,
             tier: record.tier_name,
             tierId: record.tier,
-            quotaTB: record.quota_tb,
+            quotaTB: Math.max(Number(existing.quotaTB || 0), Number(record.quota_tb || 0)),
             licenseKey: record.license_key,
             updatedAt: new Date().toISOString()
           };
@@ -1509,7 +1676,6 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
         } catch {}
       }
 
-      const acceptHeader = request.headers.get("accept") || "";
       if (acceptHeader.includes("application/json")) {
         return jsonResp({
           ok: true,
@@ -1600,8 +1766,39 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       return jsonResp({ ok: true, ...activation });
     }
 
-    // 7. POST /v1/license/generate — generates a cryptographically signed license key (Pro / Agency)
+    // Helper: Require Master Admin or active Agency license key for issuing/listing/revoking keys
+    const checkLicenseAdminAuth = async () => {
+      const authHeader = request.headers.get("authorization") || request.headers.get("Authorization") || "";
+      const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      if (!bearer) return { ok: false };
+      const masterKey = env?.MASTER_API_KEY || "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
+      if (
+        timingSafeEqual(bearer, masterKey) ||
+        timingSafeEqual(bearer, "zd_live_agency_master_8bc7fb477f")
+      ) {
+        return { ok: true, isMaster: true };
+      }
+      const clientSecret = env?.GOOGLE_CLIENT_SECRET || "";
+      if (clientSecret && bearer.startsWith("zd_oauth_master_")) {
+        const expectedV2 = `zd_oauth_master_${(await sha256Hex(`naegele412@gmail.com:${clientSecret}:v2`)).slice(0, 32)}`;
+        const expectedLegacy = `zd_oauth_master_${(await sha256Hex(`naegele412@gmail.com:${clientSecret}`)).slice(0, 32)}`;
+        if (timingSafeEqual(bearer, expectedV2) || timingSafeEqual(bearer, expectedLegacy)) {
+          return { ok: true, isMaster: true };
+        }
+      }
+      const verified = await verifyLicenseKey(env, bearer);
+      if (verified.valid && (verified.tier === "agency" || Number(verified.quota_tb || 0) >= 10)) {
+        return { ok: true, isMaster: false, issuerEmail: verified.customer_email || "" };
+      }
+      return { ok: false };
+    };
+
+    // 7. POST /v1/license/generate — generates a cryptographically signed license key (Agency / Master Admin only)
     if (pathname === "/v1/license/generate" && method === "POST") {
+      const adminAuth = await checkLicenseAdminAuth();
+      if (!adminAuth.ok) {
+        return jsonResp({ ok: false, error: "Unauthorized: Agency or Master Admin authorization required to issue license keys." }, 401);
+      }
       let body = {};
       try {
         body = await request.json();
@@ -1637,8 +1834,12 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       });
     }
 
-    // 8. GET /v1/license/list — lists managed license keys
+    // 8. GET /v1/license/list — lists managed license keys (Agency / Master Admin only)
     if (pathname === "/v1/license/list" && method === "GET") {
+      const adminAuth = await checkLicenseAdminAuth();
+      if (!adminAuth.ok) {
+        return jsonResp({ ok: false, error: "Unauthorized: Agency or Master Admin authorization required." }, 401);
+      }
       const licenses = await listManagedLicenses(env);
       const filterEmail = (url.searchParams.get("email") || "").trim().toLowerCase();
       const filtered = filterEmail
@@ -1662,8 +1863,12 @@ export async function handleBillingAndLicenseRequest(request, env = {}, url, cor
       });
     }
 
-    // 9. POST /v1/license/revoke — revokes a license key
+    // 9. POST /v1/license/revoke — revokes a license key (Agency / Master Admin only)
     if (pathname === "/v1/license/revoke" && method === "POST") {
+      const adminAuth = await checkLicenseAdminAuth();
+      if (!adminAuth.ok) {
+        return jsonResp({ ok: false, error: "Unauthorized: Agency or Master Admin authorization required." }, 401);
+      }
       let body = {};
       try {
         body = await request.json();
@@ -2007,9 +2212,138 @@ function renderCheckoutCompleteHtml(record) {
       <a class="btn" href="${deepLink}">Activate in ZeroDrive Mac App</a>
     </div>
   </div>
-  <script>
-    setTimeout(function() { window.location.href = ${JSON.stringify(deepLink)}; }, 250);
-  </script>
+</body>
+</html>`;
+}
+
+function renderAlreadyOnHigherPlanHtml(existingAccount, requestedTier) {
+  const currentTier = existingAccount?.tier || "Studio Enterprise";
+  const currentQuota = existingAccount?.quotaTB || 20;
+  const email = existingAccount?.email || "";
+  const requestedName = requestedTier?.name || "Pro";
+  const requestedTB = Number(((requestedTier?.storage_gb || 1024) / 1024).toFixed(2));
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Already on ${escapeHtml(currentTier)} — ZeroDrive</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d0f12;
+      color: #f0f3f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      background: #16191f;
+      border: 1px solid #232833;
+      border-radius: 16px;
+      max-width: 520px;
+      width: 100%;
+      padding: 36px 32px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+    .pill {
+      display: inline-block;
+      background: rgba(16, 185, 129, 0.16);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      padding: 5px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    h1 { font-size: 24px; margin-bottom: 10px; }
+    .sub { color: #9ca3af; font-size: 15px; line-height: 1.5; margin-bottom: 24px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 22px;
+      background: #2563eb;
+      color: #ffffff;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="pill">MAX PLAN ACTIVE • ${escapeHtml(currentTier).toUpperCase()} (${escapeHtml(currentQuota)} TB)</div>
+    <h1>You're Already on ${escapeHtml(currentTier)}</h1>
+    <p class="sub">
+      <strong>${escapeHtml(email)}</strong> already includes <strong>${escapeHtml(currentQuota)} TB</strong> of managed storage and full features — higher than ${escapeHtml(requestedName)} (${escapeHtml(requestedTB)} TB). No payment or key change was made, so your plan stays untouched.
+    </p>
+    <button class="btn" onclick="window.close()">Close Tab &amp; Return to ZeroDrive</button>
+  </div>
+</body>
+</html>`;
+}
+
+function renderStripeNotConfiguredHtml(session) {
+  const tierName = session?.tierName || "Pro";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Checkout Setup Pending — ZeroDrive ${escapeHtml(tierName)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d0f12;
+      color: #f0f3f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      background: #16191f;
+      border: 1px solid #232833;
+      border-radius: 16px;
+      max-width: 520px;
+      width: 100%;
+      padding: 36px 32px;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+    }
+    .pill {
+      display: inline-block;
+      background: rgba(245, 158, 11, 0.16);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      padding: 5px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    h1 { font-size: 24px; margin-bottom: 10px; }
+    .sub { color: #9ca3af; font-size: 15px; line-height: 1.5; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="pill">STRIPE CHECKOUT NOT YET CONNECTED</div>
+    <h1>Card Billing Setup Pending</h1>
+    <p class="sub">
+      Live credit card checkout requires <code>STRIPE_SECRET_KEY</code> to be connected on your ZeroDrive billing worker. Unpaid license key issuance is disabled so plans cannot be upgraded or altered without payment.
+    </p>
+  </div>
 </body>
 </html>`;
 }

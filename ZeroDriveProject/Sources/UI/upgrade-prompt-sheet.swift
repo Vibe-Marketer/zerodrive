@@ -3,6 +3,7 @@ import AppKit
 
 public struct UpgradePromptSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var licensing = ManageLicensing.shared
     public var triggerReason: String
     public var requiredTier: String
     public var initialBYOKMode: Bool
@@ -44,17 +45,24 @@ public struct UpgradePromptSheet: View {
     }
 
     private var planSelectionContent: some View {
-        VStack(spacing: 18) {
+        let currentQuota = licensing.isLicensed ? licensing.license.quotaTB : 0.0
+        let onMaxPlan = currentQuota >= 10.0
+
+        return VStack(spacing: 18) {
             // Header
             VStack(spacing: 8) {
-                Image(systemName: "sparkles")
+                Image(systemName: onMaxPlan ? "checkmark.seal.fill" : "sparkles")
                     .font(.system(size: 36))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(onMaxPlan ? Color.green : Color.accentColor)
 
-                Text(requiredTier.isEmpty ? "Upgrade to ZeroDrive Pro or Agency" : "Upgrade to ZeroDrive \(requiredTier) or Agency")
+                Text(onMaxPlan
+                     ? "You're Already on \(licensing.license.tier) (\(String(format: "%.0f", currentQuota)) TB)"
+                     : (currentQuota >= 1.0 ? "Upgrade to ZeroDrive Agency (10 TB)" : (requiredTier.isEmpty ? "Upgrade to ZeroDrive Pro or Agency" : "Upgrade to ZeroDrive \(requiredTier) or Agency")))
                     .font(.title2.bold())
 
-                Text(triggerReason)
+                Text(onMaxPlan
+                     ? "Your account already includes \(String(format: "%.0f", currentQuota)) TB of storage and every Pro & Agency feature."
+                     : triggerReason)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -69,8 +77,10 @@ public struct UpgradePromptSheet: View {
                     price: "$29/mo",
                     originalPrice: "$49/mo",
                     subprice: "Founders Special (Reg. $49/mo) • Locked, or $197/yr",
-                    badge: "FOUNDERS ($29 NOW)",
-                    isFeatured: true,
+                    badge: currentQuota >= 1.0 ? "INCLUDED" : "FOUNDERS ($29 NOW)",
+                    isFeatured: currentQuota < 1.0,
+                    isDisabled: currentQuota >= 1.0,
+                    disabledLabel: currentQuota > 1.0 ? "Included in \(licensing.license.tier)" : "Current Plan",
                     features: [
                         "1 TB DFY Cloud Storage (Zero config)",
                         "Free Drive Partitioning (Work, Clients, Personal)",
@@ -89,8 +99,10 @@ public struct UpgradePromptSheet: View {
                     price: "$297/mo",
                     originalPrice: "$497/mo",
                     subprice: "Founding Agency (Reg. $497/mo) • 10 TB + White-Label",
-                    badge: "FOUNDING ($297 NOW)",
-                    isFeatured: false,
+                    badge: currentQuota >= 10.0 ? "INCLUDED" : "FOUNDING ($297 NOW)",
+                    isFeatured: currentQuota >= 1.0 && currentQuota < 10.0,
+                    isDisabled: currentQuota >= 10.0,
+                    disabledLabel: currentQuota > 10.0 ? "Included in \(licensing.license.tier)" : "Current Plan",
                     features: [
                         "10 TB DFY Cloud Storage (+$25/TB add-on)",
                         "Unlimited Segregated Client Vaults",
@@ -120,7 +132,7 @@ public struct UpgradePromptSheet: View {
 
                 if showKeyInput {
                     HStack(spacing: 8) {
-                        TextField("ZD-PRO-XXXX-XXXX-XXXXXXXX or ZD-AGY-...", text: $licenseKeyInput)
+                        TextField("ZD-PRO-XXXX-XXXX-XXXX-XXXX-... or ZD-AGY-...", text: $licenseKeyInput)
                             .textFieldStyle(.roundedBorder)
 
                         Button {
@@ -143,37 +155,45 @@ public struct UpgradePromptSheet: View {
 
             // Primary Actions
             HStack(spacing: 12) {
-                Button("Not Now") {
+                Button(onMaxPlan ? "Done" : "Not Now") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
                 .controlSize(.regular)
 
+                if !onMaxPlan {
+                    let nextTier = currentQuota >= 1.0 ? "agency" : "pro"
+                    let nextLabel = currentQuota >= 1.0
+                        ? "Upgrade to Agency ($297/mo — Reg. $497/mo)"
+                        : "Upgrade to Pro ($29/mo — Reg. $49/mo)"
+                    Button {
+                        openStripeCheckout(tier: nextTier)
+                        dismiss()
+                    } label: {
+                        Label(nextLabel, systemImage: "bolt.fill")
+                            .padding(.horizontal, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                }
+            }
+
+            if currentQuota == 0 {
+                Divider()
+
+                // Subtle Free BYOK Subline (only for unprovisioned / free users so paid accounts never accidentally switch to 10 GB BYOK!)
                 Button {
-                    openStripeCheckout(tier: "pro")
-                    dismiss()
+                    byokError = ""
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showBYOKSetup = true
+                    }
                 } label: {
-                    Label("Upgrade to Pro ($29/mo — Reg. $49/mo)", systemImage: "bolt.fill")
-                        .padding(.horizontal, 8)
+                    Text("Want to use your own Cloudflare R2 bucket for free (10 GB)? Connect Cloudflare R2 API keys →")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
+                .buttonStyle(.plain)
             }
-
-            Divider()
-
-            // Subtle Free BYOK Subline
-            Button {
-                byokError = ""
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    showBYOKSetup = true
-                }
-            } label: {
-                Text("Want to use your own Cloudflare R2 bucket for free (10 GB)? Connect Cloudflare R2 API keys →")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
         }
     }
 
@@ -386,6 +406,8 @@ public struct UpgradeTierCard: View {
     public let subprice: String
     public let badge: String
     public let isFeatured: Bool
+    public var isDisabled: Bool = false
+    public var disabledLabel: String = "Current Plan"
     public let features: [String]
     public let onSelect: () -> Void
 
@@ -464,8 +486,17 @@ public struct UpgradeTierCard: View {
 
     @ViewBuilder
     private var actionButton: some View {
-        let label = "Select " + title
-        if isFeatured {
+        let label = isDisabled ? disabledLabel : ("Select " + title)
+        if isDisabled {
+            Button(action: {}) {
+                Text(label)
+                    .font(.subheadline.bold())
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(true)
+        } else if isFeatured {
             Button(action: onSelect) {
                 Text(label)
                     .font(.subheadline.bold())

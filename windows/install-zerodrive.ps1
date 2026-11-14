@@ -83,12 +83,36 @@ if (Test-Path -LiteralPath $CsSource) {
     Copy-Item -LiteralPath $CsSource -Destination (Join-Path $AppDir "zerodrive-sync.cs") -Force
 }
 
+$UpdaterSource = Join-Path $CurrentScriptDir "update-zerodrive.ps1"
+if (Test-Path -LiteralPath $UpdaterSource) {
+    Copy-Item -LiteralPath $UpdaterSource -Destination (Join-Path $AppDir "update-zerodrive.ps1") -Force
+}
+
+$ExeSource = Join-Path $CurrentScriptDir "zerodrive-sync.exe"
+if (Test-Path -LiteralPath $ExeSource) {
+    Copy-Item -LiteralPath $ExeSource -Destination (Join-Path $AppDir "zerodrive-sync.exe") -Force
+}
+
+$NotesSource = Join-Path $CurrentScriptDir "release-notes.json"
+if (Test-Path -LiteralPath $NotesSource) {
+    Copy-Item -LiteralPath $NotesSource -Destination (Join-Path $AppDir "release-notes.json") -Force
+}
+
+$ChangelogSource = Join-Path $CurrentScriptDir "CHANGELOG.md"
+if (Test-Path -LiteralPath $ChangelogSource) {
+    Copy-Item -LiteralPath $ChangelogSource -Destination (Join-Path $AppDir "CHANGELOG.md") -Force
+}
+
+# Create convenient shortcut helpers for checking updates and viewing changelog
+Set-Content -LiteralPath (Join-Path $AppDir "ZeroDrive-CheckUpdates.cmd") -Value "@echo off`r`npowershell.exe -ExecutionPolicy Bypass -NoProfile -File `"%~dp0update-zerodrive.ps1`" -Trigger manual`r`npause`r`n" -Force
+Set-Content -LiteralPath (Join-Path $AppDir "ZeroDrive-Changelog.cmd") -Value "@echo off`r`npowershell.exe -ExecutionPolicy Bypass -NoProfile -File `"%~dp0update-zerodrive.ps1`" -ShowChangelog`r`n" -Force
+
 # Create config file
 $config = @{
     sync_root = $SyncRoot
     api_base  = "https://api.zerodrive.dev"
     installed = (Get-Date).ToString("o")
-    version   = "3.0.0"
+    version   = "3.1.0"
 } | ConvertTo-Json -Compress
 Set-Content -LiteralPath (Join-Path $AppDir "config.json") -Value $config -Force
 Write-Host "[Files] ZeroDrive engine installed to $AppDir" -ForegroundColor Green

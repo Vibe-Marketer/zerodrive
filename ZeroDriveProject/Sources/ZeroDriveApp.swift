@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import FileProvider
 
 private struct ZeroDriveRootContainerView: View {
     @EnvironmentObject var lifecycleController: AppLifecycleController
@@ -8,6 +7,7 @@ private struct ZeroDriveRootContainerView: View {
     @EnvironmentObject var spoolManager: SpoolAndGuardManager
     @EnvironmentObject var indexer: RAMTreeIndexer
     @ObservedObject private var licensing = ManageLicensing.shared
+    @ObservedObject private var updater = ManageAppUpdates.shared
 
     private var isStandaloneOnboarding: Bool {
         !licensing.isLicensed || lifecycleController.showOnboardingSheet
@@ -29,6 +29,12 @@ private struct ZeroDriveRootContainerView: View {
         .onChange(of: isStandaloneOnboarding) { newValue in
             AppDelegate.shared?.applyWindowMode(isOnboarding: newValue, forceCenter: true)
         }
+        .sheet(isPresented: $updater.showUpdatePromptSheet) {
+            UpdateAvailableSheet()
+        }
+        .sheet(isPresented: $updater.showChangelogSheet) {
+            WhatsNewChangelogSheet()
+        }
     }
 }
 
@@ -41,6 +47,9 @@ struct ZeroDriveApp: App {
     init() {
         if CommandLine.arguments.contains("--dump-storage-audit") {
             ManageStorageAdvisor.runHeadlessAuditAndExit()
+        }
+        if CommandLine.arguments.contains("--verify-auto-update") {
+            ManageAppUpdates.runHeadlessUpdateVerificationAndExit()
         }
     }
 
@@ -121,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let initialOnboarding = !ManageLicensing.shared.isLicensed || AppLifecycleController.shared.showOnboardingSheet
         applyWindowMode(isOnboarding: initialOnboarding, forceCenter: true)
         presentMainWindow()
+        ManageAppUpdates.shared.startAutomaticLifecycle()
     }
 
     public func presentMainWindow() {
@@ -312,6 +322,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
             menu.addItem(NSMenuItem.separator())
 
+            let updateItem = NSMenuItem(
+                title: ManageAppUpdates.shared.updateAvailable
+                    ? "Update Available (v\(ManageAppUpdates.shared.latestRelease?.version ?? ""))…"
+                    : "Check for Updates…",
+                action: #selector(checkForUpdatesFromMenu),
+                keyEquivalent: "u"
+            )
+            updateItem.target = self
+            menu.addItem(updateItem)
+
+            let changelogItem = NSMenuItem(title: "What's New in ZeroDrive…", action: #selector(openChangelogFromMenu), keyEquivalent: "")
+            changelogItem.target = self
+            menu.addItem(changelogItem)
+
+            menu.addItem(NSMenuItem.separator())
+
             let quitItem = NSMenuItem(title: "Quit ZeroDrive", action: #selector(quitFromMenu), keyEquivalent: "q")
             quitItem.target = self
             menu.addItem(quitItem)
@@ -358,12 +384,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.terminate(nil)
     }
 
+    @objc private func checkForUpdatesFromMenu() {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            await ManageAppUpdates.shared.checkForUpdates(trigger: .manual)
+        }
+    }
+
+    @objc private func openChangelogFromMenu() {
+        AppLifecycleController.shared.setStudioWindowVisible(true)
+        NSApp.activate(ignoringOtherApps: true)
+        ManageAppUpdates.shared.openChangelog()
+    }
+
     private func setupTerminationSignalTrap() {
+        // Keep the kernel mount and rclone daemon alive across SIGTERM/SIGINT (app updates/restarts)
+        // so the replacement ZeroDrive.app adopts the existing mount hitlessly with zero disconnect popups.
+        // Explicit user Quit (Cmd+Q / Menu Bar Quit) still unmounts cleanly via AppLifecycleController.
         let sigQueue = DispatchQueue(label: "co.aisimple.zerodrive.signals", qos: .userInteractive)
         signal(SIGTERM, SIG_IGN)
         let termSrc = DispatchSource.makeSignalSource(signal: SIGTERM, queue: sigQueue)
         termSrc.setEventHandler {
-            RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
             _exit(0)
         }
         termSrc.resume()
@@ -372,7 +414,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         signal(SIGINT, SIG_IGN)
         let intSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: sigQueue)
         intSrc.setEventHandler {
-            RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
             _exit(0)
         }
         intSrc.resume()
@@ -503,8 +544,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         if FileManager.default.fileExists(atPath: localCachedFile) {
                             try? FileManager.default.removeItem(atPath: localCachedFile)
                         }
-                        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier("ZeroDrive"), displayName: "ZeroDrive")
-                        try? await NSFileProviderManager(for: domain)?.evictItem(withIdentifier: NSFileProviderItemIdentifier(rel))
                     }
                 case "pin":
                     Task.detached(priority: .utility) {
@@ -535,6 +574,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func handleSystemWake() {
         Task {
             await RcloneDaemonSupervisor.shared.healDeadMountAfterSleep()
+            await MainActor.run {
+                ManageAppUpdates.shared.handleSystemWake()
+            }
         }
     }
 }

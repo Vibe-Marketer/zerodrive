@@ -409,7 +409,7 @@ public struct AccountLicensingView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text("ZeroDrive Unified (NFS + Apple FileProvider)")
+                        Text("ZeroDrive Direct Streaming Drive (~/ZeroDrive)")
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
@@ -417,28 +417,71 @@ public struct AccountLicensingView: View {
                 .padding(.vertical, 2)
             }
 
-            // MARK: - 5. Account Management & Upgrade
-            Section("Account Management & Upgrade") {
+            // MARK: - 5. Account Management & Plan Status
+            Section("Account Management & Plan") {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Upgrade to Pro or Agency")
-                                .font(.body.weight(.medium))
-                            Text("Choose Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB), or activate a license key.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    if licensing.license.quotaTB >= 10.0 {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text("Current Plan: \(licensing.license.tier) (\(String(format: "%.0f", licensing.license.quotaTB)) TB)")
+                                        .font(.body.weight(.semibold))
+                                    Text("MAX TIER ACTIVE")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.green.opacity(0.16))
+                                        .foregroundStyle(Color.green)
+                                        .clipShape(Capsule())
+                                }
+                                Text("You're on ZeroDrive's highest tier with unlimited machines, multi-drive isolation, and 24/7 hosted MCP.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
                         }
+                    } else if licensing.license.quotaTB >= 1.0 {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Upgrade to Agency (10 TB)")
+                                    .font(.body.weight(.medium))
+                                Text("You're on \(licensing.license.tier) (\(String(format: "%.0f", licensing.license.quotaTB)) TB). Upgrade to Agency ($297/mo • 10 TB) for client vaults & white-label keys.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        Spacer()
+                            Spacer()
 
-                        Button {
-                            upgradePromptReason = "Choose ZeroDrive Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB) for zero-config managed storage and 24/7 hosted MCP."
-                            isShowingUpgradePrompt = true
-                        } label: {
-                            Label("View Plans & Upgrade…", systemImage: "sparkles")
+                            Button {
+                                upgradePromptReason = "Upgrade from \(licensing.license.tier) to ZeroDrive Agency ($297/mo • 10 TB) for client vaults and white-label controls."
+                                isShowingUpgradePrompt = true
+                            } label: {
+                                Label("Upgrade to Agency…", systemImage: "sparkles")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
+                    } else {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Upgrade to Pro or Agency")
+                                    .font(.body.weight(.medium))
+                                Text("Choose Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB), or activate a license key.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                upgradePromptReason = "Choose ZeroDrive Pro ($29/mo now, Reg. $49/mo • 1 TB) or Agency ($297/mo now, Reg. $497/mo • 10 TB) for zero-config managed storage and 24/7 hosted MCP."
+                                isShowingUpgradePrompt = true
+                            } label: {
+                                Label("View Plans & Upgrade…", systemImage: "sparkles")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
+                        }
                     }
 
                     Divider()

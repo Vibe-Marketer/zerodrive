@@ -26,11 +26,12 @@ exec "${RCLONE_BIN}" nfsmount ZeroDriveUnified: "${MOUNT_POINT}" \
   --cache-dir="${CACHE_DIR}" \
   --vfs-cache-max-size=50G \
   --vfs-write-back=5s \
-  --vfs-cache-max-age=24h \
+  --vfs-cache-max-age=168h \
   --vfs-read-chunk-size=16M \
   --vfs-read-chunk-size-limit=256M \
   --buffer-size=32M \
-  --dir-cache-time=20s \
+  --dir-cache-time=1h \
+  --vfs-fast-fingerprint \
   --use-server-modtime \
   --disable-http2 \
   --s3-disable-http2 \

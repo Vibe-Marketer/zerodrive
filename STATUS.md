@@ -60,3 +60,17 @@ Next action: Andrew works through [the decision list](launch-offer/09-DECISION.m
 Revision 2 same day: Andrew kept free at 10 GB on the user's own Cloudflare (switch to paid at 10 GB, MCP yes, API no), held the bonuses until ready, and chose Pro Max as the Founder Special plus Agency. Blueprint updated. New gaps found in code: Connect Cloudflare still asks for pasted keys, and hosted MCP cannot read a user's own bucket (local MCP can). Open: $49 vs $39 start.
 
 Revision 3 same day: Andrew simplified the launch. Founders get Studio ($49, 1 TB) at $29/mo locked; partition free; add drives 1 TB $25, 2 TB $40; 3 TB = Pro Max $97; Agency $497. The blueprint is now the complete launch outline (offer, pages, emails, event, traffic, build checklist, timeline). Next action: fix the customer-separation bug, then one-click Connect Cloudflare.
+
+
+---
+
+## Update — November 13, 2026 (`v3.1.0` Security Hardening & Launch Readiness)
+- **Status Details:** See [`docs/launch-readiness-status.md`](docs/launch-readiness-status.md).
+- **Deployed Worker (`zerodrive-provisioner` v`e649e8fd-22e6-417e-9e56-7dd862f7d3a3`):**
+  - Enforced AWS4-HMAC-SHA256 SigV4 verification on `/s3/*` (with Cloudflare `Accept-Encoding` edge normalization for `rclone`), locked down `authenticateMCPRequest` and `checkLicenseAdminAuth`, and gated unpaid `/v1/auth/create-account` and `/v1/vault/provision` behind HTTP `402`.
+  - Updated Stripe default `success_url` / `cancel_url` to `https://api.zerodrive.dev/...`.
+- **Verified Checks:** All 6 Node test suites passing (`103 / 103`), live `rclone lsd` (`exit 0`), live `~/ZeroDrive/"My Drive"` mount accessible, forged S3 `403`, forged Bearer `401`, unpaid provision `402`.
+- **Remaining Launch Blockers:**
+  1. Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` via `wrangler secret put` and configure live Stripe webhook (`https://api.zerodrive.dev/v1/billing/webhook`).
+  2. Resolve HTTP `522` origin timeout on `https://zerodrive.dev/` and publish launch site/landing page.
+  3. (Optional) Windows Authenticode signing (`authenticode_signed: false`) and 1-click Cloudflare OAuth BYOK automation.

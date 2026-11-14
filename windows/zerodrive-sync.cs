@@ -6,10 +6,12 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -29,7 +31,12 @@ namespace ZeroDrive.Windows
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             string syncRoot = Path.Combine(userProfile, "ZeroDrive");
             string apiBase = Environment.GetEnvironmentVariable("ZERODRIVE_API_BASE") ?? "https://api.zerodrive.dev";
+            string updateApiBase = Environment.GetEnvironmentVariable("ZERODRIVE_UPDATE_ENDPOINT") ?? apiBase;
             string apiToken = Environment.GetEnvironmentVariable("ZERODRIVE_API_TOKEN") ?? "zd_sec_b07b3671b1c45b32195f8353d4df8945ee31448699a361b32b6f8192a9b03633";
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string installDir = string.IsNullOrEmpty(localAppData)
+                ? Path.Combine(userProfile, ".zerodrive-win")
+                : Path.Combine(localAppData, "ZeroDrive");
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -44,6 +51,38 @@ namespace ZeroDrive.Windows
                 else if (args[i] == "--endpoint" && i + 1 < args.Length)
                 {
                     apiBase = args[++i];
+                    updateApiBase = apiBase;
+                }
+                else if (args[i] == "--install-dir" && i + 1 < args.Length)
+                {
+                    installDir = Path.GetFullPath(args[++i]);
+                }
+                else if (args[i] == "--version" || args[i] == "-v")
+                {
+                    Console.WriteLine($"ZeroDrive Windows Sync v{WindowsAutoUpdater.GetInstalledVersion(installDir)}");
+                    return 0;
+                }
+                else if (args[i] == "--check-update")
+                {
+                    return await WindowsAutoUpdater.CheckOnlyAsync(updateApiBase, installDir);
+                }
+                else if (args[i] == "--changelog")
+                {
+                    return await WindowsAutoUpdater.PrintChangelogAsync(updateApiBase, installDir);
+                }
+                else if (args[i] == "--update")
+                {
+                    return await WindowsAutoUpdater.DownloadAndApplyUpdateAsync(updateApiBase, installDir, false, false);
+                }
+                else if (args[i] == "--verify-auto-update")
+                {
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+                    {
+                        installDir = Path.GetFullPath(args[++i]);
+                    }
+                    bool badSha = Array.Exists(args, a => a == "--simulate-bad-sha");
+                    bool badSig = Array.Exists(args, a => a == "--simulate-bad-sig");
+                    return await WindowsAutoUpdater.DownloadAndApplyUpdateAsync(updateApiBase, installDir, badSha, badSig);
                 }
                 else if (args[i] == "--unregister")
                 {
@@ -55,10 +94,14 @@ namespace ZeroDrive.Windows
                 else if (args[i] == "--help" || args[i] == "-h")
                 {
                     Console.WriteLine("Usage: zerodrive-sync [options]");
-                    Console.WriteLine("  --path, -p <dir>     Sync root directory (default: %USERPROFILE%\\ZeroDrive)");
-                    Console.WriteLine("  --token, -t <token>  ZeroDrive Bearer token");
-                    Console.WriteLine("  --endpoint <url>     ZeroDrive API base URL (default: https://api.zerodrive.dev)");
-                    Console.WriteLine("  --unregister         Unregister Windows Cloud Filter sync root and exit");
+                    Console.WriteLine("  --path, -p <dir>       Sync root directory (default: %USERPROFILE%\\ZeroDrive)");
+                    Console.WriteLine("  --token, -t <token>    ZeroDrive Bearer token");
+                    Console.WriteLine("  --endpoint <url>       ZeroDrive API base URL (default: https://api.zerodrive.dev)");
+                    Console.WriteLine("  --version, -v          Show installed ZeroDrive version");
+                    Console.WriteLine("  --check-update         Check for available Windows updates");
+                    Console.WriteLine("  --update               Download, verify, and install the latest update");
+                    Console.WriteLine("  --changelog            Show ZeroDrive release notes and changelog");
+                    Console.WriteLine("  --unregister           Unregister Windows Cloud Filter sync root and exit");
                     return 0;
                 }
             }
@@ -140,11 +183,13 @@ namespace ZeroDrive.Windows
             // 4. Start concurrent sync workers:
             //    A) Server-Sent Events (SSE) listener (/v1/events)
             //    B) Polling fallback for ledger activities (/v1/activity)
+            //    C) Auto-update check on startup & every 4 hours
             var sseTask = RunSseEventStreamAsync(ct);
             var pollTask = RunActivityPollAsync(ct);
+            var updateTask = WindowsAutoUpdater.RunPeriodicUpdateMonitorAsync(_apiBase, ct);
 
             Console.WriteLine("[Ready] ZeroDrive Windows Sync is ACTIVE. Waiting for changes...");
-            await Task.WhenAll(sseTask, pollTask);
+            await Task.WhenAll(sseTask, pollTask, updateTask);
         }
 
         private void InitCloudFilter()
@@ -1021,6 +1066,423 @@ namespace ZeroDrive.Windows
             finally
             {
                 pinnedIdentity.Free();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Cross-platform verified auto-updater for ZeroDrive Windows Sync Client.
+    /// Supports launch/periodic update checks, Range resume downloads, SHA-256 + ECDSA P-256 verification,
+    /// atomic backup & rollback replacement, and cumulative What's New changelogs.
+    /// </summary>
+    public static class WindowsAutoUpdater
+    {
+        public const string CurrentVersion = "3.1.0";
+        public const string EmbeddedPublicKeyPem =
+            "-----BEGIN PUBLIC KEY-----\n" +
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/JM4b2aY9Rt903bl8CDZt3kbcV5c\n" +
+            "I75mfIZAxtzNsSuNxNVLGvRoZ3kwUZ5UtigFOmBfoFkAtA4CgBRi+q9OMQ==\n" +
+            "-----END PUBLIC KEY-----";
+
+        public static string GetInstalledVersion(string installDir)
+        {
+            try
+            {
+                string cfgPath = Path.Combine(installDir, "config.json");
+                if (File.Exists(cfgPath))
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+                    if (doc.RootElement.TryGetProperty("version", out var vEl))
+                    {
+                        string ver = vEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(ver)) return ver.Trim();
+                    }
+                }
+            }
+            catch { }
+            return CurrentVersion;
+        }
+
+        public static int CompareSemver(string a, string b)
+        {
+            int[] pa = ParseSemver(a);
+            int[] pb = ParseSemver(b);
+            for (int i = 0; i < 3; i++)
+            {
+                if (pa[i] != pb[i]) return pa[i] > pb[i] ? 1 : -1;
+            }
+            return 0;
+        }
+
+        private static int[] ParseSemver(string raw)
+        {
+            string clean = (raw ?? "0.0.0").Trim();
+            if (clean.StartsWith("v", StringComparison.OrdinalIgnoreCase)) clean = clean.Substring(1);
+            clean = clean.Split('-', '+')[0];
+            string[] parts = clean.Split('.');
+            int[] nums = new int[3];
+            for (int i = 0; i < 3 && i < parts.Length; i++)
+            {
+                int.TryParse(parts[i], out nums[i]);
+            }
+            return nums;
+        }
+
+        public static async Task RunPeriodicUpdateMonitorAsync(string apiBase, CancellationToken ct)
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string installDir = string.IsNullOrEmpty(localAppData)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".zerodrive-win")
+                : Path.Combine(localAppData, "ZeroDrive");
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                await CheckOnlyAsync(apiBase, installDir, quietIfUpToDate: true);
+
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromHours(4), ct);
+                    await CheckOnlyAsync(apiBase, installDir, quietIfUpToDate: true);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch { }
+        }
+
+        public static async Task<int> CheckOnlyAsync(string apiBase, string installDir, bool quietIfUpToDate = false)
+        {
+            string currentVer = GetInstalledVersion(installDir);
+            string url = $"{apiBase.TrimEnd('/')}/v1/releases/latest?platform=windows&current_version={Uri.EscapeDataString(currentVer)}";
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                http.DefaultRequestHeaders.Add("User-Agent", $"ZeroDrive-WindowsSync/{currentVer}");
+                string json = await http.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                string latestVer = root.TryGetProperty("latest_version", out var lvEl) ? lvEl.GetString() : currentVer;
+                bool available = root.TryGetProperty("update_available", out var uaEl) && uaEl.GetBoolean() && CompareSemver(latestVer, currentVer) > 0;
+
+                if (available)
+                {
+                    Console.WriteLine($"[Updater] Update available: v{currentVer} -> v{latestVer}");
+                    if (root.TryGetProperty("missed_releases", out var missedEl))
+                    {
+                        foreach (var rel in missedEl.EnumerateArray())
+                        {
+                            string rv = rel.GetProperty("version").GetString();
+                            string rt = rel.GetProperty("title").GetString();
+                            Console.WriteLine($"  * v{rv}: {rt}");
+                        }
+                    }
+                    return 0;
+                }
+
+                if (!quietIfUpToDate)
+                {
+                    Console.WriteLine($"[Updater] ZeroDrive is up to date (v{currentVer}).");
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                if (!quietIfUpToDate)
+                {
+                    Console.WriteLine($"[Updater] Offline or server unreachable ({ex.Message}). Current v{currentVer} remains active.");
+                }
+                return 0;
+            }
+        }
+
+        public static async Task<int> PrintChangelogAsync(string apiBase, string installDir)
+        {
+            string currentVer = GetInstalledVersion(installDir);
+            string localNotes = Path.Combine(installDir, "release-notes.json");
+            string json = null;
+
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                json = await http.GetStringAsync($"{apiBase.TrimEnd('/')}/v1/releases/changelog");
+            }
+            catch
+            {
+                if (File.Exists(localNotes)) json = File.ReadAllText(localNotes);
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                Console.WriteLine($"ZeroDrive Windows Sync v{currentVer}");
+                return 0;
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var releasesEl = root.TryGetProperty("all_releases", out var allEl) ? allEl : root.GetProperty("releases");
+            Console.WriteLine($"ZeroDrive Release History (Installed: v{currentVer})");
+            Console.WriteLine(new string('=', 56));
+            foreach (var rel in releasesEl.EnumerateArray())
+            {
+                string ver = rel.GetProperty("version").GetString();
+                string date = rel.GetProperty("date").GetString();
+                string title = rel.GetProperty("title").GetString();
+                Console.WriteLine($"\nv{ver} ({date}) — {title}");
+                if (rel.TryGetProperty("highlights", out var hlEl))
+                {
+                    foreach (var item in hlEl.EnumerateArray())
+                    {
+                        Console.WriteLine($"  * {item.GetString()}");
+                    }
+                }
+            }
+            return 0;
+        }
+
+        public static bool VerifyArtifactSignature(string filePath, string version, long expectedSize, string expectedSha256, string signatureBase64, string publicKeyPem)
+        {
+            var fi = new FileInfo(filePath);
+            if (!fi.Exists) throw new FileNotFoundException("Downloaded artifact missing.", filePath);
+            if (expectedSize > 0 && fi.Length != expectedSize)
+            {
+                throw new InvalidDataException($"Size mismatch: got {fi.Length} bytes, expected {expectedSize} bytes.");
+            }
+
+            string actualSha256;
+            using (var sha = SHA256.Create())
+            using (var stream = File.OpenRead(filePath))
+            {
+                byte[] hash = sha.ComputeHash(stream);
+                actualSha256 = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+
+            string normalizedExpected = (expectedSha256 ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(normalizedExpected) || actualSha256 != normalizedExpected)
+            {
+                throw new CryptographicException($"SHA-256 verification failed ({actualSha256} != {normalizedExpected}).");
+            }
+
+            byte[] sigBytes = Convert.FromBase64String((signatureBase64 ?? "").Trim());
+            string canonical = $"zerodrive-release-v1:windows:{version}:{actualSha256}:{fi.Length}";
+            byte[] payloadBytes = Encoding.UTF8.GetBytes(canonical);
+
+            using var ecdsa = ECDsa.Create();
+            ecdsa.ImportFromPem((publicKeyPem ?? EmbeddedPublicKeyPem).Trim());
+            bool valid = ecdsa.VerifyData(payloadBytes, sigBytes, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+            if (!valid)
+            {
+                throw new CryptographicException("ECDSA P-256 signature verification failed!");
+            }
+
+            return true;
+        }
+
+        private static async Task DownloadWithResumeAsync(HttpClient http, string url, string partPath, long expectedSize)
+        {
+            const int maxAttempts = 3;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    long existing = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
+                    if (expectedSize > 0 && existing == expectedSize) return;
+                    if (expectedSize > 0 && existing > expectedSize)
+                    {
+                        File.Delete(partPath);
+                        existing = 0;
+                    }
+
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    if (existing > 0)
+                    {
+                        req.Headers.Range = new RangeHeaderValue(existing, null);
+                    }
+
+                    using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+                    if ((int)resp.StatusCode == 416 && expectedSize > 0 && existing == expectedSize)
+                    {
+                        return;
+                    }
+                    resp.EnsureSuccessStatusCode();
+
+                    bool isResume = resp.StatusCode == HttpStatusCode.PartialContent && existing > 0;
+                    FileMode mode = isResume ? FileMode.Append : FileMode.Create;
+
+                    using var inStream = await resp.Content.ReadAsStreamAsync();
+                    using var outStream = new FileStream(partPath, mode, FileAccess.Write, FileShare.None);
+                    await inStream.CopyToAsync(outStream);
+                    return;
+                }
+                catch when (attempt < maxAttempts)
+                {
+                    await Task.Delay(attempt * 1500);
+                }
+            }
+        }
+
+        public static async Task<int> DownloadAndApplyUpdateAsync(string apiBase, string installDir, bool simulateBadSha, bool simulateBadSig)
+        {
+            string currentVer = GetInstalledVersion(installDir);
+            string checkUrl = $"{apiBase.TrimEnd('/')}/v1/releases/latest?platform=windows&current_version={Uri.EscapeDataString(currentVer)}";
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+            http.DefaultRequestHeaders.Add("User-Agent", $"ZeroDrive-WindowsSync/{currentVer}");
+
+            string json = await http.GetStringAsync(checkUrl);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            string latestVer = root.GetProperty("latest_version").GetString();
+            bool available = root.GetProperty("update_available").GetBoolean() && CompareSemver(latestVer, currentVer) > 0;
+            if (!available)
+            {
+                Console.WriteLine($"[Updater] Already on latest version v{currentVer}.");
+                return 0;
+            }
+
+            var artifact = root.GetProperty("platform_artifact");
+            string filename = artifact.GetProperty("filename").GetString();
+            string dlUrl = artifact.GetProperty("url").GetString();
+            long size = artifact.GetProperty("size").GetInt64();
+            string sha256 = simulateBadSha ? new string('0', 64) : artifact.GetProperty("sha256").GetString();
+            string sig = simulateBadSig ? Convert.ToBase64String(Encoding.UTF8.GetBytes("bad_signature")) : artifact.GetProperty("signature").GetString();
+            string pubKey = root.TryGetProperty("public_key", out var pkEl) && !string.IsNullOrWhiteSpace(pkEl.GetString())
+                ? pkEl.GetString()
+                : EmbeddedPublicKeyPem;
+
+            var missedList = new List<string>();
+            if (root.TryGetProperty("missed_releases", out var missedEl))
+            {
+                foreach (var rel in missedEl.EnumerateArray())
+                {
+                    missedList.Add($"v{rel.GetProperty("version").GetString()}: {rel.GetProperty("title").GetString()}");
+                }
+            }
+
+            string partPath = Path.Combine(Path.GetTempPath(), $"{filename}.part.{Guid.NewGuid():N}");
+            string stageDir = Path.Combine(Path.GetTempPath(), $"zerodrive-win-stage-{Guid.NewGuid():N}");
+            string backupDir = $"{installDir.TrimEnd('\\', '/')}.backup.{Guid.NewGuid():N}";
+
+            try
+            {
+                Console.WriteLine($"[Updater] Downloading {filename} (v{currentVer} -> v{latestVer})...");
+                await DownloadWithResumeAsync(http, dlUrl, partPath, size);
+
+                VerifyArtifactSignature(partPath, latestVer, size, sha256, sig, pubKey);
+                Console.WriteLine("[Updater] Cryptographic SHA-256 + ECDSA P-256 verification PASSED.");
+
+                Directory.CreateDirectory(stageDir);
+                ZipFile.ExtractToDirectory(partPath, stageDir, overwriteFiles: true);
+
+                // Backup existing install directory for atomic rollback
+                if (Directory.Exists(installDir))
+                {
+                    CopyDirectory(installDir, backupDir, overwrite: true);
+                }
+
+                // Read existing user config to preserve sync_root and api_base
+                string existingSyncRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "ZeroDrive");
+                string existingApiBase = apiBase;
+                string cfgPath = Path.Combine(installDir, "config.json");
+                if (File.Exists(cfgPath))
+                {
+                    try
+                    {
+                        using var cfgDoc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+                        if (cfgDoc.RootElement.TryGetProperty("sync_root", out var srEl) && !string.IsNullOrWhiteSpace(srEl.GetString()))
+                            existingSyncRoot = srEl.GetString();
+                        if (cfgDoc.RootElement.TryGetProperty("api_base", out var abEl) && !string.IsNullOrWhiteSpace(abEl.GetString()))
+                            existingApiBase = abEl.GetString();
+                    }
+                    catch { }
+                }
+
+                try
+                {
+                    Directory.CreateDirectory(installDir);
+                    CopyDirectory(stageDir, installDir, overwrite: true, skipFiles: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "config.json", "update-state.json" });
+
+                    string updatedConfig = JsonSerializer.Serialize(new
+                    {
+                        sync_root = existingSyncRoot,
+                        api_base = existingApiBase,
+                        version = latestVer,
+                        previous_version = currentVer,
+                        updated_at = DateTime.UtcNow.ToString("o")
+                    }, new JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(cfgPath, updatedConfig, Encoding.UTF8);
+
+                    var sb = new StringBuilder();
+                    sb.AppendLine($"# ZeroDrive Changelog (Installed: v{latestVer})");
+                    if (root.TryGetProperty("all_releases", out var allEl))
+                    {
+                        foreach (var rel in allEl.EnumerateArray())
+                        {
+                            sb.AppendLine($"\n## v{rel.GetProperty("version").GetString()} ({rel.GetProperty("date").GetString()}) — {rel.GetProperty("title").GetString()}");
+                            if (rel.TryGetProperty("highlights", out var hlEl))
+                            {
+                                foreach (var h in hlEl.EnumerateArray())
+                                {
+                                    sb.AppendLine($"- {h.GetString()}");
+                                }
+                            }
+                        }
+                    }
+                    File.WriteAllText(Path.Combine(installDir, "CHANGELOG.md"), sb.ToString(), Encoding.UTF8);
+
+                    string updateStateJson = JsonSerializer.Serialize(new
+                    {
+                        last_checked_at = DateTime.UtcNow.ToString("o"),
+                        previous_version = currentVer,
+                        last_seen_changelog_version = latestVer,
+                        missed_releases = missedList
+                    }, new JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(Path.Combine(installDir, "update-state.json"), updateStateJson, Encoding.UTF8);
+
+                    if (Directory.Exists(backupDir))
+                    {
+                        Directory.Delete(backupDir, recursive: true);
+                    }
+                }
+                catch
+                {
+                    if (Directory.Exists(backupDir))
+                    {
+                        if (Directory.Exists(installDir)) Directory.Delete(installDir, recursive: true);
+                        Directory.Move(backupDir, installDir);
+                    }
+                    throw;
+                }
+
+                Console.WriteLine($"[Updater] PASS: Upgraded {installDir} from v{currentVer} to v{latestVer}.");
+                Console.WriteLine($"[Updater] What's New ({missedList.Count} release(s)): {string.Join(" | ", missedList)}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[Updater] Rejected / failed safely (v{currentVer} preserved): {ex.Message}");
+                return 1;
+            }
+            finally
+            {
+                try { if (File.Exists(partPath)) File.Delete(partPath); } catch { }
+                try { if (Directory.Exists(stageDir)) Directory.Delete(stageDir, recursive: true); } catch { }
+            }
+        }
+
+        private static void CopyDirectory(string sourceDir, string destDir, bool overwrite, HashSet<string> skipFiles = null)
+        {
+            Directory.CreateDirectory(destDir);
+            foreach (string file in Directory.GetFiles(sourceDir))
+            {
+                string name = Path.GetFileName(file);
+                if (skipFiles != null && skipFiles.Contains(name)) continue;
+                File.Copy(file, Path.Combine(destDir, name), overwrite);
+            }
+            foreach (string dir in Directory.GetDirectories(sourceDir))
+            {
+                string name = Path.GetFileName(dir);
+                CopyDirectory(dir, Path.Combine(destDir, name), overwrite, skipFiles);
             }
         }
     }

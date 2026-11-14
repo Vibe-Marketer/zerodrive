@@ -20,8 +20,9 @@ private func zeroDrivePowerCallback(
         IOAllowPowerChange(RcloneDaemonSupervisor.powerRootPort, Int(bitPattern: messageArgument))
 
     case kIOMessageSystemWillSleepValue:
-        // Synchronously unmount loopback NFS BEFORE the network interface dies to prevent Kernel D-State lock
-        RcloneDaemonSupervisor.handlePreSleepSynchronousUnmount()
+        // Loopback lo0 (127.0.0.1) stays alive in kernel across sleep!
+        // NEVER run `umount -f` before sleep — force-unmounting rips open folders away from Claude Code / Finder
+        // and triggers macOS's "Server connections interrupted" warning popup!
         IOAllowPowerChange(RcloneDaemonSupervisor.powerRootPort, Int(bitPattern: messageArgument))
 
     case kIOMessageSystemHasPoweredOnValue:
@@ -72,6 +73,7 @@ public final class RcloneDaemonSupervisor: ObservableObject {
     private var healthMonitorTask: Task<Void, Never>?
     private var consecutiveHealthFailures: Int = 0
     private var lastRemoteDirRefresh: [String: Date] = [:]
+    private var pendingRemoteDirTasks: [String: Task<Void, Never>] = [:]
 
     public func registerSystemPowerNotifications() {
         guard Self.powerRootPort == 0 else { return }
@@ -90,16 +92,6 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
     }
 
-    nonisolated public static func handlePreSleepSynchronousUnmount() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let mountPath = home.appendingPathComponent(".zerodrive").path
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/sbin/umount")
-        task.arguments = ["-f", mountPath]
-        try? task.run()
-        task.waitUntilExit()
-    }
-
     public func autoMountIfConfigured() async {
         guard MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault(),
               ManageLicensing.shared.isLicensed else {
@@ -109,72 +101,18 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         await mountUnifiedDrive()
     }
 
-    public func mountUnifiedDrive() async {
-        guard !isMounted, !isBusy else { return }
-        isBusy = true
-
-        // Fast-path: if the NFS daemon and kernel mount are already live and responsive, adopt them without unmounting
-        if isPortListening(55730),
-           await RcloneRCClient.shared.ping(),
-           await probeMountLiveness(timeoutSeconds: 4.0) {
-            self.isMounted = true
-            Self.wasMountedBeforeSleep = true
-            self.consecutiveHealthFailures = 0
-            self.isBusy = false
-            self.statusMessage = "Mounted at ~/ZeroDrive"
-            ensureUserSymlink()
-            SpoolAndGuardManager.shared.startTelemetryPolling()
-            startDaemonHealthWatchdog()
-            return
-        }
-
-        statusMessage = "Cleaning stale NFS mounts..."
-
-        // [Mandatory Step 1] Force clean any dead/ghost NFS mounts and poisoned root VFS cache items
-        await forceCleanStaleMounts()
-        cleanPoisonedCacheEntries()
-
-        statusMessage = "Locating & verifying ZeroDrive streaming engine..."
-        guard let rcloneURL = await resolveOrDownloadRcloneBinary() else {
-            statusMessage = "Streaming engine missing — click Download Engine"
-            isBusy = false
-            return
-        }
-
-        // Ensure [ZeroDriveUnified] exists in ~/.config/rclone/rclone.conf and uses union at root with any connected clouds
-        if !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() {
-            if let provisioned = try? await DFYProvisioningClient.shared.provisionVault(email: "trial@zerodrive.aisimple.co", licenseKey: "TRIAL") {
-                try? MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(result: provisioned)
-            }
-        }
-        MultiCloudCombineBuilder.shared.ensureUnifiedUnionConfig()
-
-        // Create hidden NFS mount directory and cache directory
-        try? FileManager.default.createDirectory(at: nfsMountRoot, withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        ensureUserSymlink()
-
+    private func buildRcloneServeArguments() -> [String] {
         let meta = MultiCloudCombineBuilder.shared.loadVaultMetadata()
         let readChunk = boostVideoBufferEnabled ? "32M" : "16M"
         let readChunkLimit = boostVideoBufferEnabled ? "512M" : "256M"
         let bufferSize = boostVideoBufferEnabled ? "64M" : "32M"
-
-        statusMessage = "Starting ZeroDrive streaming daemon..."
-        let process = Process()
-        process.executableURL = rcloneURL
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        process.environment = env
-
-        // Master rclone serve nfs + mount_nfs -o nolocks,nobrowse on ~/.zerodrive-mount so ~/.zerodrive-mount/ZeroDrive has isVolume=false (no Eject button in Finder!)
         let nfsPort = 55730
         let defaultTimeStr = ISO8601DateFormatter().string(from: Date())
         let minFreeGB = max(5, meta.minFreeSpaceGB)
         let nfsHandleCacheDir = cacheDir.appendingPathComponent("nfs-handles")
         try? FileManager.default.createDirectory(at: nfsHandleCacheDir, withIntermediateDirectories: true)
 
-        process.arguments = [
+        return [
             "serve",
             "nfs",
             "ZeroDriveUnified:",
@@ -189,11 +127,11 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--vfs-cache-max-size=\(meta.spoolCapGB)G",
             "--vfs-cache-min-free-space=\(minFreeGB)G",
             "--vfs-write-back=5s",
-            "--vfs-cache-max-age=24h",
+            "--vfs-cache-max-age=168h",
             "--vfs-read-chunk-size=\(readChunk)",
             "--vfs-read-chunk-size-limit=\(readChunkLimit)",
             "--buffer-size=\(bufferSize)",
-            "--dir-cache-time=20s",
+            "--dir-cache-time=1h",
             "--vfs-fast-fingerprint",
             "--use-server-modtime",
             "--disable-http2",
@@ -220,59 +158,190 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             "--rc-addr=127.0.0.1:55729",
             "--rc-no-auth"
         ]
+    }
+
+    private func spawnRcloneServeProcess(rcloneURL: URL) throws -> Process {
+        let process = Process()
+        process.executableURL = rcloneURL
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        process.environment = env
+        process.arguments = buildRcloneServeArguments()
+
+        let logFileURL = cacheDir.appendingPathComponent("rclone-daemon.log")
+        if !FileManager.default.fileExists(atPath: logFileURL.path) {
+            FileManager.default.createFile(atPath: logFileURL.path, contents: nil)
+        }
+        if let fileHandle = try? FileHandle(forWritingTo: logFileURL) {
+            fileHandle.seekToEndOfFile()
+            process.standardOutput = fileHandle
+            process.standardError = fileHandle
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
+
+        process.terminationHandler = { [weak self] proc in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.rcloneProcess === proc && self.isMounted && !self.isBusy {
+                    NSLog("[ZeroDrive] rclone daemon exited unexpectedly (code %d) — attempting hitless TCP recovery without unmount...", proc.terminationStatus)
+                    let recovered = await self.respawnDaemonHitlessly()
+                    if !recovered {
+                        self.isMounted = false
+                        self.statusMessage = "Reconnecting drive…"
+                        await self.mountUnifiedDrive()
+                    }
+                }
+            }
+        }
+        try process.run()
+        self.rcloneProcess = process
+        return process
+    }
+
+    private func waitForRcloneDaemonReady(nfsPort: Int = 55730, maxPolls: Int = 90) async -> Bool {
+        for _ in 0..<maxPolls {
+            if isPortListening(nfsPort) {
+                if await RcloneRCClient.shared.ping() {
+                    return true
+                }
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        return false
+    }
+
+    /// Restarts ONLY the `rclone serve nfs` process on 127.0.0.1:55730 with persistent disk file handles
+    /// WITHOUT running `umount -f`, so Finder and open Claude Code terminals never lose their connection!
+    @discardableResult
+    public func respawnDaemonHitlessly() async -> Bool {
+        guard !isBusy else { return false }
+        guard await isKernelNFSMounted() else { return false }
+        guard let rcloneURL = await resolveOrDownloadRcloneBinary() else { return false }
+
+        isBusy = true
+        defer { isBusy = false }
+
+        cleanPoisonedCacheEntries()
+        MultiCloudCombineBuilder.shared.ensureUnifiedUnionConfig()
+
+        // Ensure port 55730 is free before binding replacement daemon (never touch umount!)
+        rcloneProcess?.terminate()
+        rcloneProcess = nil
+        if isPortListening(55730) {
+            await runCommand("/usr/bin/pkill", ["-f", "rclone serve nfs ZeroDriveUnified:"])
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
 
         do {
-            let logFileURL = cacheDir.appendingPathComponent("rclone-daemon.log")
-            if !FileManager.default.fileExists(atPath: logFileURL.path) {
-                FileManager.default.createFile(atPath: logFileURL.path, contents: nil)
+            let proc = try spawnRcloneServeProcess(rcloneURL: rcloneURL)
+            let ready = await waitForRcloneDaemonReady(nfsPort: 55730, maxPolls: 45)
+            let live = (ready && proc.isRunning) ? (await probeMountLiveness(timeoutSeconds: 6.0)) : false
+            if live {
+                self.isMounted = true
+                Self.wasMountedBeforeSleep = true
+                self.consecutiveHealthFailures = 0
+                self.statusMessage = "Mounted at ~/ZeroDrive"
+                ensureUserSymlink()
+                SpoolAndGuardManager.shared.startTelemetryPolling()
+                startDaemonHealthWatchdog()
+                NSLog("[ZeroDrive] Hitless NFS daemon recovery succeeded on 127.0.0.1:55730 (0 unmounts)")
+                return true
             }
-            if let fileHandle = try? FileHandle(forWritingTo: logFileURL) {
-                fileHandle.seekToEndOfFile()
-                process.standardOutput = fileHandle
-                process.standardError = fileHandle
-            } else {
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-            }
+        } catch {
+            NSLog("[ZeroDrive] Hitless daemon spawn error: %@", error.localizedDescription)
+        }
+        return false
+    }
 
-            process.terminationHandler = { [weak self] proc in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    if self.isMounted && !self.isBusy {
-                        NSLog("[ZeroDrive] rclone daemon process terminated unexpectedly with code %d", proc.terminationStatus)
-                        self.isMounted = false
-                        self.statusMessage = "Engine stopped unexpectedly"
-                    }
-                }
-            }
-            try process.run()
-            self.rcloneProcess = process
+    public func mountUnifiedDrive() async {
+        guard !isMounted, !isBusy else { return }
+        isBusy = true
 
-            // Poll for both JSON-RPC (55729) and NFS server (55730) readiness
-            var nfsReady = false
-            for _ in 0..<90 {
-                if isPortListening(nfsPort) {
-                    let pingOk = await RcloneRCClient.shared.ping()
-                    if pingOk {
-                        nfsReady = true
-                        break
-                    }
-                }
-                try? await Task.sleep(nanoseconds: 500_000_000)
+        // Fast-path 1: if both daemon (55730) and kernel NFS mount are already live, adopt them with zero disruption
+        if isPortListening(55730),
+           await RcloneRCClient.shared.ping(),
+           await probeMountLiveness(timeoutSeconds: 5.0) {
+            self.isMounted = true
+            Self.wasMountedBeforeSleep = true
+            self.consecutiveHealthFailures = 0
+            self.isBusy = false
+            self.statusMessage = "Mounted at ~/ZeroDrive"
+            ensureUserSymlink()
+            SpoolAndGuardManager.shared.startTelemetryPolling()
+            startDaemonHealthWatchdog()
+            return
+        }
+
+        // Fast-path 2: if ~/.zerodrive is STILL mounted in the kernel (e.g., daemon restarted), revive port 55730 hitlessly WITHOUT umount -f!
+        if await isKernelNFSMounted() {
+            self.isBusy = false
+            if await respawnDaemonHitlessly() {
+                return
             }
+            self.isBusy = true
+        }
+
+        statusMessage = "Cleaning stale NFS mounts..."
+
+        // Only run forceCleanStaleMounts when starting from an unmounted or irrecoverable state
+        await forceCleanStaleMounts()
+        cleanPoisonedCacheEntries()
+
+        statusMessage = "Locating & verifying ZeroDrive streaming engine..."
+        guard let rcloneURL = await resolveOrDownloadRcloneBinary() else {
+            statusMessage = "Streaming engine missing — click Download Engine"
+            isBusy = false
+            return
+        }
+
+        if !MultiCloudCombineBuilder.shared.hasConfiguredPrimaryVault() {
+            if let provisioned = try? await DFYProvisioningClient.shared.provisionVault(email: "trial@zerodrive.aisimple.co", licenseKey: "TRIAL") {
+                try? MultiCloudCombineBuilder.shared.configureDFYPrimaryVault(result: provisioned)
+            }
+        }
+        MultiCloudCombineBuilder.shared.ensureUnifiedUnionConfig()
+
+        try? FileManager.default.createDirectory(at: nfsMountRoot, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        ensureUserSymlink()
+
+        statusMessage = "Starting ZeroDrive streaming daemon..."
+        let nfsPort = 55730
+
+        do {
+            let process = try spawnRcloneServeProcess(rcloneURL: rcloneURL)
+            let nfsReady = await waitForRcloneDaemonReady(nfsPort: nfsPort, maxPolls: 90)
 
             if nfsReady {
-                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),nolocks,nobrowse,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,acregmin=3,acregmax=10,acdirmin=3,acdirmax=10,nonegnamecache,noatime,noacl,async,intr,timeo=150,retrans=5,mutejukebox,deadtimeout=0"
-                await runCommand("/sbin/mount_nfs", [
+                // locallocks = real kernel flock/fcntl for Claude Code, Codex, git & SQLite
+                // nfc = automatic Unicode NFC filename normalization in kernel
+                // timeo=600 + mutejukebox + deadtimeout=0 = tolerant of slow cold cloud operations without disconnect popups
+                // 127.0.0.1:/ = pure IPv4 loopback so macOS never adds ::1 to the NFS server location list
+                let nfsMountOptions = "port=\(nfsPort),mountport=\(nfsPort),locallocks,nobrowse,nfc,vers=3,tcp,rsize=65536,wsize=65536,readahead=128,acregmin=2,acregmax=15,acdirmin=1,acdirmax=2,nonegnamecache,noatime,noacl,intr,timeo=600,retrans=5,mutejukebox,deadtimeout=0"
+                let mountedOk = await runCommandBounded("/sbin/mount_nfs", [
                     "-o", nfsMountOptions,
-                    "localhost:/",
+                    "127.0.0.1:/",
                     nfsMountRoot.path
-                ])
+                ], timeoutSeconds: 8.0)
+                if !mountedOk {
+                    let alreadyMounted = await isKernelNFSMounted()
+                    if !alreadyMounted {
+                        // Self-heal EBUSY if an orphaned kernel dounmount holds the previous ~/.zerodrive directory inode
+                        rotateWedgedMountDirectoryInode()
+                        _ = await runCommandBounded("/sbin/mount_nfs", [
+                            "-o", nfsMountOptions,
+                            "127.0.0.1:/",
+                            nfsMountRoot.path
+                        ], timeoutSeconds: 8.0)
+                    }
+                }
             }
 
             let mountLive: Bool
             if nfsReady && process.isRunning {
-                mountLive = await probeMountLiveness(timeoutSeconds: 5.0)
+                mountLive = await probeMountLiveness(timeoutSeconds: 6.0)
             } else {
                 mountLive = false
             }
@@ -282,7 +351,6 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             self.isBusy = false
             self.statusMessage = self.isMounted ? "Mounted at ~/ZeroDrive" : "Mount failed — check credentials"
 
-            // Ensure ~/ZeroDrive symlink & Desktop alias & non-ejectable Finder Sidebar folder entry
             ensureUserSymlink()
             createDesktopVolumeAliasIfNeeded()
             if self.isMounted {
@@ -290,7 +358,6 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 pinToFinderSidebarIfNeeded()
             }
 
-            // Start telemetry & queue poller + RAM tree pre-warm
             SpoolAndGuardManager.shared.startTelemetryPolling()
             startDaemonHealthWatchdog()
             Task.detached(priority: .utility) {
@@ -311,8 +378,13 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         healthMonitorTask?.cancel()
         SpoolAndGuardManager.shared.stopTelemetryPolling()
 
-        // 1. Forcibly unmount kernel NFS filesystem FIRST so the OS kernel releases before the server daemon stops
-        await runCommand("/sbin/umount", ["-f", nfsMountRoot.path])
+        // 1. Unmount kernel NFS filesystem FIRST while rclone is still alive so pending RPCs flush in <0.1s
+        if await isKernelNFSMounted() {
+            let cleanOk = await runCommandBounded("/sbin/umount", [nfsMountRoot.path], timeoutSeconds: 3.0)
+            if !cleanOk {
+                _ = await runCommandBounded("/sbin/umount", ["-f", nfsMountRoot.path], timeoutSeconds: 4.0)
+            }
+        }
 
         // 2. Terminate the rclone process only after the kernel mount is cleanly dismantled
         rcloneProcess?.terminate()
@@ -338,22 +410,45 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     public func healDeadMountAfterSleep() async {
         guard isMounted || Self.wasMountedBeforeSleep else { return }
-        let pingOk = await RcloneRCClient.shared.ping()
-        let mountOk = pingOk ? (await probeMountLiveness(timeoutSeconds: 5.0)) : false
-        if !pingOk || !mountOk {
-            statusMessage = "Healing NFS mount after system sleep..."
-            await forceCleanStaleMounts()
-            rcloneProcess?.terminate()
-            rcloneProcess = nil
-            self.isMounted = false
-            await mountUnifiedDrive()
+        // Give user-space sockets 1.2s to thaw cleanly on wake
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+
+        let portOk = isPortListening(55730)
+        let pingOk = portOk ? (await RcloneRCClient.shared.ping()) : false
+        let mountOk = pingOk ? (await probeMountLiveness(timeoutSeconds: 6.0)) : false
+
+        if pingOk && mountOk {
+            // Mount survived sleep seamlessly — refresh live SSE push socket for fresh Wi-Fi without touching mount!
+            Task.detached(priority: .utility) {
+                await ManageFileProvider.shared.restartEventStreamAfterWake()
+            }
+            return
+        }
+
+        // Attempt hitless TCP daemon respawn first so open terminals/Finder never see a disconnect!
+        if await respawnDaemonHitlessly() {
+            Task.detached(priority: .utility) {
+                await ManageFileProvider.shared.restartEventStreamAfterWake()
+            }
+            return
+        }
+
+        statusMessage = "Reconnecting drive after sleep..."
+        await forceCleanStaleMounts()
+        rcloneProcess?.terminate()
+        rcloneProcess = nil
+        self.isMounted = false
+        await mountUnifiedDrive()
+        Task.detached(priority: .utility) {
+            await ManageFileProvider.shared.restartEventStreamAfterWake()
         }
     }
 
     public func refreshVFSForRemoteChange(paths: [String]) async {
         guard isMounted, !isBusy else { return }
         let now = Date()
-        var dirsToRefresh: [String] = []
+        var immediateDirs: [String] = []
+        var trailingDirs: [String] = []
         for raw in paths {
             var clean = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
             if clean.hasPrefix("My Drive/") {
@@ -368,17 +463,33 @@ public final class RcloneDaemonSupervisor: ObservableObject {
             } else {
                 vfsDir = "My Drive"
             }
-            if let last = lastRemoteDirRefresh[vfsDir], now.timeIntervalSince(last) < 2.0 {
+            if let last = lastRemoteDirRefresh[vfsDir], now.timeIntervalSince(last) < 1.2 {
+                if !trailingDirs.contains(vfsDir) {
+                    trailingDirs.append(vfsDir)
+                }
                 continue
             }
             lastRemoteDirRefresh[vfsDir] = now
-            if !dirsToRefresh.contains(vfsDir) {
-                dirsToRefresh.append(vfsDir)
+            if !immediateDirs.contains(vfsDir) {
+                immediateDirs.append(vfsDir)
             }
         }
-        guard !dirsToRefresh.isEmpty else { return }
-        Task.detached(priority: .utility) {
-            for dir in dirsToRefresh {
+        if !immediateDirs.isEmpty {
+            Task.detached(priority: .utility) {
+                for dir in immediateDirs {
+                    _ = await RcloneRCClient.shared.refreshVFSTree(dir: dir, recursive: false)
+                }
+            }
+        }
+        for dir in trailingDirs {
+            pendingRemoteDirTasks[dir]?.cancel()
+            pendingRemoteDirTasks[dir] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.lastRemoteDirRefresh[dir] = Date()
+                    self?.pendingRemoteDirTasks.removeValue(forKey: dir)
+                }
                 _ = await RcloneRCClient.shared.refreshVFSTree(dir: dir, recursive: false)
             }
         }
@@ -388,11 +499,14 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         healthMonitorTask?.cancel()
         healthMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
                 guard let self = self, self.isMounted, !self.isBusy else { continue }
 
                 if let proc = self.rcloneProcess, !proc.isRunning {
-                    NSLog("[ZeroDrive] Watchdog detected rclone is not running. Recovering...")
+                    NSLog("[ZeroDrive] Watchdog detected rclone exited — attempting hitless recovery...")
+                    if await self.respawnDaemonHitlessly() {
+                        continue
+                    }
                     self.isMounted = false
                     self.statusMessage = "Reconnecting drive…"
                     await self.mountUnifiedDrive()
@@ -400,18 +514,23 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 }
 
                 let pingOk = await RcloneRCClient.shared.ping()
-                let mountOk = pingOk ? (await self.probeMountLiveness(timeoutSeconds: 6.0)) : false
+                let mountOk = pingOk ? (await self.probeMountLiveness(timeoutSeconds: 8.0)) : false
 
                 if pingOk && mountOk {
                     self.consecutiveHealthFailures = 0
                     await self.healPoisonedQueueItemsIfNeeded()
                 } else {
                     self.consecutiveHealthFailures += 1
-                    NSLog("[ZeroDrive] Watchdog health probe warning (%d/3): ping=%d mount=%d",
+                    NSLog("[ZeroDrive] Watchdog health probe warning (%d/6): ping=%d mount=%d",
                           self.consecutiveHealthFailures, pingOk ? 1 : 0, mountOk ? 1 : 0)
-                    if self.consecutiveHealthFailures >= 3 {
-                        NSLog("[ZeroDrive] Watchdog detected unresponsive NFS mount after 3 consecutive checks. Self-healing...")
+                    // Require 6 consecutive failures (~90s) so large cloud operations NEVER trigger false restarts,
+                    // and ALWAYS attempt hitless TCP daemon respawn before touching `umount`!
+                    if self.consecutiveHealthFailures >= 6 {
                         self.consecutiveHealthFailures = 0
+                        NSLog("[ZeroDrive] Watchdog detected prolonged daemon stall — attempting hitless daemon restart...")
+                        if await self.respawnDaemonHitlessly() {
+                            continue
+                        }
                         await self.forceCleanStaleMounts()
                         self.rcloneProcess?.terminate()
                         self.rcloneProcess = nil
@@ -426,13 +545,22 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     private func healPoisonedQueueItemsIfNeeded() async {
         let queue = await RcloneRCClient.shared.fetchVFSQueue()
-        for item in queue where item.tries >= 5 {
+        for item in queue where item.tries >= 3 {
             let errLower = (item.errorText ?? "").lowercased()
             if item.name == ".metadata_never_index" || errLower.contains("directory not found") {
                 NSLog("[ZeroDrive] Purging poisoned virtual-root queue item: %@ (tries=%d)", item.name, item.tries)
                 _ = await RcloneRCClient.shared.forgetFile(relativePath: item.name)
                 cleanPoisonedCacheEntries()
-            } else if errLower.contains("object not found") {
+            } else if errLower.contains("failed to transfer file from cache to remote") {
+                // Local VFS cache file was deleted while vfsMeta remained orphaned
+                let localCachedData = cacheDir.appendingPathComponent("vfs/ZeroDriveUnified").appendingPathComponent(item.name)
+                if !FileManager.default.fileExists(atPath: localCachedData.path) {
+                    let metaFile = cacheDir.appendingPathComponent("vfsMeta/ZeroDriveUnified").appendingPathComponent(item.name)
+                    try? FileManager.default.removeItem(at: metaFile)
+                    _ = await RcloneRCClient.shared.forgetFile(relativePath: item.name)
+                    NSLog("[ZeroDrive] Removed orphaned vfsMeta queue item with missing local cache file: %@", item.name)
+                }
+            } else if errLower.contains("object not found") && item.tries >= 5 {
                 let parentDir = (item.name as NSString).deletingLastPathComponent
                 let refreshTarget = parentDir.isEmpty ? "My Drive" : parentDir
                 NSLog("[ZeroDrive] Refreshing stale VFS parent '%@' for stuck item '%@' (tries=%d)", refreshTarget, item.name, item.tries)
@@ -441,17 +569,92 @@ public final class RcloneDaemonSupervisor: ObservableObject {
         }
     }
 
-    /// Runs a bounded child-process statfs check on ~/.zerodrive-mount so @MainActor never blocks on a wedged NFS mount
-    private func probeMountLiveness(timeoutSeconds: Double = 5.0) async -> Bool {
-        let mountPath = nfsMountRoot.path
-        var s = statfs()
-        guard statfs(mountPath, &s) == 0 else { return false }
-        let fsType = withUnsafePointer(to: &s.f_fstypename) { ptr in
-            ptr.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { cStr in
-                String(cString: cStr).lowercased()
+    /// Checks whether the macOS kernel mount table currently has an NFS mount at ~/.zerodrive
+    /// (uses `/sbin/mount` kernel table so it returns in <5ms even while port 55730 is down awaiting hitless respawn!)
+    private func isKernelNFSMounted() async -> Bool {
+        return await checkMountTableHasZeroDriveNFS()
+    }
+
+    private func checkMountTableHasZeroDriveNFS() async -> Bool {
+        let targetPath = nfsMountRoot.path
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/sbin/mount")
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = FileHandle.nullDevice
+                do {
+                    try proc.run()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
+                    let text = String(data: data, encoding: .utf8) ?? ""
+                    let matched = text.components(separatedBy: .newlines).contains { line in
+                        line.contains(" on \(targetPath) (nfs")
+                    }
+                    continuation.resume(returning: matched)
+                } catch {
+                    continuation.resume(returning: false)
+                }
             }
         }
-        return fsType == "nfs"
+    }
+
+    /// Runs a real bounded child-process check against ~/.zerodrive so @MainActor NEVER blocks in kernel D-state
+    private func probeMountLiveness(timeoutSeconds: Double = 6.0) async -> Bool {
+        guard await checkMountTableHasZeroDriveNFS() else { return false }
+        return await runBoundedMountCheck(arguments: [nfsMountRoot.path], executable: "/bin/ls", timeoutSeconds: timeoutSeconds) { output in
+            return output.contains("My Drive")
+        }
+    }
+
+    private func runBoundedMountCheck(
+        arguments: [String],
+        executable: String = "/usr/bin/stat",
+        timeoutSeconds: Double,
+        validator: @Sendable @escaping (String) -> Bool
+    ) async -> Bool {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: executable)
+                proc.arguments = arguments
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = FileHandle.nullDevice
+
+                let lock = NSLock()
+                var resumed = false
+                let finish: (Bool) -> Void = { val in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: val)
+                }
+
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+                    if proc.isRunning {
+                        proc.terminate()
+                    }
+                    finish(false)
+                }
+
+                do {
+                    try proc.run()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
+                    guard proc.terminationStatus == 0 else {
+                        finish(false)
+                        return
+                    }
+                    let out = String(data: data, encoding: .utf8) ?? ""
+                    finish(validator(out))
+                } catch {
+                    finish(false)
+                }
+            }
+        }
     }
 
     private func cleanPoisonedCacheEntries() {
@@ -465,15 +668,123 @@ public final class RcloneDaemonSupervisor: ObservableObject {
                 try? fm.removeItem(at: url)
             }
         }
+
+        // Purge any orphaned vfsMeta JSON entries whose backing vfs data file is missing
+        let vfsRoot = cacheDir.appendingPathComponent("vfs/ZeroDriveUnified")
+        let vfsMetaRoot = cacheDir.appendingPathComponent("vfsMeta/ZeroDriveUnified")
+        if let enumerator = fm.enumerator(at: vfsMetaRoot, includingPropertiesForKeys: [.isRegularFileKey]) {
+            for case let metaURL as URL in enumerator {
+                guard (try? metaURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let rel = metaURL.path.replacingOccurrences(of: vfsMetaRoot.path + "/", with: "")
+                let vfsCounterpart = vfsRoot.appendingPathComponent(rel)
+                if !fm.fileExists(atPath: vfsCounterpart.path),
+                   let data = try? Data(contentsOf: metaURL),
+                   let str = String(data: data, encoding: .utf8),
+                   str.contains("\"Dirty\":true") || str.contains("\"dirty\":true") {
+                    try? fm.removeItem(at: metaURL)
+                    NSLog("[ZeroDrive] Cleaned orphaned dirty vfsMeta entry without backing file: %@", rel)
+                }
+            }
+        }
     }
 
     private func forceCleanStaleMounts() async {
         let legacyMount = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".zerodrive-mount").path
+        // Unmount ONLY paths currently present in /sbin/mount, BEFORE killing rclone, and with a strict timeout so kernel dounmount stalls never hang ZeroDrive!
         for path in [nfsMountRoot.path, userSymlinkURL.path, legacyMount] {
-            await runCommand("/sbin/umount", ["-f", path])
+            if await checkMountTableHasPath(path) {
+                let ok = await runCommandBounded("/sbin/umount", [path], timeoutSeconds: 3.0)
+                if !ok {
+                    _ = await runCommandBounded("/sbin/umount", ["-f", path], timeoutSeconds: 4.0)
+                }
+            }
         }
         await runCommand("/usr/bin/pkill", ["-f", "rclone nfsmount ZeroDriveUnified:"])
         await runCommand("/usr/bin/pkill", ["-f", "rclone serve nfs ZeroDriveUnified:"])
+        cleanupRotatedStaleMountDirs()
+    }
+
+    private func checkMountTableHasPath(_ targetPath: String) async -> Bool {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/sbin/mount")
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = FileHandle.nullDevice
+                do {
+                    try proc.run()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
+                    let text = String(data: data, encoding: .utf8) ?? ""
+                    let matched = text.components(separatedBy: .newlines).contains { line in
+                        line.contains(" on \(targetPath) (")
+                    }
+                    continuation.resume(returning: matched)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    private func rotateWedgedMountDirectoryInode() {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let backup = home.appendingPathComponent(".zerodrive-stale-\(Int(Date().timeIntervalSince1970))")
+        if fm.fileExists(atPath: nfsMountRoot.path) {
+            try? fm.moveItem(at: nfsMountRoot, to: backup)
+        }
+        try? fm.createDirectory(at: nfsMountRoot, withIntermediateDirectories: true)
+        NSLog("[ZeroDrive] Rotated wedged mount directory inode to fresh directory at %@", nfsMountRoot.path)
+    }
+
+    private func cleanupRotatedStaleMountDirs() {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        guard let items = try? fm.contentsOfDirectory(atPath: home.path) else { return }
+        for item in items where item.hasPrefix(".zerodrive-stale") {
+            let url = home.appendingPathComponent(item)
+            try? fm.removeItem(at: url)
+        }
+    }
+
+    @discardableResult
+    private func runCommandBounded(_ executable: String, _ arguments: [String], timeoutSeconds: Double) async -> Bool {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: executable)
+                task.arguments = arguments
+                task.standardOutput = FileHandle.nullDevice
+                task.standardError = FileHandle.nullDevice
+
+                let lock = NSLock()
+                var resumed = false
+                let finish: (Bool) -> Void = { ok in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: ok)
+                }
+
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+                    if task.isRunning {
+                        task.terminate()
+                    }
+                    finish(false)
+                }
+
+                do {
+                    try task.run()
+                    task.waitUntilExit()
+                    finish(task.terminationStatus == 0)
+                } catch {
+                    finish(false)
+                }
+            }
+        }
     }
 
     private var cachedRcloneBinaryURL: URL? = nil
@@ -632,8 +943,8 @@ public final class RcloneDaemonSupervisor: ObservableObject {
 
     /// Pins My Drive into Finder's Sidebar Favorites via modern CLI or LaunchServices
     public func pinToFinderSidebarIfNeeded() {
+        guard isMounted else { return }
         let driveURL = mountPoint.appendingPathComponent("My Drive", isDirectory: true)
-        try? FileManager.default.createDirectory(at: driveURL, withIntermediateDirectories: true)
 
         let mysidesPaths = ["/opt/homebrew/bin/mysides", "/usr/local/bin/mysides"]
         if let mysidesPath = mysidesPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
